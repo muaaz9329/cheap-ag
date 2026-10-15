@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -21,10 +21,9 @@ async function fakeHealth(version: string, status = 200) {
   return `http://127.0.0.1:${(http.address() as { port: number }).port}`;
 }
 
-async function pingWith(env: Record<string, string>, setup?: (home: string) => void) {
-  const server = await startServer({ env });
+async function pingWith(env: Record<string, string>, logins: Record<string, string> = { "opencode-go": "go-key-value" }) {
+  const server = await startServer({ env, logins });
   onTestFinished(server.close);
-  setup?.(server.home);
   return callText(server.client, "ping");
 }
 
@@ -43,34 +42,31 @@ test("opencode-ai and its SDK are pinned to the same exact version", () => {
 });
 
 test.each([
-  ["OpenCode login wins over both keys", true, { OPENCODE_GO_API_KEY: "go-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=opencode-go via=login"],
-  ["OPENCODE_GO_API_KEY wins over the other keys", false, { OPENCODE_GO_API_KEY: "go-key-value", OPENROUTER_API_KEY: "or-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=opencode-go via=OPENCODE_GO_API_KEY"],
-  ["OPENROUTER_API_KEY wins over DEEPSEEK_API_KEY", false, { OPENROUTER_API_KEY: "or-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=openrouter via=OPENROUTER_API_KEY"],
-  ["DEEPSEEK_API_KEY alone", false, { DEEPSEEK_API_KEY: "ds-key-value" }, "provider=deepseek via=DEEPSEEK_API_KEY"],
-] as const)("credentials: %s", async (_, login, keys, expected) => {
-  const text = await pingWith({ ...keys, CHEAPAG_OPENCODE_URL: await fakeHealth(PIN) }, (home) => {
-    if (!login) return;
-    mkdirSync(join(home, "data", "opencode"), { recursive: true });
-    writeFileSync(join(home, "data", "opencode", "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "login-key-value" } }));
-  });
-  expect(text).toBe(`OK cheapag ${pkg.version} opencode=${PIN} ${expected}`);
+  ["OpenCode Go wins over the others", { deepseek: "d", openrouter: "o", "opencode-go": "g" }, "provider=opencode-go via=login"],
+  ["OpenRouter wins over DeepSeek", { deepseek: "d", openrouter: "o" }, "provider=openrouter via=login"],
+  ["DeepSeek alone", { deepseek: "d" }, "provider=deepseek via=login"],
+  ["an unsupported provider's login is not used", { anthropic: "a" }, null],
+  ["env keys without a login are ignored", {}, null],
+] as const)("credentials from saved logins only: %s", async (_, logins, expected) => {
+  const text = await pingWith({ OPENCODE_GO_API_KEY: "g", OPENROUTER_API_KEY: "o", DEEPSEEK_API_KEY: "d", CHEAPAG_OPENCODE_URL: await fakeHealth(PIN) }, logins);
+  expect(text).toBe(expected ? `OK cheapag ${pkg.version} opencode=${PIN} ${expected}` : "FAIL reason: no worker provider; run npx cheap-agent login");
 });
 
 test("refuses with FAIL when the OpenCode server reports a different version", async () => {
-  const text = await pingWith({ OPENCODE_GO_API_KEY: "go-key-value", CHEAPAG_OPENCODE_URL: await fakeHealth("0.0.1") });
+  const text = await pingWith({ CHEAPAG_OPENCODE_URL: await fakeHealth("0.0.1") });
   expect(text).toBe(`FAIL reason: opencode version 0.0.1, expected ${PIN}; reinstall cheap-agent`);
 });
 
 test("an alternative OpenCode that rejects the health check gives a clear FAIL", async () => {
   const url = await fakeHealth(PIN, 401);
-  const text = await pingWith({ OPENCODE_GO_API_KEY: "go-key-value", CHEAPAG_OPENCODE_URL: url });
+  const text = await pingWith({ CHEAPAG_OPENCODE_URL: url });
   expect(text).toBe(`FAIL reason: opencode health check at ${url} answered 401`);
 });
 
 test("key values never reach tool output or the generated config", async () => {
   const key = "sk-cheapagSECRET0123456789abcdef";
   // a server that echoes the key back forces the error path to carry it
-  const server = await startServer({ env: { DEEPSEEK_API_KEY: key, CHEAPAG_OPENCODE_URL: await fakeHealth(key) } });
+  const server = await startServer({ env: { CHEAPAG_OPENCODE_URL: await fakeHealth(key) }, logins: { deepseek: key } });
   onTestFinished(server.close);
   const text = await callText(server.client, "ping");
   expect(text).toContain("FAIL reason: opencode version [redacted]");
@@ -78,23 +74,23 @@ test("key values never reach tool output or the generated config", async () => {
   const configDir = join(server.home, ".cheapag", "opencode");
   const config = readFileSync(join(configDir, "opencode.json"), "utf8");
   expect(config).not.toContain(key);
-  expect(JSON.parse(config).provider).toEqual({ deepseek: { options: { apiKey: "{env:DEEPSEEK_API_KEY}" } } });
+  expect(JSON.parse(config)).toMatchObject({ small_model: "deepseek/deepseek-flash", provider: {} }); // the key stays in OpenCode's store
 });
 
 test("an OpenRouter key never reaches output or config; the config denies data collection and pins every model", async () => {
   const key = "sk-or-v1-0123456789abcdef0123456789abcdef";
   // a version check that echoes the key forces it into the error path
-  const server = await startServer({ env: { OPENROUTER_API_KEY: key, CHEAPAG_OPENCODE_URL: await fakeHealth(key) } });
+  const server = await startServer({ env: { CHEAPAG_OPENCODE_URL: await fakeHealth(key) }, logins: { openrouter: key } });
   onTestFinished(server.close);
   const text = await callText(server.client, "ping");
   expect(text).toBe("FAIL reason: opencode version [redacted], expected 1.19.0; reinstall cheap-agent");
   const config = readFileSync(join(server.home, ".cheapag", "opencode", "opencode.json"), "utf8");
   expect(config).not.toContain(key);
-  expect(JSON.parse(config)).toMatchObject({
+  expect(JSON.parse(config)).toEqual({
+    $schema: "https://opencode.ai/config.json",
     small_model: "openrouter/deepseek/deepseek-v4.1-flash",
     provider: {
       openrouter: {
-        options: { apiKey: "{env:OPENROUTER_API_KEY}" },
         models: { "deepseek/deepseek-v4.1-flash": { options: { provider: { data_collection: "deny" } } } },
       },
     },
@@ -104,12 +100,12 @@ test("an OpenRouter key never reaches output or config; the config denies data c
 test("boots the bundled OpenCode lazily on localhost, restarts it after a crash, and kills its process group on exit", async () => {
   // PATH without Homebrew & co: only the bundled binary can be found
   const PATH = [dirname(process.execPath), "/usr/bin", "/bin"].join(":");
-  const server = await startServer({ env: { OPENCODE_GO_API_KEY: "go-key-value", PATH } });
+  const server = await startServer({ env: { PATH }, logins: { "opencode-go": "go-key-value" } });
   onTestFinished(server.close);
 
   expect(children(server.pid)).toEqual([]); // nothing started until first use
   const text = await callText(server.client, "ping");
-  expect(text).toBe(`OK cheapag ${pkg.version} opencode=${PIN} provider=opencode-go via=OPENCODE_GO_API_KEY`);
+  expect(text).toBe(`OK cheapag ${pkg.version} opencode=${PIN} provider=opencode-go via=login`);
 
   const [opencodePid] = children(server.pid);
   const listening = execFileSync("lsof", ["-a", "-p", String(opencodePid), "-iTCP", "-sTCP:LISTEN", "-nP"]).toString();

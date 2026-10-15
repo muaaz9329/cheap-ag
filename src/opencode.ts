@@ -60,17 +60,15 @@ export default tool({
 });
 `;
 
-/** Cheap Agent's own OpenCode config dir. Keys stay in env; config only names the variable. */
+/** Cheap Agent's own OpenCode config dir: worker agent, finish tool, model pins and options. */
 function writeConfigDir(dir: string, provider: Provider) {
   mkdirSync(join(dir, "agents"), { recursive: true });
   mkdirSync(join(dir, "tools"), { recursive: true });
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
   const model = IMPLEMENT_MODEL[provider.provider];
-  const providerConfig = {
-    ...(provider.via !== "login" && { options: { apiKey: `{env:${provider.via}}` } }),
-    ...(model.options && { models: { [model.id]: { options: model.options } } }),
-  };
+  // the key itself stays in OpenCode's own credential store; the config never names one
+  const providerConfig = model.options ? { models: { [model.id]: { options: model.options } } } : {};
   const config = {
     $schema: "https://opencode.ai/config.json",
     // OpenCode otherwise sends title generation to its own default small model, i.e. another provider the user never chose
@@ -85,9 +83,12 @@ export type Opencode = { url: string; password: string; version: string };
 let started: Promise<Opencode> | undefined;
 let child: ChildProcess | undefined;
 
-/** Starts (once) or attaches to the OpenCode server and checks it runs the pinned version. */
-export function ensureOpencode(provider: Provider): Promise<Opencode> {
-  started ??= boot(provider).catch((err) => {
+/**
+ * Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
+ * Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
+ */
+export function ensureOpencode(provider: Provider, projectDir = process.cwd()): Promise<Opencode> {
+  started ??= boot(provider, projectDir).catch((err) => {
     stopOpencode();
     started = undefined;
     throw err;
@@ -95,8 +96,8 @@ export function ensureOpencode(provider: Provider): Promise<Opencode> {
   return started;
 }
 
-async function boot(provider: Provider): Promise<Opencode> {
-  const configDir = join(process.cwd(), ".cheapag", "opencode");
+async function boot(provider: Provider, projectDir: string): Promise<Opencode> {
+  const configDir = join(projectDir, ".cheapag", "opencode");
   writeConfigDir(configDir, provider);
   const external = process.env.CHEAPAG_OPENCODE_URL;
   const password = (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
@@ -158,6 +159,7 @@ function spawnServer(configDir: string, password: string) {
 }
 
 export function stopOpencode() {
+  started = undefined; // the next ensureOpencode boots afresh
   if (child?.pid && child.exitCode === null) {
     try {
       process.kill(-child.pid, "SIGTERM");

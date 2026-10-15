@@ -2,40 +2,45 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type Provider = {
-  provider: "opencode-go" | "openrouter" | "deepseek";
-  via: "login" | "OPENCODE_GO_API_KEY" | "OPENROUTER_API_KEY" | "DEEPSEEK_API_KEY";
-};
+/** Credentials come only from saved logins in OpenCode's store, written by `cheapag login` (ADR-0004). */
 
-export const NO_PROVIDER =
-  "FAIL reason: no worker provider; log in to OpenCode Go with `npx opencode-ai auth login` (pick OpenCode Go), " +
-  "or set OPENCODE_GO_API_KEY, OPENROUTER_API_KEY or DEEPSEEK_API_KEY in the environment Claude Code starts cheapag with";
+/** Providers in detection order; `label` is what `cheapag login` shows. */
+export const PROVIDERS = [
+  { id: "opencode-go", label: "OpenCode Go" },
+  { id: "openrouter", label: "OpenRouter" },
+  { id: "deepseek", label: "DeepSeek" },
+] as const;
+
+export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" };
+
+export const LOGIN_COMMAND = "npx cheap-agent login";
+export const NO_PROVIDER = `FAIL reason: no worker provider; run ${LOGIN_COMMAND}`;
 
 /** OpenCode keeps logins for every installed copy in one shared file. */
 function authFile() {
   return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "auth.json");
 }
 
-/** Order: existing OpenCode Go login, OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY. Never reads key values. */
-export function detectProvider(): Provider | undefined {
+/** Supported providers with a saved login, in detection order. Only the provider ids are used; keys are never kept or passed on. */
+export function savedProviders(): Provider["provider"][] {
+  let saved: Record<string, unknown>;
   try {
-    if (existsSync(authFile()) && "opencode-go" in JSON.parse(readFileSync(authFile(), "utf8"))) {
-      return { provider: "opencode-go", via: "login" };
-    }
+    saved = existsSync(authFile()) ? JSON.parse(readFileSync(authFile(), "utf8")) : {};
   } catch {
-    // an unreadable auth file is the same as no login
+    return []; // an unreadable auth file is the same as no login
   }
-  if (process.env.OPENCODE_GO_API_KEY) return { provider: "opencode-go", via: "OPENCODE_GO_API_KEY" };
-  if (process.env.OPENROUTER_API_KEY) return { provider: "openrouter", via: "OPENROUTER_API_KEY" };
-  if (process.env.DEEPSEEK_API_KEY) return { provider: "deepseek", via: "DEEPSEEK_API_KEY" };
+  return PROVIDERS.map((p) => p.id).filter((id) => id in saved);
 }
 
-/** Strips known key values and key-shaped strings from anything that leaves the process. */
+export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
+
+/** The provider the worker uses: the first saved login. */
+export function detectProvider(): Provider | undefined {
+  const [first] = savedProviders();
+  return first && { provider: first, via: "login" };
+}
+
+/** Strips key-shaped strings (OpenRouter's sk-or-v1-…, DeepSeek/OpenAI-style sk-…) from anything that leaves the process. */
 export function redact(text: string) {
-  for (const name of ["OPENCODE_GO_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"]) {
-    const value = process.env[name];
-    if (value) text = text.split(value).join("[redacted]");
-  }
-  // covers OpenRouter's sk-or-v1-… as well as DeepSeek/OpenAI-style sk-…
   return text.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]");
 }

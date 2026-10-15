@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { startServer, tempRepo } from "./harness.js";
+import { startServer, tempRepo, type Logins } from "./harness.js";
 
 const PLAN = `# Hello feature
 Keep it tiny.
@@ -17,7 +17,7 @@ done-when: hello is exported
 const REPORT = { summary: "added hello constant and README note", risks: ["none known"], review: ["src/hello.ts:1-1", "../outside.ts:1-2"], missing: [] };
 
 /** A repo with the plan written (uncommitted), a fake worker scripted with `actions`, and a server on both. */
-async function scenario(actions: Action[] | null, plan = PLAN, keys: Record<string, string> = { OPENCODE_GO_API_KEY: "go-key" }) {
+async function scenario(actions: Action[] | null, plan = PLAN, logins: Logins = { "opencode-go": "go-key" }) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   mkdirSync(join(repo.dir, ".plan"));
@@ -25,7 +25,7 @@ async function scenario(actions: Action[] | null, plan = PLAN, keys: Record<stri
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   if (actions) fake.script(...actions);
-  const server = await startServer({ cwd: repo.dir, env: { ...keys, CHEAPAG_OPENCODE_URL: fake.url } });
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins });
   onTestFinished(server.close);
   const progress: string[] = [];
   const delegate = async (steps: string, note?: string, planPath = ".plan/hello.md") => {
@@ -188,11 +188,11 @@ test("a worker stream that ends before idle is a FAIL with a full record, not an
   expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"))).toMatchObject({ status: "FAIL", landed: false, worktree: `.cheapag/worktrees/${job}` });
 });
 
-test("with only OPENROUTER_API_KEY, the job runs on an openrouter model and lands OK", async () => {
+test("with only an OpenRouter login, the job runs on an openrouter model and lands OK", async () => {
   const { repo, fake, delegate } = await scenario(
     [{ edit: "src/hello.ts", content: "export const hello = 1;\n" }, { tool: "write" }, { usage: { cost: 0.0004 } }, { finish: REPORT }],
     PLAN,
-    { OPENROUTER_API_KEY: "sk-or-v1-testkeytestkeytestkey" },
+    { openrouter: "sk-or-v1-testkeytestkeytestkey" },
   );
   const text = await delegate("1");
   expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 files=1 \+1\/-0 tests=none turns=2 cost=\$0\.000\n/);

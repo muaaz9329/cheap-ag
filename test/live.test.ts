@@ -8,8 +8,9 @@ import { callText, startServer, tempRepo } from "./harness.js";
 
 /**
  * Opt-in live checks against the real bundled OpenCode and a real model. They cost money:
- *   CHEAPAG_LIVE=1 OPENROUTER_API_KEY=… npm test -- test/live.test.ts
- * Each prints what it observed and spent, for the ticket ledger.
+ *   CHEAPAG_LIVE=1 OPENROUTER_API_KEY=… npx vitest run test/live.test.ts --silent=false
+ * The product never reads that variable (ADR-0004): the harness seeds it as a saved login in the hermetic store.
+ * Each test prints what it observed and spent, for the ticket ledger.
  */
 const key = process.env.OPENROUTER_API_KEY;
 const live = test.skipIf(!process.env.CHEAPAG_LIVE || !key);
@@ -26,7 +27,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
     "done-when: hello.txt exists with that line",
     "",
   ].join("\n"));
-  const server = await startServer({ cwd: repo.dir, env: { OPENROUTER_API_KEY: key! } });
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! } });
   onTestFinished(server.close);
 
   const progress: string[] = [];
@@ -55,14 +56,15 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
 live("abort on a real session: observed event sequence", async () => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
-  const server = await startServer({ cwd: repo.dir, env: { OPENROUTER_API_KEY: key! } });
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! } });
   onTestFinished(server.close);
-  expect(await callText(server.client, "ping")).toMatch(/^OK .* provider=openrouter via=OPENROUTER_API_KEY$/);
+  expect(await callText(server.client, "ping")).toMatch(/^OK .* provider=openrouter via=login$/);
 
   // a second, test-owned OpenCode on the config ping just generated, so the test holds the password
   const opencode = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     detached: true,
-    env: { ...process.env, OPENROUTER_API_KEY: key, OPENCODE_SERVER_PASSWORD: "live", OPENCODE_CONFIG_DIR: join(repo.dir, ".cheapag", "opencode"), OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
+    // same hermetic credential store the server uses
+    env: { ...process.env, XDG_DATA_HOME: join(server.home, "data"), OPENCODE_SERVER_PASSWORD: "live", OPENCODE_CONFIG_DIR: join(repo.dir, ".cheapag", "opencode"), OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
   });
   onTestFinished(() => {
     try {

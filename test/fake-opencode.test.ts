@@ -41,7 +41,7 @@ test("health reports the pinned version by default, or a configured one", async 
 test("Cheap Agent boots against the fake through CHEAPAG_OPENCODE_URL", async () => {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
-  const server = await startServer({ env: { OPENCODE_GO_API_KEY: "k", CHEAPAG_OPENCODE_URL: fake.url } });
+  const server = await startServer({ env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" } });
   onTestFinished(server.close);
   expect(await callText(server.client, "ping")).toMatch(/^OK cheapag \S+ opencode=1\.19\.0 /);
   expect(fake.recorded.requests.map((r) => r.path)).toEqual(["/global/health"]);
