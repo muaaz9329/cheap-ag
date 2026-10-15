@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
@@ -13,7 +13,7 @@ const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
  * OpenCode's own hidden prompt, live-checks against the fake, then answers the registration question.
  * `claude` is a stub on PATH (`registered` decides what `claude mcp get cheapag` says), or absent.
  */
-async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins }) {
+async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[] }) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   fake.script(...(opts.check ?? [{ usage: { cost: 0.0001 } }]));
@@ -35,7 +35,7 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
   const spec = {
     cmd: [process.execPath, serverEntry, "login"],
     cwd: home,
-    env: { ...env, CHEAPAG_OPENCODE_URL: fake.url, PATH: [bin, dirname(process.execPath), "/usr/bin", "/bin"].join(":"), TERM: "xterm" },
+    env: { ...env, CHEAPAG_OPENCODE_URL: fake.url, PATH: [bin, ...(opts.path ?? []), dirname(process.execPath), "/usr/bin", "/bin"].join(":"), TERM: "xterm" },
     steps,
     timeout: 60,
   };
@@ -63,6 +63,15 @@ test("login saves the key through the bundled OpenCode, live-checks it, and regi
   // the live check ran the implement model on the provider just saved
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" });
   expect(r.output).not.toContain(KEY.slice(10)); // OpenCode masks the input; nothing echoes it
+}, 90_000);
+
+test("registration uses a node symlink on PATH (e.g. Homebrew's bin) over the versioned binary path", async () => {
+  const { home } = hermeticHome();
+  const stable = join(home, "stable");
+  mkdirSync(stable);
+  symlinkSync(process.execPath, join(stable, "node"));
+  const r = await runLogin({ claude: "unregistered", register: "y", path: [stable] });
+  expect(r.claudeCalls).toEqual(["mcp get cheapag", `mcp add -s user cheapag -- ${join(stable, "node")} ${serverEntry}`]);
 }, 90_000);
 
 test("answering no prints the exact command instead of running it", async () => {

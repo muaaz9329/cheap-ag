@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
@@ -122,7 +122,18 @@ async function register(out: (line?: string) => void) {
 /** How Claude Code should start this installed package: npx when run from npx's cache, else this exact file. */
 function serverCommand() {
   const entry = realpathSync(process.argv[1]);
-  return entry.includes("/_npx/") ? ["npx", "-y", `cheap-agent@${version}`] : [process.execPath, entry];
+  return entry.includes("/_npx/") ? ["npx", "-y", `cheap-agent@${version}`] : [stableNode(), entry];
+}
+
+/** A `node` on PATH resolving to this same binary (e.g. Homebrew's bin symlink) survives upgrades; the versioned execPath doesn't. */
+function stableNode() {
+  const self = realpathSync(process.execPath);
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    try {
+      if (dir && realpathSync(join(dir, "node")) === self) return join(dir, "node");
+    } catch {} // no node in this PATH entry
+  }
+  return process.execPath;
 }
 
 const quote = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);

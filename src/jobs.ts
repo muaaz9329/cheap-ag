@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
 import type { Opencode } from "./opencode.js";
-import { parsePlan, selectSteps, type Plan, type PlanStep } from "./plan.js";
+import { parsePlan, PLAN_FORMAT, selectSteps, type Plan, type PlanStep } from "./plan.js";
 import { failBlock, renderJob, type JobRecord } from "./report.js";
 import { IMPLEMENT_MODEL, modelName } from "./routing.js";
 import { finishReport, runSession, type FinishReport, type SessionResult } from "./worker.js";
@@ -25,6 +25,10 @@ export async function delegate(
   let steps: PlanStep[];
   try {
     plan = parsePlan(readFileSync(planFile, "utf8"));
+  } catch (err) {
+    return failBlock(`plan ${input.plan}: ${(err as Error).message}\n${PLAN_FORMAT}`);
+  }
+  try {
     steps = selectSteps(plan, input.steps);
   } catch (err) {
     return failBlock(`plan ${input.plan}: ${(err as Error).message}`);

@@ -5,6 +5,10 @@ export type Plan = { title: string; context: string; steps: PlanStep[] };
 
 const REQUIRED = ["files", "done-when"];
 
+/** The plan grammar in one line, for Claude: the delegate tool description and every plan-error FAIL carry it. */
+export const PLAN_FORMAT =
+  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:"), each key at the start of its line, not a bullet.';
+
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
   const lines = source.split(/\r?\n/);

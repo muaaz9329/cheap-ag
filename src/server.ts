@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
 import { delegate } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
+import { PLAN_FORMAT } from "./plan.js";
 import { failBlock } from "./report.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -35,7 +36,7 @@ export async function serve() {
     "delegate",
     {
       description:
-        "Hand plan steps to the cheap worker. It edits an isolated worktree; an OK result is already landed (uncommitted) in your working tree.",
+        `Hand plan steps to the cheap worker. It edits an isolated worktree; an OK result is already landed (uncommitted) in your working tree. ${PLAN_FORMAT}`,
       inputSchema: {
         plan: z.string().describe("Plan file path, relative to the repository root"),
         steps: z.string().describe('The plan step id to run, e.g. "3"'),
