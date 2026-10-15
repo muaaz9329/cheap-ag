@@ -29,10 +29,42 @@ function opencodeBinary() {
   throw new Error(`no OpenCode binary installed for ${base}; reinstall cheap-agent`);
 }
 
+const WORKER_PROMPT = `---
+description: Cheap Agent worker. Implements plan steps in an isolated git worktree.
+mode: primary
+---
+You implement the plan step marked >>> CURRENT STEP(S), in this repository, by editing files yourself.
+- Stay within the step's files: and make precise edits. If you must edit anything else, report it under risks.
+- Never install packages or run install commands. If the step needs one, ask with the question tool.
+- Never touch .git, .env* files or lockfiles. Never commit.
+- If the step is ambiguous or conflicts with its dont:, ask with the question tool instead of guessing.
+- When done, call the finish tool exactly once, last: summary (at most 160 chars), risks, review (path:start-end, max 5), missing.
+- If you cannot call finish, end your last message with a fenced cheapag-result block holding the same fields.
+`;
+
+// Runs inside OpenCode (Bun). Its input is captured from the event stream, so it only has to exist and validate.
+const FINISH_TOOL = `import { tool } from "@opencode-ai/plugin";
+
+export default tool({
+  description: "Report the step as done. Call exactly once, as your last action.",
+  args: {
+    summary: tool.schema.string().max(160).describe("What you did, at most 160 characters"),
+    risks: tool.schema.array(tool.schema.string()).describe("Assumptions, unverified conditions, edits outside files:"),
+    review: tool.schema.array(tool.schema.string()).max(5).describe("Ranges worth a human look, as path:start-end"),
+    missing: tool.schema.array(tool.schema.string()).describe("Anything the step asked for that you did not do"),
+  },
+  async execute() {
+    return "Reported. Stop now.";
+  },
+});
+`;
+
 /** Cheap Agent's own OpenCode config dir. Keys stay in env; config only names the variable. */
 function writeConfigDir(dir: string, provider: Provider) {
   mkdirSync(join(dir, "agents"), { recursive: true });
   mkdirSync(join(dir, "tools"), { recursive: true });
+  writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
+  writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
   const providerConfig =
     provider.via === "login" ? {} : { [provider.provider]: { options: { apiKey: `{env:${provider.via}}` } } };
   writeFileSync(join(dir, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json", provider: providerConfig }, null, 2) + "\n");
