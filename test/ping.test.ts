@@ -14,10 +14,11 @@ test("server identifies itself as cheapag", () => {
   expect(server.client.getServerVersion()).toMatchObject({ name: "cheapag", version });
 });
 
-test("ping returns a one-line status block beginning OK with the server version", async () => {
-  const text = await callText(server.client, "ping");
-  expect(text).toBe(`OK cheapag ${version}`);
-  expect(text.split("\n")).toHaveLength(1);
+test("ping with no worker credentials fails with setup instructions", async () => {
+  expect(await callText(server.client, "ping")).toBe(
+    "FAIL reason: no worker provider; log in to OpenCode Go with `npx opencode-ai auth login` (pick OpenCode Go), " +
+      "or set OPENCODE_GO_API_KEY or DEEPSEEK_API_KEY in the environment Claude Code starts cheapag with",
+  );
 });
 
 test("every tool honours the MCP contract: name <= 64 chars, flat object input schema", async () => {

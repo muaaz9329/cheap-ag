@@ -7,18 +7,39 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const serverEntry = join(import.meta.dirname, "..", "dist", "index.js");
 
-/** Spawns the built server over stdio, exactly as Claude Code would, and connects a client. */
+/**
+ * Spawns the built server over stdio, exactly as Claude Code would, and connects a client.
+ * Hermetic: a fresh XDG home (no OpenCode login), no worker keys or URL from the developer's shell.
+ * `cwd` defaults to that home, so `.cheapag/` never lands in this repo.
+ */
 export async function startServer(opts: { cwd?: string; env?: Record<string, string> } = {}) {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "cheapag-home-")));
+  const { OPENCODE_GO_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverEntry],
-    cwd: opts.cwd,
-    env: { ...(process.env as Record<string, string>), ...opts.env },
+    cwd: opts.cwd ?? home,
+    env: {
+      ...inherited,
+      XDG_DATA_HOME: join(home, "data"),
+      XDG_CONFIG_HOME: join(home, "config"),
+      XDG_CACHE_HOME: join(home, "cache"),
+      XDG_STATE_HOME: join(home, "state"),
+      ...opts.env,
+    },
     stderr: "inherit",
   });
   const client = new Client({ name: "cheapag-test", version: "0.0.0" });
   await client.connect(transport);
-  return { client, close: () => client.close() };
+  return {
+    client,
+    home,
+    pid: transport.pid!,
+    close: async () => {
+      await client.close();
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
 }
 
 /** Calls a tool and returns its text content joined, which is what Claude reads. */
