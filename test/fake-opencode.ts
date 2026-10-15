@@ -25,7 +25,7 @@ export type Action =
   | { edit: string; content: string }
   /** One tool turn: a completed (or errored) tool part. */
   | { tool: string; input?: Record<string, unknown>; output?: string; error?: string }
-  /** Adds to the run's assistant message cost and tokens; emits `message.updated` with the running totals. */
+  /** Adds to the current model step's assistant message; emits `message.updated` with that message's running totals. */
   | { usage: Usage }
   /** Assistant text, e.g. a fenced `cheapag-result` block. */
   | { text: string }
@@ -37,12 +37,15 @@ export type Action =
   | { retry: { reason: "account_rate_limit" | "free_tier_limit"; message: string } }
   /** Calls the custom `finish` tool with this report (as a completed `finish` tool part). */
   | { finish: FinishReport }
-  /** Fails the run with `session.error`, then goes idle. */
-  | { error: { name: string; message: string } };
+  /** Fails the run, then goes idle: via `session.error`, or (`on: "message"`) only on the assistant message, as abort does live. */
+  | { error: { name: string; message: string }; on?: "session" | "message" };
 
 type Session = { id: string; directory: string; agent?: string; model?: SessionModel; permission?: unknown; status: Status };
 type Status = { type: "idle" } | { type: "busy" } | { type: "retry"; attempt: number; message: string; next: number; action: unknown };
-/** OpenCode's processing of one prompt (not a Cheap Agent job): one assistant message that every part hangs off. */
+/**
+ * OpenCode's processing of one prompt (not a Cheap Agent job). Observed live on 1.19.0: each model step is its own
+ * assistant message, opened at cost 0, re-emitted with running totals, and a tool call ends the step.
+ */
 type Run = { session: Session; model: Model; userMessageID: string; assistantID: string; usage: Required<Usage>; resume?: () => void; aborted: boolean };
 
 // stands in for whatever model the real server would pick from its config
@@ -96,6 +99,13 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
     };
   }
 
+  /** A tool call ends the model step: the next actions belong to a fresh assistant message. */
+  function nextStep(run: Run) {
+    run.assistantID = id("msg");
+    run.usage = { cost: 0, input: 0, output: 0, reasoning: 0 };
+    emit(run.session.directory, "message.updated", { sessionID: run.session.id, info: assistantMessage(run) });
+  }
+
   function toolPart(run: Run, tool: string, input: Record<string, unknown>, output?: string, error?: string) {
     const time = { start: Date.now(), end: Date.now() };
     const state = error === undefined
@@ -137,6 +147,7 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
         emit(dir, "file.edited", { file });
       } else if ("tool" in action) {
         part(toolPart(run, action.tool, action.input ?? {}, action.output, action.error));
+        nextStep(run);
       } else if ("usage" in action) {
         for (const key of ["cost", "input", "output", "reasoning"] as const) run.usage[key] += action.usage[key] ?? 0;
         emit(dir, "message.updated", { sessionID: session.id, info: assistantMessage(run) });
@@ -156,8 +167,11 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
         await new Promise<void>((resolve) => (run.resume = resolve)); // only an abort ends this
       } else if ("finish" in action) {
         part(toolPart(run, "finish", action.finish, "Reported. Stop now."));
+        nextStep(run);
       } else if ("error" in action) {
-        emit(dir, "session.error", { sessionID: session.id, error: { name: action.error.name, data: { message: action.error.message } } });
+        const error = { name: action.error.name, data: { message: action.error.message } };
+        if (action.on === "message") emit(dir, "message.updated", { sessionID: session.id, info: { ...assistantMessage(run), error } });
+        else emit(dir, "session.error", { sessionID: session.id, error });
         break;
       }
     }
@@ -237,8 +251,10 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
       const run = runs.get(m[1]);
       if (run) {
         stop(run);
-        // shortcut: abort shape inferred from the SDK types (MessageAbortedError), not observed on a real 1.19 server
-        emit(run.session.directory, "session.error", { sessionID: m[1], error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } } });
+        // observed live on 1.19.0: abort emits no session.error; the open assistant message is updated, then the session idles
+        emit(run.session.directory, "message.updated", {
+          sessionID: m[1], info: { ...assistantMessage(run), error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } } },
+        });
         setStatus(run.session, { type: "idle" });
       }
       return json(res, true);

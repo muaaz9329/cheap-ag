@@ -17,7 +17,7 @@ test("server identifies itself as cheapag", () => {
 test("ping with no worker credentials fails with setup instructions", async () => {
   expect(await callText(server.client, "ping")).toBe(
     "FAIL reason: no worker provider; log in to OpenCode Go with `npx opencode-ai auth login` (pick OpenCode Go), " +
-      "or set OPENCODE_GO_API_KEY or DEEPSEEK_API_KEY in the environment Claude Code starts cheapag with",
+      "or set OPENCODE_GO_API_KEY, OPENROUTER_API_KEY or DEEPSEEK_API_KEY in the environment Claude Code starts cheapag with",
   );
 });
 

@@ -68,13 +68,20 @@ test("a scripted run edits files and emits turns, usage, text and finish in orde
 
   expect(readFileSync(`${repo.dir}/src/hello.ts`, "utf8")).toBe("export const hello = 1;\n");
   const seen = events.map((e) => e.type === "message.part.updated" ? `part:${(e.properties.part as any).tool ?? e.properties.part.type}` : e.type);
-  expect(seen).toEqual(["server.connected", "session.status", "message.updated", "file.edited", "part:edit", "message.updated", "message.updated", "part:text", "part:finish", "session.status", "session.idle"]);
-  // one assistant message per run: updates carry running totals, and every part hangs off it
+  expect(seen).toEqual([
+    "server.connected", "session.status",
+    "message.updated", "file.edited", "part:edit", // step 1, ended by its tool call
+    "message.updated", "message.updated", "message.updated", "part:text", "part:finish", // step 2: opened, two usage updates
+    "message.updated", "session.status", "session.idle", // step 3 opened after finish, then idle
+  ]);
+  // as observed live: one assistant message per model step, re-emitted with running totals
   const updates = events.filter((e) => e.type === "message.updated").map((e) => (e.properties as any).info);
-  expect(new Set(updates.map((m) => m.id)).size).toBe(1);
-  expect(updates.at(-1)).toMatchObject({ role: "assistant", cost: 0.003, tokens: { input: 1400, output: 70 }, modelID: "deepseek-v4.1-flash" });
+  const ids = [...new Set(updates.map((m) => m.id))];
+  expect(ids).toHaveLength(3);
+  expect(updates.filter((m) => m.id === ids[1]).map((m) => m.cost)).toEqual([0, 0.002, 0.003]);
+  expect(updates.filter((m) => m.id === ids[1]).at(-1)).toMatchObject({ role: "assistant", tokens: { input: 1400, output: 70 }, modelID: "deepseek-v4.1-flash" });
   const parts = events.filter((e) => e.type === "message.part.updated").map((e) => (e.properties as any).part);
-  expect(parts.every((p) => p.messageID === updates[0].id)).toBe(true);
+  expect(parts.map((p) => p.messageID)).toEqual([ids[0], ids[1], ids[1]]);
   expect(parts.find((p) => p.tool === "finish").state).toMatchObject({ status: "completed", input: report });
 });
 
@@ -135,7 +142,7 @@ test("a permission request pauses until replied; the reject and its message are 
 });
 
 test("a Go-limit retry hangs until abort; a continued prompt with a model override is recorded and used", async () => {
-  const { fake, repo, client, session, until, prompt } = await setup();
+  const { fake, repo, client, session, events, until, prompt } = await setup();
   fake.script({ retry: { reason: "account_rate_limit", message: "Resets in 2h 14m" } });
   fake.script({ usage: { cost: 0.001 } });
   await prompt();
@@ -147,7 +154,10 @@ test("a Go-limit retry hangs until abort; a continued prompt with a model overri
   expect((await client.session.status({ directory: repo.dir })).data?.[session.id]).toMatchObject({ type: "retry" });
 
   await client.session.abort({ sessionID: session.id });
-  expect((await until("session.error")).properties.error.name).toBe("MessageAbortedError");
+  // as observed live: no session.error, the open message carries the abort
+  const aborted = await until("message.updated");
+  expect(aborted.properties.info.error.name).toBe("MessageAbortedError");
+  expect(events.some((e) => e.type === "session.error")).toBe(false);
   await until("session.idle");
   expect(fake.recorded.aborts).toEqual([session.id]);
 
@@ -166,5 +176,10 @@ test("a scripted error ends the run with session.error, then idle; unscripted pr
   expect((await until("session.error")).properties.error).toEqual({ name: "APIError", data: { message: "upstream 500" } });
   await until("session.idle");
   await prompt();
+  await until("session.idle");
+  fake.script({ error: { name: "APIError", message: "402 credits" }, on: "message" });
+  await prompt();
+  await until("message.updated"); // the step opening
+  expect((await until("message.updated")).properties.info.error).toEqual({ name: "APIError", data: { message: "402 credits" } });
   await until("session.idle");
 });

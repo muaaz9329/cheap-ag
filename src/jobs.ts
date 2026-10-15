@@ -5,16 +5,11 @@ import { redact, type Provider } from "./credentials.js";
 import type { Opencode } from "./opencode.js";
 import { parsePlan, selectSteps, type Plan, type PlanStep } from "./plan.js";
 import { failBlock, renderJob, type JobRecord } from "./report.js";
+import { IMPLEMENT_MODEL, modelName } from "./routing.js";
 import { finishReport, runSession, type FinishReport, type SessionResult } from "./worker.js";
 import { createWorktree, land, projectRoot, removeWorktree, worktreeDiff, type Changed } from "./workspace.js";
 
 /** Jobs: runs one group of plan steps as one job, start to landing. */
-
-// shortcut: one fixed implement model per provider; routing, fallbacks and the allowlist arrive with tickets 09/12
-const IMPLEMENT_MODEL = {
-  "opencode-go": { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
-  deepseek: { providerID: "deepseek", id: "deepseek-flash" },
-};
 
 export type DelegateInput = { plan: string; steps: string; note?: string };
 
@@ -40,9 +35,9 @@ export async function delegate(
   const write = (name: string, value: unknown) => writeFileSync(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
   const stepIds = steps.map((s) => s.id).join(",");
   const model = IMPLEMENT_MODEL[ctx.provider.provider];
-  const modelName = `${model.providerID}/${model.id}`;
+  const requested = modelName(model);
   const startedAt = new Date();
-  write("request.json", { ...input, steps: stepIds, model: modelName, startedAt });
+  write("request.json", { ...input, steps: stepIds, model: requested, startedAt });
 
   let worktree: { head: string; path: string } | undefined;
   let session: SessionResult | undefined;
@@ -55,7 +50,7 @@ export async function delegate(
     session = await runSession({
       opencode,
       directory: worktree.path,
-      model,
+      model: { providerID: model.providerID, id: model.id }, // options live in the generated config, not the session
       prompt: contextPack(plan, steps, input.note),
       onEvent: (event, turns) => {
         appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
@@ -86,7 +81,7 @@ export async function delegate(
   const record = {
     format: "cheapag/1" as const, job, batch: null, kind: "implement", status: (landed ? "OK" : "FAIL") as JobRecord["status"], landed,
     plan: input.plan, steps: stepIds, provider: ctx.provider.provider,
-    models: { requested: modelName, final: modelName, fallbacks: [], escalated: false },
+    models: { requested, final: requested, fallbacks: [], escalated: false },
     baseline: { head: worktree?.head ?? null, stash: null },
     worktree: !landed && worktree ? relative(root, worktree.path) : null,
     sessionID: session?.sessionID ?? null,

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { arch, platform } from "node:os";
 import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
+import { IMPLEMENT_MODEL, modelName } from "./routing.js";
 
 const require = createRequire(import.meta.url);
 export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: string }).version;
@@ -14,7 +15,7 @@ export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: s
  * its postinstall (which fills it in) does not run under pnpm or npm's install-scripts gate.
  * shortcut: takes the first installed variant, not the avx2/musl-aware pick postinstall makes; mirror it if x64 baseline users report crashes.
  */
-function opencodeBinary() {
+export function opencodeBinary() {
   const os = platform() === "win32" ? "windows" : platform();
   const base = `opencode-${os}-${arch()}`;
   const fromPkg = createRequire(require.resolve("opencode-ai/package.json"));
@@ -65,9 +66,18 @@ function writeConfigDir(dir: string, provider: Provider) {
   mkdirSync(join(dir, "tools"), { recursive: true });
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
-  const providerConfig =
-    provider.via === "login" ? {} : { [provider.provider]: { options: { apiKey: `{env:${provider.via}}` } } };
-  writeFileSync(join(dir, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json", provider: providerConfig }, null, 2) + "\n");
+  const model = IMPLEMENT_MODEL[provider.provider];
+  const providerConfig = {
+    ...(provider.via !== "login" && { options: { apiKey: `{env:${provider.via}}` } }),
+    ...(model.options && { models: { [model.id]: { options: model.options } } }),
+  };
+  const config = {
+    $schema: "https://opencode.ai/config.json",
+    // OpenCode otherwise sends title generation to its own default small model, i.e. another provider the user never chose
+    small_model: modelName(model),
+    provider: Object.keys(providerConfig).length ? { [provider.provider]: providerConfig } : {},
+  };
+  writeFileSync(join(dir, "opencode.json"), JSON.stringify(config, null, 2) + "\n");
 }
 
 export type Opencode = { url: string; password: string; version: string };

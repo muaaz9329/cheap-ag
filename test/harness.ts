@@ -14,7 +14,7 @@ const serverEntry = join(import.meta.dirname, "..", "dist", "index.js");
  */
 export async function startServer(opts: { cwd?: string; env?: Record<string, string> } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "cheapag-home-")));
-  const { OPENCODE_GO_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
+  const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverEntry],

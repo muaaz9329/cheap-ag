@@ -17,7 +17,7 @@ done-when: hello is exported
 const REPORT = { summary: "added hello constant and README note", risks: ["none known"], review: ["src/hello.ts:1-1", "../outside.ts:1-2"], missing: [] };
 
 /** A repo with the plan written (uncommitted), a fake worker scripted with `actions`, and a server on both. */
-async function scenario(actions: Action[] | null, plan = PLAN) {
+async function scenario(actions: Action[] | null, plan = PLAN, keys: Record<string, string> = { OPENCODE_GO_API_KEY: "go-key" }) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   mkdirSync(join(repo.dir, ".plan"));
@@ -25,7 +25,7 @@ async function scenario(actions: Action[] | null, plan = PLAN) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   if (actions) fake.script(...actions);
-  const server = await startServer({ cwd: repo.dir, env: { OPENCODE_GO_API_KEY: "go-key", CHEAPAG_OPENCODE_URL: fake.url } });
+  const server = await startServer({ cwd: repo.dir, env: { ...keys, CHEAPAG_OPENCODE_URL: fake.url } });
   onTestFinished(server.close);
   const progress: string[] = [];
   const delegate = async (steps: string, note?: string, planPath = ".plan/hello.md") => {
@@ -146,6 +146,14 @@ test("a worker error is a FAIL: nothing lands and the worktree is kept", async (
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job, "src/hello.ts"))).toBe(true);
 });
 
+test("an error reported only on the assistant message (no session.error) is still a FAIL", async () => {
+  const { repo, delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { error: { name: "APIError", message: "Insufficient credits" }, on: "message" }]);
+  const text = await delegate("1");
+  expect(text).toMatch(/^FAIL /);
+  expect(text).toContain("\nreason: worker error: Insufficient credits\n");
+  expect(existsSync(join(repo.dir, "src/hello.ts"))).toBe(false);
+});
+
 test("a landing conflict leaves the working tree untouched and keeps the worktree", async () => {
   const { repo, delegate } = await scenario([{ edit: "README.md", content: "# worker's title\n" }, { tool: "edit" }, { finish: REPORT }]);
   writeFileSync(join(repo.dir, "README.md"), "# user's title\n"); // uncommitted edit to the same line
@@ -178,4 +186,19 @@ test("a worker stream that ends before idle is a FAIL with a full record, not an
   expect(text).toContain("\nreason: worker error: worker event stream ended before the session went idle\n");
   expect(existsSync(join(repo.dir, "src/hello.ts"))).toBe(false);
   expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"))).toMatchObject({ status: "FAIL", landed: false, worktree: `.cheapag/worktrees/${job}` });
+});
+
+test("with only OPENROUTER_API_KEY, the job runs on an openrouter model and lands OK", async () => {
+  const { repo, fake, delegate } = await scenario(
+    [{ edit: "src/hello.ts", content: "export const hello = 1;\n" }, { tool: "write" }, { usage: { cost: 0.0004 } }, { finish: REPORT }],
+    PLAN,
+    { OPENROUTER_API_KEY: "sk-or-v1-testkeytestkeytestkey" },
+  );
+  const text = await delegate("1");
+  expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 files=1 \+1\/-0 tests=none turns=2 cost=\$0\.000\n/);
+  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" });
+  expect(readFileSync(join(repo.dir, "src/hello.ts"), "utf8")).toBe("export const hello = 1;\n");
+  expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", jobOf(text), "result.json"), "utf8"))).toMatchObject({
+    provider: "openrouter", models: { requested: "openrouter/deepseek/deepseek-v4.1-flash" },
+  });
 });

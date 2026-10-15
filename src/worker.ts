@@ -56,14 +56,15 @@ export async function runSession(opts: {
         }
         if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
       } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
-        const { id, cost, tokens } = event.properties.info;
+        const { id, cost, tokens, error: failed } = event.properties.info;
+        // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
+        if (failed) error ??= describe(failed);
         messages.set(id, {
           inputTokens: tokens.input, outputTokens: tokens.output, reasoningTokens: tokens.reasoning,
           cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
         });
       } else if (event.type === "session.error") {
-        const err = event.properties.error as { name?: string; data?: { message?: string } } | undefined;
-        error = err?.data?.message ?? err?.name ?? "unknown worker error";
+        error = describe(event.properties.error);
       }
       opts.onEvent(event, calls.size);
       if (event.type === "session.idle") {
@@ -88,6 +89,11 @@ export async function runSession(opts: {
 function asReport(input: Record<string, unknown>): FinishReport {
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : []);
   return { summary: String(input.summary ?? ""), risks: list(input.risks), review: list(input.review), missing: list(input.missing) };
+}
+
+function describe(err: unknown) {
+  const e = err as { name?: string; data?: { message?: string } } | undefined;
+  return e?.data?.message ?? e?.name ?? "unknown worker error";
 }
 
 const NO_REPORT: FinishReport = { summary: "(worker gave no summary)", risks: ["worker did not report; review diff"], review: [], missing: [] };

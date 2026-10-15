@@ -44,7 +44,8 @@ test("opencode-ai and its SDK are pinned to the same exact version", () => {
 
 test.each([
   ["OpenCode login wins over both keys", true, { OPENCODE_GO_API_KEY: "go-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=opencode-go via=login"],
-  ["OPENCODE_GO_API_KEY wins over DEEPSEEK_API_KEY", false, { OPENCODE_GO_API_KEY: "go-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=opencode-go via=OPENCODE_GO_API_KEY"],
+  ["OPENCODE_GO_API_KEY wins over the other keys", false, { OPENCODE_GO_API_KEY: "go-key-value", OPENROUTER_API_KEY: "or-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=opencode-go via=OPENCODE_GO_API_KEY"],
+  ["OPENROUTER_API_KEY wins over DEEPSEEK_API_KEY", false, { OPENROUTER_API_KEY: "or-key-value", DEEPSEEK_API_KEY: "ds-key-value" }, "provider=openrouter via=OPENROUTER_API_KEY"],
   ["DEEPSEEK_API_KEY alone", false, { DEEPSEEK_API_KEY: "ds-key-value" }, "provider=deepseek via=DEEPSEEK_API_KEY"],
 ] as const)("credentials: %s", async (_, login, keys, expected) => {
   const text = await pingWith({ ...keys, CHEAPAG_OPENCODE_URL: await fakeHealth(PIN) }, (home) => {
@@ -78,6 +79,26 @@ test("key values never reach tool output or the generated config", async () => {
   const config = readFileSync(join(configDir, "opencode.json"), "utf8");
   expect(config).not.toContain(key);
   expect(JSON.parse(config).provider).toEqual({ deepseek: { options: { apiKey: "{env:DEEPSEEK_API_KEY}" } } });
+});
+
+test("an OpenRouter key never reaches output or config; the config denies data collection and pins every model", async () => {
+  const key = "sk-or-v1-0123456789abcdef0123456789abcdef";
+  // a version check that echoes the key forces it into the error path
+  const server = await startServer({ env: { OPENROUTER_API_KEY: key, CHEAPAG_OPENCODE_URL: await fakeHealth(key) } });
+  onTestFinished(server.close);
+  const text = await callText(server.client, "ping");
+  expect(text).toBe("FAIL reason: opencode version [redacted], expected 1.19.0; reinstall cheap-agent");
+  const config = readFileSync(join(server.home, ".cheapag", "opencode", "opencode.json"), "utf8");
+  expect(config).not.toContain(key);
+  expect(JSON.parse(config)).toMatchObject({
+    small_model: "openrouter/deepseek/deepseek-v4.1-flash",
+    provider: {
+      openrouter: {
+        options: { apiKey: "{env:OPENROUTER_API_KEY}" },
+        models: { "deepseek/deepseek-v4.1-flash": { options: { provider: { data_collection: "deny" } } } },
+      },
+    },
+  });
 });
 
 test("boots the bundled OpenCode lazily on localhost, restarts it after a crash, and kills its process group on exit", async () => {
