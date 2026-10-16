@@ -39,27 +39,30 @@ test.each([
   oc.stderr.resume();
   const kill = () => {
     try {
-      process.kill(-oc.pid!);
-    } catch {
-      // gone
+        process.kill(-oc.pid!, "SIGKILL");
+      } catch {
+        // gone
+      }
+    };
+    process.once("exit", kill);
+    try {
+    const url = await new Promise<string>((resolve, reject) => {
+      oc.stdout.on("data", (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]));
+      oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
+    });
+    const client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
+    const { stream } = await client.event.subscribe({ directory: repo.dir });
+    await stream.next();
+    const session = (await client.session.create({ directory: repo.dir, model: { providerID: "openrouter", id: model.id } })).data!;
+    await client.session.promptAsync({ sessionID: session.id, directory: repo.dir, parts: [{ type: "text", text: "hi" }] });
+    for await (const raw of stream) {
+      const e = raw as Event;
+      if (e.type === "session.idle" && e.properties.sessionID === session.id) break;
     }
-  };
-  onTestFinished(kill);
-  process.once("exit", kill);
-  const url = await new Promise<string>((resolve, reject) => {
-    oc.stdout.on("data", (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]));
-    oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
-  });
-  const client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
-  const { stream } = await client.event.subscribe({ directory: repo.dir });
-  await stream.next();
-  const session = (await client.session.create({ directory: repo.dir, model: { providerID: "openrouter", id: model.id } })).data!;
-  await client.session.promptAsync({ sessionID: session.id, directory: repo.dir, parts: [{ type: "text", text: "hi" }] });
-  for await (const raw of stream) {
-    const e = raw as Event;
-    if (e.type === "session.idle" && e.properties.sessionID === session.id) break;
+    // every request (the title one included) carries the preference, exactly
+    expect(llm.requests.length).toBeGreaterThan(0);
+    for (const body of llm.requests) expect(body.provider).toEqual(expected);
+  } finally {
+    kill(); // in the body, not a hook: this server must never outlive the test
   }
-  // every request (the title one included) carries the preference, exactly
-  expect(llm.requests.length).toBeGreaterThan(0);
-  for (const body of llm.requests) expect(body.provider).toEqual(expected);
 }, 60_000);

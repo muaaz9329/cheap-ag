@@ -74,7 +74,7 @@ live("abort on a real session: observed event sequence", async () => {
   });
   onTestFinished(() => {
     try {
-      process.kill(-opencode.pid!);
+      process.kill(-opencode.pid!, "SIGKILL");
     } catch {
       // already gone
     }

@@ -111,7 +111,7 @@ export async function serve() {
     // recovery is housekeeping: a failure must not stop the server from starting
     process.stderr.write(`cheapag: job recovery failed: ${(err as Error).message}\n`);
   }
-  process.on("exit", stopOpencode);
+  process.on("exit", () => stopOpencode(true));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit());
   // Claude Code closing our stdin is the normal shutdown
   process.stdin.on("end", () => process.exit());

@@ -176,8 +176,19 @@ function spawnServer(configDir: string, password: string) {
   });
 }
 
-export function stopOpencode() {
+/**
+ * Stops the OpenCode server's whole process group. Seen on 1.19.0: a SIGTERM shortly after boot, while it is still
+ * busy, can be ignored for good, so a SIGKILL follows if it is still there after a grace period. On process exit
+ * (`exiting`) there is no later: it is killed outright (its SQLite WAL survives that).
+ */
+export function stopOpencode(exiting = false) {
   started = undefined; // the next ensureOpencode boots afresh
-  if (child?.exitCode === null) killProcessGroup(child.pid);
+  const proc = child;
   child = undefined;
+  if (proc?.exitCode !== null || !proc.pid) return;
+  if (exiting) return killProcessGroup(proc.pid, "SIGKILL");
+  killProcessGroup(proc.pid);
+  setTimeout(() => proc.exitCode === null && killProcessGroup(proc.pid, "SIGKILL"), STOP_GRACE_MS).unref();
 }
+
+const STOP_GRACE_MS = 3_000;

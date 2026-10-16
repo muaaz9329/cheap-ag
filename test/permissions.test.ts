@@ -42,7 +42,7 @@ beforeAll(async () => {
   oc.stderr.resume(); // never let a full pipe stall the server
   stop = () => {
     try {
-      process.kill(-oc.pid!);
+      process.kill(-oc.pid!, "SIGKILL");
     } catch {
       // gone
     }

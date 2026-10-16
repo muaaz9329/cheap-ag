@@ -30,7 +30,7 @@ export async function login(): Promise<number> {
     return 1;
   }
   // the live check's OpenCode runs in its own process group; take it down on Ctrl-C too
-  process.on("exit", stopOpencode);
+  process.on("exit", () => stopOpencode(true));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(130));
   out("Cheap Agent login");
   const current = detectProvider();
