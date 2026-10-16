@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { killProcessGroup, opencodePlatform } from "./platform.js";
-import { fullRoute, modelName, type Route } from "./routing.js";
+import { fullRoute, modelName, routeModels, type Route } from "./routing.js";
 
 const require = createRequire(import.meta.url);
 export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: string }).version;
@@ -93,7 +93,7 @@ export function writeConfigDir(dir: string, config: string) {
 /** The generated opencode.json for the route's models: their options (e.g. OpenRouter routing) and the small model. */
 function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
-  const models = Object.fromEntries([route.implement, route.escalation, route.research].filter((m) => m?.options).map((m) => [m!.id, { options: m!.options }]));
+  const models = Object.fromEntries(routeModels(route).filter((m) => m.options).map((m) => [m.id, { options: m.options }]));
   const providerConfig = Object.keys(models).length ? { models } : {};
   const config = {
     $schema: "https://opencode.ai/config.json",

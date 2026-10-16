@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
 import { failBlock, renderConsent } from "./report.js";
-import { fullRoute, modelName, type Route, type WorkerModel } from "./routing.js";
+import { loadConfig } from "./config.js";
+import { fullRoute, modelName, routeModels, type Route, type WorkerModel } from "./routing.js";
 
 /**
  * Consent: nothing leaves the repo until the developer opts in with `cheapag allow` (spec: Consent, A21).
@@ -59,31 +60,52 @@ function withZdr(m: WorkerModel): WorkerModel {
 /**
  * The repo's consent gate, for delegate and research. Call it before anything is created or booted:
  * - `block`: the CONSENT block (not approved for this provider) or a FAIL (approved, but no allowed model);
- * - `route`: the allowlisted models the job may use. A disallowed escalation or research model is dropped, not a failure.
+ * - `route`: the allowlisted models the job may use, every role and fallback filtered. A disallowed fallback or escalation
+ *   model is dropped, not a failure; with no implement model or fallback allowed, an allowed escalation model implements.
  */
 export function consentGate(root: string, provider: Provider["provider"]): { block: string } | { route: Route } {
   const consent = readConsent(root);
+  const full = fullRoute(provider, configuredModels(root));
   // consent names the provider it was given for: a new login elsewhere needs a new opt-in
-  if (!consent || consent.provider !== provider) return { block: consentBlock(root, provider) };
-  const full = fullRoute(provider);
+  if (!consent || consent.provider !== provider) return { block: consentBlock(root, provider, full) };
   const zdr = consent.mode === "zdr-only" && provider === "openrouter";
-  const pick = (m?: WorkerModel) => (m && allowed(provider, consent, m) ? (zdr ? withZdr(m) : m) : undefined);
-  // shortcut: the implement model falls back to the escalation model when only that is allowed; ticket 12 adds role fallbacks
-  const implement = pick(full.implement) ?? pick(full.escalation);
-  const escalation = pick(full.escalation);
+  const pick = (ms: (WorkerModel | undefined)[]) => ms.filter((m): m is WorkerModel => !!m && allowed(provider, consent, m)).map((m) => (zdr ? withZdr(m) : m));
+  const [implement, ...fallbacks] = pick([full.implement, ...full.fallbacks, full.escalation]);
   if (!implement) return { block: failBlock(`no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`) };
-  return { route: { implement, escalation: escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined, research: pick(full.research) } };
+  const [escalation] = pick([full.escalation]);
+  const others = (m: WorkerModel) => modelName(m) !== modelName(implement) && modelName(m) !== modelName(escalation ?? implement);
+  // research with nothing of its own allowed runs on the implement chain
+  const [research, ...researchFallbacks] = pick([full.research, ...full.researchFallbacks]);
+  return {
+    route: {
+      implement,
+      // the escalation model never doubles as a fallback; it keeps its own place (and cap check) in the job
+      fallbacks: fallbacks.filter(others),
+      escalation: escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined,
+      research: research ?? implement,
+      researchFallbacks: research ? researchFallbacks : fallbacks.filter(others),
+    },
+  };
+}
+
+/** The config's `models` (E4); a damaged config counts as none here, the job's own config load reports it. */
+function configuredModels(root: string) {
+  try {
+    return loadConfig(root).models;
+  } catch {
+    return undefined;
+  }
 }
 
 export const describe = (c: Consent) => (c.mode === "all" ? "all models" : c.mode === "zdr-only" ? "zero-retention only" : `models ${c.models!.join(", ")}`);
 
 /** Spec D5's CONSENT block: who would receive the code, their known retention, and how the user approves. */
-function consentBlock(root: string, provider: Provider["provider"]) {
-  const full = fullRoute(provider);
-  // every model that may receive code; deduped, as DeepSeek researches on its implement model
-  const models = [full.implement, full.escalation, full.research].filter((m, i, all): m is WorkerModel => !!m && all.findIndex((o) => o?.id === m.id) === i);
-  const ids = models.map((m) => m.id).join(", ");
-  // shortcut: lists the implement, escalation and research models only; ticket 12 adds "(+fallbacks …)"
+function consentBlock(root: string, provider: Provider["provider"], full: Route) {
+  const models = routeModels(full);
+  // D5: the role models, then the fallbacks
+  const main = routeModels({ ...full, fallbacks: [], researchFallbacks: [] }).map((m) => m.id);
+  const extra = models.map((m) => m.id).filter((id) => !main.includes(id));
+  const ids = main.join(", ") + (extra.length ? ` (+fallbacks ${extra.join(", ")})` : "");
   const retentionLine = provider === "openrouter"
     ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
     : models.map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`).join("; ");

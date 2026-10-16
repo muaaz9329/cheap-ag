@@ -7,7 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
 import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
-import { IMPLEMENT_MODEL, modelName } from "./routing.js";
+import { implementModel, modelName } from "./routing.js";
 import { runSession } from "./worker.js";
 
 /**
@@ -63,7 +63,7 @@ export async function login(): Promise<number> {
 
 /** One tiny real call to the implement model, through the bundled OpenCode, in a throwaway directory. */
 async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
-  const model = IMPLEMENT_MODEL[provider.provider];
+  const model = implementModel(provider.provider);
   const name = modelName(model);
   const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let timer: NodeJS.Timeout | undefined;

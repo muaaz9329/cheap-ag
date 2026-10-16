@@ -6,7 +6,8 @@ import { createServer, type IncomingMessage } from "node:http";
  * Lets tests check how OpenCode itself enforces Cheap Agent's permission ruleset, at no cost and with no network.
  */
 
-export type Reply = { tool: string; args: Record<string, unknown> } | { text: string };
+/** A model step: a tool call, plain text, or an HTTP error response (e.g. a 429 rate limit or a 402 out of credits). */
+export type Reply = { tool: string; args: Record<string, unknown> } | { text: string } | { status: number; body: unknown; headers?: Record<string, string> };
 
 export async function startFakeLlm() {
   const replies: Reply[] = [];
@@ -29,6 +30,10 @@ export async function startFakeLlm() {
     const id = `chatcmpl-${++seq}`;
     const chunk = (delta: unknown, finish: string | null = null, extra = {}) =>
       `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 0, model: body.model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`;
+    if ("status" in reply) {
+      res.writeHead(reply.status, { "content-type": "application/json", ...reply.headers }).end(JSON.stringify(reply.body));
+      return;
+    }
     res.writeHead(200, { "content-type": "text/event-stream" });
     if ("tool" in reply) {
       res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${seq}`, type: "function", function: { name: reply.tool, arguments: JSON.stringify(reply.args) } }] }));

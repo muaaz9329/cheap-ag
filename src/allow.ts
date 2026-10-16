@@ -1,7 +1,7 @@
 import { consentGate, describe, writeConsent, type Consent } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
 import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
-import { modelName } from "./routing.js";
+import { modelName, routeModels } from "./routing.js";
 import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]";
@@ -44,6 +44,6 @@ export function allow(args: string[]): number {
   // the same gate delegate uses, so what this prints is what jobs will run
   const gate = consentGate(root, provider.provider);
   if ("block" in gate) out(`! ${gate.block}`);
-  else out(`  models: ${[gate.route.implement, gate.route.escalation].filter((m) => m).map((m) => modelName(m!)).join(", ")}`);
+  else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
   return 0;
 }

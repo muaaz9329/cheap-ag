@@ -34,19 +34,26 @@ export type Action =
   | { question: string; options: string[]; header?: string }
   /** Requests a permission, then pauses until Cheap Agent replies. */
   | { permission: string; patterns?: string[] }
-  /** A retry status carrying a Go/free-tier limit; the run then hangs, as the real one does, until aborted. */
-  | { retry: { reason: "account_rate_limit" | "free_tier_limit"; message: string } }
+  /**
+   * A retry status, after which the run hangs until aborted, as the real one does while it waits out retry-after.
+   * With `reason`, a Go/free-tier limit (`action` set, as OpenCode 1.19 builds it); without, a plain rate limit such as
+   * OpenRouter's 429 (no `action`). `next` is when OpenCode would retry (default in an hour).
+   */
+  | { retry: { reason?: "account_rate_limit" | "free_tier_limit"; message: string; next?: number; recoverAfter?: number } }
   /** Calls the custom `finish` tool with this report (as a completed `finish` tool part). */
   | { finish: FinishReport }
   /** A long model step: pauses this many ms, or until the session is aborted. */
   | { wait: number }
   /** Runs a test callback at this point of the run, e.g. to change the main checkout while the job is in flight. */
   | { hook: () => void }
-  /** Fails the run, then goes idle: via `session.error`, or (`on: "message"`) only on the assistant message, as abort does live. */
-  | { error: { name: string; message: string }; on?: "session" | "message" };
+  /**
+   * Fails the run, then goes idle: via `session.error`, or (`on: "message"`) only on the assistant message, as abort does live.
+   * A `statusCode` makes it a provider APIError, e.g. OpenRouter's 402 for insufficient credits.
+   */
+  | { error: { name: string; message: string; statusCode?: number }; on?: "session" | "message" };
 
 type Session = { id: string; directory: string; agent?: string; model?: SessionModel; permission?: unknown; status: Status };
-type Status = { type: "idle" } | { type: "busy" } | { type: "retry"; attempt: number; message: string; next: number; action: unknown };
+type Status = { type: "idle" } | { type: "busy" } | { type: "retry"; attempt: number; message: string; next: number; action?: unknown };
 /**
  * OpenCode's processing of one prompt (not a Cheap Agent job). Observed live on 1.19.0: each model step is its own
  * assistant message, opened at cost 0, re-emitted with running totals, and a tool call ends the step.
@@ -173,16 +180,27 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
       } else if ("permission" in action) {
         await ask(run, "permission.asked", { permission: action.permission, patterns: action.patterns ?? ["*"], metadata: {}, always: [] });
       } else if ("retry" in action) {
+        const { reason, message, next, recoverAfter } = action.retry;
         setStatus(session, {
-          type: "retry", attempt: 1, message: action.retry.message, next: Date.now() + 3_600_000,
-          action: { reason: action.retry.reason, provider: run.model.providerID, title: "Go limit reached", message: action.retry.message, label: "Upgrade" },
+          type: "retry", attempt: 1, message, next: next ?? Date.now() + 3_600_000,
+          ...(reason && {
+            action: { reason, provider: run.model.providerID, title: reason === "account_rate_limit" ? "Go limit reached" : "Free limit reached", message, label: "open settings" },
+          }),
         });
-        await new Promise<void>((resolve) => (run.resume = resolve)); // only an abort ends this
+        if (recoverAfter !== undefined) {
+          // a transient retry that OpenCode's own backoff gets past: busy again, then the script continues
+          await new Promise((r) => setTimeout(r, recoverAfter));
+          if (run.aborted) return;
+          setStatus(session, { type: "busy" });
+        } else {
+          await new Promise<void>((resolve) => (run.resume = resolve)); // only an abort ends this
+        }
       } else if ("finish" in action) {
         part(toolPart(run, "finish", action.finish, "Reported. Stop now."));
         nextStep(run);
       } else if ("error" in action) {
-        const error = { name: action.error.name, data: { message: action.error.message } };
+        const { name, message, statusCode } = action.error;
+        const error = { name, data: { message, ...(statusCode && { statusCode, isRetryable: false }) } };
         if (action.on === "message") emit(dir, "message.updated", { sessionID: session.id, info: { ...assistantMessage(run), error } });
         else emit(dir, "session.error", { sessionID: session.id, error });
         break;

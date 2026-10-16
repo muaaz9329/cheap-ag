@@ -9,7 +9,7 @@ import { holdOpencode, type Opencode } from "./opencode.js";
 import { researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
-import { modelName, type Route, type WorkerModel } from "./routing.js";
+import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openSession, type Session } from "./worker.js";
 import { projectRoot } from "./workspace.js";
 
@@ -24,8 +24,6 @@ export const MAX_WORDS = 600;
 const DEFAULT_WORDS = 200;
 /** At most this many refs: the refs line must stay within the 200-char line rule. */
 const MAX_REFS = 5;
-// retry reasons that mean the model's Go (or free-tier) allowance is used up (spec: Go-limit detection)
-const LIMIT_REASONS = ["account_rate_limit", "free_tier_limit"];
 
 export type ResearchInput = { question: string; paths?: string; max_words?: number };
 type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence">;
@@ -57,10 +55,10 @@ export async function research(
   const release = holdOpencode();
   const { id, dir } = newResearch(root);
   const write = (name: string, value: unknown) => writeFileSync(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
-  // the research model, then its fallback, the implement model; each only if the repo's allowlist kept it
-  const chain = [gate.route.research, gate.route.implement].filter((m, i, all): m is WorkerModel => !!m && all.findIndex((o) => o && modelName(o) === modelName(m)) === i);
+  // the research model, then its fallbacks, each only if the repo's allowlist kept it (src/consent.ts)
+  const models = chain(gate.route.research ?? gate.route.implement, gate.route.researchFallbacks);
   const startedAt = new Date();
-  write("request.json", { ...input, scope, maxWords, models: chain.map(modelName), startedAt });
+  write("request.json", { ...input, scope, maxWords, models: [models.first, ...models.rest].map(modelName), startedAt });
 
   const prompt = [
     `Question: ${input.question}`,
@@ -71,56 +69,48 @@ export async function research(
   ].filter(Boolean).join("\n");
   const files = new Set<string>();
   const spent = { turns: 0, costUsd: 0 };
-  let final = chain[0];
   let text = "";
   let error: string | undefined;
-  // set from event callbacks: keep TS from narrowing them to undefined
+  let budget: string | undefined;
+  // set from event callbacks: keep TS from narrowing it to undefined
   let stopped = undefined as { status: "FAIL" | "BUDGET"; reason: string } | undefined;
-  let limited = undefined as string | undefined;
   try {
-    // a Go limit on one model aborts its session and asks the next in a fresh one; caps count across both
-    for (const model of chain) {
-      final = model;
-      limited = undefined;
-      const halt = new AbortController();
-      const stop = (why: NonNullable<typeof stopped>) => {
-        stopped ??= why;
-        halt.abort();
-      };
-      const timer = setTimeout(() => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }), Math.max(0, startedAt.getTime() + limits.max_minutes * 60_000 - Date.now()));
-      const session: Session = await openSession({
-        opencode, directory: root, model, agent: RESEARCH_AGENT, permission: researchRuleset(), signal: halt.signal,
-        onEvent: (event, turns) => {
-          appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
-          if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
-            const { tool, state } = event.properties.part;
-            if (state.status === "completed" && tool === "read") files.add(String(state.input.filePath));
-            if (state.status === "completed" || state.status === "error") {
-              ctx.progress(spent.turns + turns, `turn ${spent.turns + turns}: ${tool}`);
-              if (spent.turns + turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached` });
-            }
+    const halt = new AbortController();
+    const stop = (why: NonNullable<typeof stopped>) => {
+      stopped ??= why;
+      halt.abort();
+    };
+    const timer = setTimeout(() => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }), limits.max_minutes * 60_000);
+    const session: Session = await openSession({
+      opencode, directory: root, model: models.first, agent: RESEARCH_AGENT, permission: researchRuleset(), signal: halt.signal,
+      onEvent: (event, turns) => {
+        appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+        if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+          const { tool, state } = event.properties.part;
+          if (state.status === "completed" && tool === "read") files.add(String(state.input.filePath));
+          if (state.status === "completed" || state.status === "error") {
+            ctx.progress(turns, `turn ${turns}: ${tool}`);
+            if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached` });
           }
-          if (event.type === "message.updated" && spent.costUsd + session.totals().usage.costUsd >= limits.max_cost_usd) {
-            stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
-          }
-          if (event.type === "session.status" && event.properties.status.type === "retry") {
-            const { action } = event.properties.status;
-            if (action && LIMIT_REASONS.includes(action.reason)) {
-              limited = `${modelName(model)}: ${action.message}`;
-              halt.abort();
-            }
-          }
-        },
-      });
+        }
+        if (event.type === "message.updated" && session.totals().usage.costUsd >= limits.max_cost_usd) {
+          stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
+        }
+      },
+    });
+    try {
+      // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
+      ({ text, error, budget } = await runRouted(session, prompt, models, ctx.provider.provider));
+    } finally {
+      clearTimeout(timer);
+      const totals = session.totals();
+      spent.turns = totals.turns;
+      spent.costUsd = totals.usage.costUsd;
       try {
-        ({ text, error } = await session.run(prompt));
-      } finally {
-        clearTimeout(timer);
-        const totals = session.totals();
-        spent.turns += totals.turns;
-        spent.costUsd += totals.usage.costUsd;
+        recordSpend(totals.spend); // research draws on the same Go windows as jobs
+      } catch {
+        // the ledger only steers later escalations: never fail an answer over it
       }
-      if (!limited || stopped) break;
     }
   } catch (err) {
     error = (err as Error).message;
@@ -129,16 +119,17 @@ export async function research(
   }
 
   const answer: Answer = stopped ? { status: stopped.status, answer: "", refs: [] }
-    : limited ? { status: "BUDGET", answer: "", refs: [] }
+    : budget ? { status: "BUDGET", answer: "", refs: [] }
     : error ? { status: "FAIL", answer: "", refs: [] }
     : parseAnswer(text, root, scope, maxWords) ?? { status: "FAIL", answer: "", refs: [] };
   const reason = stopped?.reason
-    ?? (limited ? `usage limit reached on every allowed research model (${limited})` : undefined)
+    ?? budget
     ?? (error ? `worker error: ${error}` : answer.status === "FAIL" ? "the research worker gave no answer" : undefined);
+  const final = models.current;
   const record = {
     format: "cheapag/1" as const, job: id, kind: "research", provider: ctx.provider.provider, question: input.question, scope,
     ...answer, reason, filesRead: files.size, unlanded: unlandedJobs(root),
-    models: { requested: modelName(chain[0]), final: modelName(final) },
+    models: { requested: modelName(models.first), final: modelName(final) },
     usage: spent,
     timing: { startedAt, endedAt: new Date(), ms: Date.now() - startedAt.getTime() },
   };

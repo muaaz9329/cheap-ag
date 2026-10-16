@@ -197,7 +197,7 @@ test("key-shaped strings in the worker's code land intact; only the log copy is 
 });
 
 test("a worker stream that ends before idle is a FAIL with a full record, not an OK", async () => {
-  const { repo, fake, delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { retry: { reason: "account_rate_limit", message: "hangs" } }]);
+  const { repo, fake, delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { wait: 60_000 }]);
   const pending = delegate("1");
   await vi.waitFor(() => expect(fake.recorded.prompts).toHaveLength(1));
   await new Promise((r) => setTimeout(r, 50));

@@ -91,12 +91,11 @@ test("an OpenRouter key never reaches output or config; the config denies data c
     small_model: "openrouter/deepseek/deepseek-v4.1-flash",
     provider: {
       openrouter: {
-        // the implement, escalation and research models all deny data collection
-        models: {
-          "deepseek/deepseek-v4.1-flash": { options: { provider: { data_collection: "deny" } } },
-          "deepseek/deepseek-v4-pro": { options: { provider: { data_collection: "deny" } } },
-          "qwen/qwen3.8-flash": { options: { provider: { data_collection: "deny" } } },
-        },
+        // every role and fallback model denies data collection
+        models: Object.fromEntries(
+          ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-flash", "deepseek/deepseek-v4-pro", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"]
+            .map((id) => [id, { options: { provider: { data_collection: "deny" } } }]),
+        ),
       },
     },
   });

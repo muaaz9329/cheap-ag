@@ -1,7 +1,7 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import type { Opencode } from "./opencode.js";
 import { rejectionMessage, type Rule } from "./permissions.js";
-import type { WorkerModel } from "./routing.js";
+import { modelName, type Limit, type WorkerModel } from "./routing.js";
 
 /** Worker: one OpenCode session for one job, reduced to what the job layer needs. */
 
@@ -11,10 +11,10 @@ const ABORT_GRACE_MS = 10_000;
 
 export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[] };
 export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
-/** What one prompt of a session produced. */
-export type RunResult = { finish?: FinishReport; text: string; error?: string };
-/** Session totals so far: turns and usage accumulate across every prompt of the session. */
-export type SessionTotals = { sessionID: string; turns: number; usage: Usage; rejections: Rejection[] };
+/** What one prompt of a session produced; `limit` when it was aborted on a provider limit, `httpStatus` of a provider error. */
+export type RunResult = { finish?: FinishReport; text: string; error?: string; limit?: Limit; httpStatus?: number };
+/** Session totals so far: turns and usage accumulate across every prompt of the session; `spend` is cost per model name. */
+export type SessionTotals = { sessionID: string; turns: number; usage: Usage; rejections: Rejection[]; spend: Record<string, number> };
 /** A tool call the ruleset denied outright, or a permission request auto-rejected. */
 export type Rejection = { kind: "denied" | "asked"; permission: string; what: string };
 export type SessionResult = SessionTotals & RunResult;
@@ -52,7 +52,7 @@ export async function openSession(opts: {
   if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
   const sessionID = created.data.id;
   const calls = new Set<string>();
-  const messages = new Map<string, Usage>(); // assistant message id → its latest running totals
+  const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
 
   async function run(prompt: string, model?: WorkerModel): Promise<RunResult> {
@@ -73,6 +73,8 @@ export async function openSession(opts: {
       let idle = false;
       let finish: FinishReport | undefined;
       let error: string | undefined;
+      let httpStatus: number | undefined;
+      let limit: Limit | undefined;
 
       const prompted = await client.session.promptAsync({
         sessionID, directory, parts: [{ type: "text", text: prompt }],
@@ -100,10 +102,14 @@ export async function openSession(opts: {
           }
           if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
         } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
-          const { id, cost, tokens, error: failed } = event.properties.info;
+          const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
           // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
-          if (failed) error ??= describe(failed);
+          if (failed) {
+            error ??= describe(failed);
+            httpStatus ??= statusOf(failed);
+          }
           messages.set(id, {
+            model: `${providerID}/${modelID}`,
             inputTokens: tokens.input, outputTokens: tokens.output, reasoningTokens: tokens.reasoning,
             cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
           });
@@ -142,6 +148,13 @@ export async function openSession(opts: {
           continue;
         } else if (event.type === "session.error") {
           error = describe(event.properties.error);
+          httpStatus = statusOf(event.properties.error);
+        } else if (event.type === "session.status" && event.properties.status.type === "retry" && !limit && isLimit(event.properties.status, (model ?? opts.model).providerID)) {
+          // a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours. Stop now, so the
+          // job can fall back; this aborts the session directly, not through the job's stop signal (which means a cap)
+          const { action, message, next } = event.properties.status;
+          limit = { model: modelName(model ?? opts.model), reason: action?.reason, message: action?.message ?? message, next };
+          stop();
         }
         opts.onEvent(event, calls.size);
         if (event.type === "session.idle") {
@@ -153,7 +166,7 @@ export async function openSession(opts: {
       // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
       const last = [...texts.values()].at(-1)?.messageID;
       const text = [...texts.values()].filter((t) => t.messageID === last).map((t) => t.text).join("\n");
-      return { finish, text, error };
+      return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
     } finally {
       opts.signal?.removeEventListener("abort", stop);
       clearTimeout(backstop);
@@ -163,8 +176,12 @@ export async function openSession(opts: {
 
   function totals(): SessionTotals {
     const usage: Usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
-    for (const m of messages.values()) for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
-    return { sessionID, turns: calls.size, usage, rejections: [...rejections] };
+    const spend: Record<string, number> = {};
+    for (const m of messages.values()) {
+      for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
+      spend[m.model] = (spend[m.model] ?? 0) + m.costUsd;
+    }
+    return { sessionID, turns: calls.size, usage, rejections: [...rejections], spend };
   }
 
   return { sessionID, run, totals };
@@ -185,6 +202,14 @@ function asReport(input: Record<string, unknown>): FinishReport {
   return { summary: String(input.summary ?? ""), risks: list(input.risks), review: list(input.review), missing: list(input.missing) };
 }
 
+/**
+ * A retry that means a limit, not a blip: a Go account or free-tier limit, any OpenRouter retry (its 429s), or a retry
+ * scheduled more than a minute out. A transient 5xx retry on Go or DeepSeek is left to OpenCode's own quick retries.
+ */
+function isLimit(status: { action?: { reason?: string }; next: number }, providerID: string) {
+  return ["account_rate_limit", "free_tier_limit"].includes(status.action?.reason ?? "") || providerID === "openrouter" || status.next - Date.now() > 60_000;
+}
+
 /** The command or path a tool call targeted, for rejection records. */
 function describeCall(input: Record<string, unknown>) {
   return String(input.command ?? input.filePath ?? input.url ?? input.pattern ?? JSON.stringify(input)).slice(0, 200);
@@ -194,6 +219,9 @@ function describe(err: unknown) {
   const e = err as { name?: string; data?: { message?: string } } | undefined;
   return e?.data?.message ?? e?.name ?? "unknown worker error";
 }
+
+/** The HTTP status of a provider error (APIError), e.g. OpenRouter's 402 for insufficient credits. */
+const statusOf = (err: unknown) => (err as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
 
 const NO_REPORT: FinishReport = { summary: "(worker gave no summary)", risks: ["worker did not report; review diff"], review: [], missing: [] };
 

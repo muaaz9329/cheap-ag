@@ -8,7 +8,7 @@ import { failBlock, renderBatch, renderJob, type BatchRecord, type JobRecord } f
 import { loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
-import { modelName, type Route } from "./routing.js";
+import { chain, escalationSkip, modelName, recordSpend, runRouted, usedBalance, type Route } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Question, type Session } from "./worker.js";
 import { createWorktree, land, operationInProgress, projectRoot, removeWorktree, worktreeDiff, type Changed, type Worktree } from "./workspace.js";
@@ -107,6 +107,9 @@ function runGroup(g: GroupRun) {
   write("request.json", { ...input, steps: stepIds, batch: g.batch, model: requested, startedAt });
 
   const escalation = route.escalation;
+  // the implement model, then its allowed fallbacks: a provider limit moves the session on to the next one
+  const models = chain(model, route.fallbacks);
+  let billing: JobRecord["billing"];
   // whoever is waiting on this job right now: delegate first, then each reply
   let progress = g.progress;
   let settle!: (text: string) => void;
@@ -193,7 +196,11 @@ function runGroup(g: GroupRun) {
       plan: input.plan, steps: stepIds, provider: g.provider.provider,
       // the server process running the job: a restart finds RUNNING/BLOCKED records whose pid is gone
       pid: process.pid,
-      models: { requested, final: escalated ? modelName(escalation!) : requested, fallbacks: [], escalated },
+      models: {
+        requested, final: modelName(escalated ? escalation! : models.current), escalated,
+        fallbacks: models.used,
+      },
+      billing,
       baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null },
       worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
       sessionID: session?.sessionID ?? null,
@@ -268,7 +275,14 @@ function runGroup(g: GroupRun) {
         },
       });
       finalize("RUNNING"); // now with the worktree, so a restart can point at it
-      let result = await session.run(contextPack(plan, steps, input.note));
+      const provider = g.provider.provider;
+      // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET
+      const routed = async (text: string, on?: typeof escalation) => {
+        const r = await runRouted(session!, text, models, provider, on);
+        if (r.budget) stopped ??= { cap: "provider", reason: r.budget };
+        return r;
+      };
+      let result = await routed(contextPack(plan, steps, input.note));
       report = finishReport(result);
       if (!result.error && cmds.length) {
         failing = await verify();
@@ -276,21 +290,27 @@ function runGroup(g: GroupRun) {
         for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
           if (!failing) break;
           overTurns(); // a fix needs at least one more turn
-          if (halt.signal.aborted) break; // stopped (cap or cancel)
+          if (stopped as Stop | undefined) break; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
           const esc = attempt === "esc";
-          if (esc && !escalation) {
-            tried.push("esc: skipped, the escalation model is not allowed by this repo's consent");
+          const skip = esc && escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
+          if (skip) {
+            tried.push(skip);
             break;
           }
           if (esc) escalated = true;
           else selfFix++;
           const before = failing.tail;
-          result = await session.run(`Verification failed. Fix the cause, then call finish again.\n\n${before.join("\n")}`, esc ? escalation : undefined);
+          result = await routed(`Verification failed. Fix the cause, then call finish again.\n\n${before.join("\n")}`, esc ? escalation : undefined);
           checked = false;
           // an attempt that reports nothing keeps the last real report rather than a placeholder
           const fresh = result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
           if (fresh) report = fresh;
           const label = `${esc ? "esc" : attempt}: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
+          if (result.limit && esc) {
+            tried.push(`${label} → usage limit: ${result.limit.message.slice(0, 80)}`);
+            escalated = false; // it never ran: the job ends on the implement chain's model and result
+            break;
+          }
           if (result.error) {
             tried.push(`${label} → ${stopped ? `stopped: ${stopped.reason}` : "worker error"}`);
             break;
@@ -327,6 +347,15 @@ function runGroup(g: GroupRun) {
     clearTimeout(timer);
     running.delete(job);
     blocked.delete(job);
+    if (session) {
+      // Go windows are per account: the user-wide ledger decides later escalations and shows balance use
+      try {
+        recordSpend(session.totals().spend);
+        if (g.provider.provider === "opencode-go" && usedBalance(session.totals().spend)) billing = "zen";
+      } catch {
+        // the ledger only steers later escalations: a write error (full disk, permissions) must not change this job's result
+      }
+    }
     let status: JobRecord["status"] = !stopped && reason === undefined && !failing ? "OK" : "FAIL";
     if (stopped) {
       // the cap or cancel explains the stop, not the aborted prompt's error
@@ -438,8 +467,8 @@ async function runBatch(groups: Group[], shared: Shared): Promise<string> {
 }
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
-type Stop = { cap: "turns" | "minutes" | "cost" | "cancel"; reason: string };
-const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED" } as const;
+type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider"; reason: string };
+const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provider: "BUDGET" } as const;
 
 /** Jobs running in this server process, by id: how `jobs cancel` reaches them. `done` resolves to the final block. */
 const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string> }>();

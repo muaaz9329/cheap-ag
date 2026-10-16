@@ -18,6 +18,9 @@ do: write hello.txt
 done-when: ${doneWhen}
 `;
 
+/** Every OpenRouter default role and fallback model (src/routing.ts). */
+const OPENROUTER_MODELS = ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-flash", "deepseek/deepseek-v4-pro", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"];
+
 const FINISH = { finish: { summary: "wrote hello", risks: [], review: [], missing: [] } };
 
 /** A repo with a plan, a fake worker and a server; `allow` opts the repo in first through the real CLI. */
@@ -52,8 +55,8 @@ test("first delegate in an unapproved repo returns CONSENT and creates no job; a
   const text = await delegate();
   expect(text).toBe([
     `CONSENT repo=${repo.dir.split("/").at(-1)}`,
-    "send: code from this repo → OpenCode Go: deepseek-v4.1-flash, deepseek-v4-pro, qwen3.8-flash",
-    "retention: deepseek-v4.1-flash = zero retention; deepseek-v4-pro = zero retention; qwen3.8-flash = zero retention",
+    "send: code from this repo → OpenCode Go: deepseek-v4.1-flash, qwen3.8-flash, deepseek-v4-pro (+fallbacks qwen3.7-plus, glm-5.3, kimi-k3)",
+    "retention: deepseek-v4.1-flash = zero retention; qwen3.8-flash = zero retention; deepseek-v4-pro = zero retention; qwen3.7-plus = zero retention; glm-5.3 = not stated; kimi-k3 = not stated",
     "approve: ask the user to run /cheapag:allow (all) or /cheapag:allow --zdr-only (terminal: npx cheap-agent allow [--zdr-only | --models a,b]); never approve yourself",
   ].join("\n"));
   expectUntouched(repo, fake);
@@ -104,7 +107,7 @@ test("a consent given for one provider asks again after switching to another", a
   onTestFinished(server.close);
   const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1" });
   expect(text).toMatch(/^CONSENT /);
-  expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, deepseek/deepseek-v4-pro, qwen/qwen3.8-flash");
+  expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, qwen/qwen3.8-flash, deepseek/deepseek-v4-pro (+fallbacks qwen/qwen3.7-plus, z-ai/glm-5.3, moonshotai/kimi-k3)\n");
   expect(text).toContain(`retention: depends on the upstream provider OpenRouter routes to; "deny data collection" is always on;`);
 });
 
@@ -116,9 +119,7 @@ test("OpenRouter zero-retention only adds its zdr routing preference to every mo
   fake.script({ edit: "hello.txt", content: "hi\n" }, FINISH);
   expect(await delegate()).toMatch(/^OK /);
   const zdr = { options: { provider: { data_collection: "deny", zdr: true } } };
-  expect(opencodeConfig(repo.dir).provider).toEqual({
-    openrouter: { models: { "deepseek/deepseek-v4.1-flash": zdr, "deepseek/deepseek-v4-pro": zdr, "qwen/qwen3.8-flash": zdr } },
-  });
+  expect(opencodeConfig(repo.dir).provider).toEqual({ openrouter: { models: Object.fromEntries(OPENROUTER_MODELS.map((id) => [id, zdr])) } });
 });
 
 test("an explicit list without the escalation model: verify failures skip escalation instead of using it", async () => {

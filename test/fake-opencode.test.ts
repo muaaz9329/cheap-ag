@@ -169,6 +169,23 @@ test("a Go-limit retry hangs until abort; a continued prompt with a model overri
   expect(fake.recorded.prompts.map((p) => p.model)).toEqual([undefined, fallback]);
 });
 
+test("OpenRouter shapes: a 429 is a retry status with no action that hangs until abort; a 402 is an APIError with its status code", async () => {
+  const { fake, client, session, until, prompt } = await setup();
+  const next = Date.now() + 600_000;
+  fake.script({ retry: { message: "Rate limit exceeded: free-models-per-min", next } });
+  fake.script({ error: { name: "APIError", message: "Insufficient credits", statusCode: 402 } });
+  await prompt();
+  await until("session.status"); // busy
+  const limited = await until("session.status");
+  expect(limited.properties.status).toEqual({ type: "retry", attempt: 1, message: "Rate limit exceeded: free-models-per-min", next });
+  await client.session.abort({ sessionID: session.id });
+  await until("session.idle");
+
+  await prompt();
+  expect((await until("session.error")).properties.error).toEqual({ name: "APIError", data: { message: "Insufficient credits", statusCode: 402, isRetryable: false } });
+  await until("session.idle");
+});
+
 test("a scripted error ends the run with session.error, then idle; unscripted prompts just go idle", async () => {
   const { fake, until, prompt } = await setup();
   fake.script({ error: { name: "APIError", message: "upstream 500" } });

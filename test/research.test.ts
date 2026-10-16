@@ -34,7 +34,7 @@ test("an unapproved repo gets CONSENT, naming the research model, before anythin
   const { repo, fake, research } = await scenario({ allow: null });
   const text = await research({ question: "where is auth?" });
   expect(text).toMatch(/^CONSENT repo=/);
-  expect(text).toContain("send: code from this repo → OpenCode Go: deepseek-v4.1-flash, deepseek-v4-pro, qwen3.8-flash");
+  expect(text).toContain("send: code from this repo → OpenCode Go: deepseek-v4.1-flash, qwen3.8-flash, deepseek-v4-pro (+fallbacks qwen3.7-plus, glm-5.3, kimi-k3)");
   expect(existsSync(join(repo.dir, ".cheapag", "jobs"))).toBe(false);
   expect(fake.recorded.requests).toEqual([]);
 });
@@ -127,20 +127,22 @@ test("UNSURE: when the worker says so, and (low confidence) when it answers with
   expect(await research({ question: "q" })).toMatch(/\nreason: worker error: bad key\n/);
 });
 
-test("a Go limit on the research model falls back to DeepSeek Flash in a fresh session; limits on both → BUDGET", async () => {
+test("a Go limit on the research model falls back to DeepSeek Flash in the same session; limits on both → BUDGET", async () => {
   const { fake, research } = await scenario();
   fake.script({ usage: { cost: 0.001 } }, { retry: { reason: "account_rate_limit", message: "Resets in 2h" } });
   fake.script(block("status: answer\nconfidence: high\nanswer: ok"));
   const text = await research({ question: "q" });
   expect(text).toMatch(/^ANSWER r\w{4} files_read=0 turns=0 cost=\$0.001 model=opencode-go\/deepseek-v4.1-flash\nok\n/);
-  expect(fake.recorded.sessions.map((s) => s.model?.id)).toEqual(["qwen3.8-flash", "deepseek-v4.1-flash"]);
+  // the shared routing machinery: one session, the fallback named on the continued prompt (src/routing.ts)
+  expect(fake.recorded.sessions.map((s) => s.model?.id)).toEqual(["qwen3.8-flash"]);
+  expect(fake.recorded.prompts.map((p) => p.model?.modelID)).toEqual([undefined, "deepseek-v4.1-flash"]);
   expect(fake.recorded.aborts).toEqual([fake.recorded.sessions[0].id]);
 
   fake.script({ retry: { reason: "account_rate_limit", message: "Resets in 2h" } });
   fake.script({ retry: { reason: "free_tier_limit", message: "Resets in 5h" } });
-  expect(await research({ question: "q" })).toMatch(
-    /^BUDGET r\w{4} .* model=opencode-go\/deepseek-v4.1-flash\nreason: usage limit reached on every allowed research model \(opencode-go\/deepseek-v4.1-flash: Resets in 5h\)\n/,
-  );
+  const capped = await research({ question: "q" });
+  expect(capped).toMatch(/^BUDGET r\w{4} .* model=opencode-go\/deepseek-v4.1-flash\nreason: /);
+  expect(capped).toContain("qwen3.8-flash"); // the reason names every capped model (src/routing.ts exhausted())
 });
 
 test("the allowlist applies: without the research model, research runs on the allowed implement model", async () => {
