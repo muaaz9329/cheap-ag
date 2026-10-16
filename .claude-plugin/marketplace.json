@@ -6,7 +6,7 @@
     {
       "name": "cheapag",
       "source": "./plugin",
-      "description": "Cheap Agent's MCP server, plan-writing skill, and /cheapag:status, /cheapag:allow, /cheapag:clean."
+      "description": "Cheap Agent's MCP server, plan-writing skill, and /cheapag:status, /cheapag:allow, /cheapag:clean, and the opt-in edit guard (/cheapag:hook)."
     }
   ]
 }

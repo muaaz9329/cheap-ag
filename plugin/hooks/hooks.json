@@ -1,0 +1,17 @@
+{
+  "description": "Cheap Agent's edit guard: off until /cheapag:hook on; the shell test keeps it free (no npx) while off.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f \"$r/.cheapag/hook.json\" ] && npx -y cheap-agent@0.1.0 hook guard; exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

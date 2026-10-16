@@ -32,8 +32,8 @@ test("the MCP entry and every command run exactly this package version, so the p
   expect(new Set(pins)).toEqual(new Set([`cheap-agent@${version}`]));
 });
 
-test("skills: plan-writing for Claude; status, and user-only allow and clean wrapping the CLI", () => {
-  expect(readdirSync(join(plugin, "skills")).sort()).toEqual(["allow", "clean", "plan-writing", "status"]);
+test("skills: plan-writing for Claude; status, and user-only allow, clean and hook wrapping the CLI", () => {
+  expect(readdirSync(join(plugin, "skills")).sort()).toEqual(["allow", "clean", "hook", "plan-writing", "status"]);
   const plan = skill("plan-writing");
   expect(plan.front["disable-model-invocation"]).toBeUndefined(); // Claude loads it when planning
   expect(plan.front.description).toMatch(/plan/i);
@@ -44,12 +44,20 @@ test("skills: plan-writing for Claude; status, and user-only allow and clean wra
   expect(status.front["disable-model-invocation"]).toBeUndefined();
   expect(status.body).toContain(`!\`${pin} status\``);
   expect(status.front["allowed-tools"]).toBe(`Bash(${pin} status)`);
-  // Claude must never approve consent or delete worktrees itself: only the developer can invoke these
-  for (const [name, cmd] of [["allow", "allow"], ["clean", "clean"]]) {
+  // Claude must never approve consent, delete worktrees or switch off its own edit guard: only the developer can invoke these
+  for (const [name, cmd] of [["allow", "allow"], ["clean", "clean"], ["hook", "hook"]]) {
     const s = skill(name);
     expect(s.front["disable-model-invocation"]).toBe("true");
     expect(s.body).toContain(`!\`${pin} ${cmd} $ARGUMENTS\``);
     expect(s.front["allowed-tools"]).toBe(`Bash(${pin} ${cmd}) Bash(${pin} ${cmd} *)`);
     expect(s.front["argument-hint"]).toBeTruthy();
   }
+});
+
+test("the edit guard hook: PreToolUse on Edit/Write/MultiEdit, a shell test that skips npx while off, never a failing exit", () => {
+  const hooks = json(join(plugin, "hooks", "hooks.json"));
+  expect(Object.keys(hooks.hooks)).toEqual(["PreToolUse"]);
+  expect(hooks.hooks.PreToolUse).toEqual([{ matcher: "Edit|Write|MultiEdit", hooks: [{ type: "command", command: expect.any(String), timeout: expect.any(Number) }] }]);
+  const { command } = hooks.hooks.PreToolUse[0].hooks[0];
+  expect(command).toBe(`r=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f "$r/.cheapag/hook.json" ] && npx -y cheap-agent@${version} hook guard; exit 0`);
 });
