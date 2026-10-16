@@ -104,6 +104,28 @@ test("a job folder without a readable record yet (being created, or mid-rewrite)
   expect(exists("worktrees/jgone") || exists("jobs/jgone")).toBe(false);
 });
 
+test("a batch record goes with its last job folder; one that never got a job goes by age", () => {
+  const { repo, job, clean, exists } = repoWithState();
+  const batches = join(repo.dir, ".cheapag", "batches");
+  mkdirSync(batches, { recursive: true });
+  job("jold2", "OK", 40);
+  job("jkeep", "OK", 1);
+  const batch = (id: string, jobs: string[], ageDays = 0) => {
+    writeFileSync(join(batches, `${id}.json`), JSON.stringify({ batch: id, jobs }));
+    const at = new Date(Date.now() - ageDays * DAY);
+    utimesSync(join(batches, `${id}.json`), at, at);
+  };
+  batch("bgone", ["jold2"]); // its only job is removed in this same run
+  batch("bkeep", ["jold2", "jkeep"]); // still has a job folder
+  batch("bnew0", [], 0); // just started, no job yet
+  batch("bdead", [], 40); // a crashed start, long ago
+  const out = clean();
+  expect(out).toContain("  removed batch bgone: its jobs are gone\n");
+  expect(out).toContain("  removed batch bdead: 40d old\n");
+  expect(exists("batches/bgone.json") || exists("batches/bdead.json")).toBe(false);
+  expect(exists("batches/bkeep.json") && exists("batches/bnew0.json")).toBe(true);
+});
+
 test("retention is configurable in cheapag.json, and a bad value is an error", () => {
   const { repo, job, clean, failed, exists } = repoWithState();
   job("jnew1", "FAIL", 2, { worktree: true });

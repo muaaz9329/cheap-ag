@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
-import type { Opencode } from "./opencode.js";
-import { parsePlan, PLAN_FORMAT, selectSteps, type Plan, type PlanStep } from "./plan.js";
-import { failBlock, renderJob, type JobRecord } from "./report.js";
+import { holdOpencode, type Opencode } from "./opencode.js";
+import { needsOf, overlap, parsePlan, PLAN_FORMAT, selectGroups, type Group, type Plan, type PlanStep } from "./plan.js";
+import { failBlock, renderBatch, renderJob, type BatchRecord, type JobRecord } from "./report.js";
 import { loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
@@ -14,7 +14,7 @@ import { finishReport, openSession, type FinishReport, type Question, type Sessi
 import { createWorktree, land, operationInProgress, projectRoot, removeWorktree, worktreeDiff, type Changed, type Worktree } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
 
-/** Jobs: runs one group of plan steps as one job, start to landing, under per-job caps; lists, shows and cancels jobs. */
+/** Jobs: runs each group of plan steps as one job, start to landing, under per-job caps (several groups make a batch); lists, shows and cancels jobs. */
 
 /**
  * The worker session's ruleset for this job. The step's own done-when checks are allowed exactly as written, so the
@@ -43,14 +43,14 @@ export async function delegate(
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
   if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
   let plan: Plan;
-  let steps: PlanStep[];
+  let groups: Group[];
   try {
     plan = parsePlan(readFileSync(planFile, "utf8"));
   } catch (err) {
     return failBlock(`plan ${input.plan}: ${(err as Error).message}\n${PLAN_FORMAT}`);
   }
   try {
-    steps = selectSteps(plan, input.steps);
+    groups = selectGroups(plan, input.steps);
   } catch (err) {
     return failBlock(`plan ${input.plan}: ${(err as Error).message}`);
   }
@@ -61,22 +61,54 @@ export async function delegate(
   } catch (err) {
     return failBlock((err as Error).message);
   }
-  const cmds = verifyCommands(steps.map((s) => s.fields["done-when"]), config.test_cmd);
   const busy = operationInProgress(root);
   if (busy) return failBlock(`${busy} in the working tree; finish or abort it, then delegate again`);
 
+  // one boot with one route for every group: a config change would restart OpenCode under the batch's running jobs
   const opencode = await ctx.opencode(route);
+  const release = holdOpencode();
+  const shared = { root, input, plan, config, route, opencode, provider: ctx.provider, progress: ctx.progress };
+  if (groups.length === 1) {
+    const one = runGroup({ ...shared, group: groups[0], batch: null, questions: true });
+    void one.done.finally(release);
+    return one.outcome;
+  }
+  return runBatch(groups, shared).finally(release);
+}
+
+type Shared = { root: string; input: DelegateInput; plan: Plan; config: Config; route: Route; opencode: Opencode; provider: Provider; progress: Progress };
+
+/** One group, one job: what `runGroup` needs beyond what the whole delegation shares. */
+type GroupRun = Shared & {
+  group: Group;
+  batch: string | null;
+  /** Whether a worker question makes the job BLOCKED; without it, questions are rejected and the worker carries on. */
+  questions: boolean;
+  /** Why the group must not start (a dependency did not land OK): the job is recorded as FAIL with this reason. */
+  notStarted?: string;
+  /** Awaited once the job is ready to land, before taking the lock: a batch lands its groups in step order. */
+  beforeLand?: () => Promise<unknown>;
+};
+
+/**
+ * Runs one group as one job, start to landing (spec: Job lifecycle). `outcome` is the first block a caller sees (BLOCKED,
+ * or final); `done` resolves to the final block; `record()` is the job record as it stands.
+ */
+function runGroup(g: GroupRun) {
+  const { root, input, plan, config, route, opencode } = g;
+  const steps = g.group.steps;
+  const cmds = verifyCommands(steps.map((s) => s.fields["done-when"]), config.test_cmd);
   const { job, dir } = newJob(root);
-  const write = (name: string, value: unknown) => writeFileSync(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
-  const stepIds = steps.map((s) => s.id).join(",");
+  const write = (name: string, value: unknown) => writeWhole(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
+  const stepIds = g.group.label;
   const model = route.implement;
   const requested = modelName(model);
   const startedAt = new Date();
-  write("request.json", { ...input, steps: stepIds, model: requested, startedAt });
+  write("request.json", { ...input, steps: stepIds, batch: g.batch, model: requested, startedAt });
 
   const escalation = route.escalation;
   // whoever is waiting on this job right now: delegate first, then each reply
-  let progress = ctx.progress;
+  let progress = g.progress;
   let settle!: (text: string) => void;
   const nextOutcome = () => new Promise<string>((resolve) => (settle = resolve));
   const outcome = nextOutcome();
@@ -127,7 +159,8 @@ export async function delegate(
   };
   startClock();
   let finished!: (text: string) => void;
-  running.set(job, { stop, done: new Promise((resolve) => (finished = resolve)) });
+  const done = new Promise<string>((resolve) => (finished = resolve));
+  running.set(job, { stop, done });
 
   /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
   const verify = async () => {
@@ -140,19 +173,24 @@ export async function delegate(
     return run && { run, tail: errorTail(run, worktree!.path) };
   };
 
+  let last!: JobRecord;
   /** Builds the job record as it stands, writes it and returns its block. */
   const finalize = (status: JobRecord["status"]) => {
     const landed = status === "OK";
     // a BLOCKED worker has not finished: no report, no verify yet (the renderer omits what is absent)
     const waiting = status === "BLOCKED";
+    const silent = waiting || g.notStarted !== undefined; // likewise a group that never started
     const rejections = session?.totals().rejections ?? [];
-    const risks = rejections.length > MAX_QUIET_REJECTIONS
-      // first, so the 5-risk cap never cuts it
-      ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`, ...report.risks]
-      : report.risks;
+    // server risks go first, so the 5-risk cap never cuts them
+    const unasked = rejections.filter((r) => r.permission === "question").map((r) => `the worker had a question it could not ask (parallel groups cannot block yet): ${r.what}`);
+    const risks = [
+      ...unasked,
+      ...(rejections.length > MAX_QUIET_REJECTIONS ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`] : []),
+      ...report.risks,
+    ];
     const record = {
-      format: "cheapag/1" as const, job, batch: null, kind: "implement", status, landed,
-      plan: input.plan, steps: stepIds, provider: ctx.provider.provider,
+      format: "cheapag/1" as const, job, batch: g.batch, kind: "implement", status, landed,
+      plan: input.plan, steps: stepIds, provider: g.provider.provider,
       // the server process running the job: a restart finds RUNNING/BLOCKED records whose pid is gone
       pid: process.pid,
       models: { requested, final: escalated ? modelName(escalation!) : requested, fallbacks: [], escalated },
@@ -160,10 +198,10 @@ export async function delegate(
       worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
       sessionID: session?.sessionID ?? null,
       // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
-      tests: waiting ? undefined : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
+      tests: silent ? undefined : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
       error: failing?.tail,
       tried,
-      summary: waiting ? "" : report.summary, changed, risks: waiting ? [] : risks,
+      summary: silent ? "" : report.summary, changed, risks: silent ? [] : risks,
       // a landed job's files are in the working tree; an unlanded one's only in its worktree
       review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
       // a worker stopped at the turn cap rarely says what it left undone
@@ -173,6 +211,7 @@ export async function delegate(
       usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
       timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime() },
     };
+    last = record;
     const text = renderJob(record);
     write("result.json", { ...record, blockTokensApprox: Math.ceil(text.length / 4) });
     write("result.txt", text + "\n");
@@ -203,13 +242,15 @@ export async function delegate(
   // the job outlives this call when it blocks: it settles each outcome in turn (BLOCKED, then whatever follows a reply)
   void (async () => {
     try {
+      if (g.notStarted) throw new Error(g.notStarted);
       worktree = createWorktree(root, job, config.link_dirs);
       session = await openSession({
         opencode,
         directory: worktree.path,
         model,
         permission: rulesetFor(worktree, cmds, config),
-        onQuestion,
+        // shortcut: in a batch, questions are rejected until ticket 15 adds the early return; BLOCKED there would hang the call
+        onQuestion: g.questions ? onQuestion : undefined,
         signal: halt.signal,
         onEvent: (event, turns) => {
           appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
@@ -269,11 +310,16 @@ export async function delegate(
       } else if (result.error) {
         reason = `worker error: ${result.error}`;
       } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
-        landing = true; // from here on, caps and cancel no longer apply
-        clearTimeout(timer);
-        const conflict = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
-        if (conflict) reason = `landing conflict, working tree untouched: ${conflict.split("\n")[0]}`;
-        else removeWorktree(root, worktree);
+        // waiting for earlier groups to land is still cancellable, and the clock still runs
+        const halted = new Promise<void>((resolve) => (halt.signal.aborted ? resolve() : halt.signal.addEventListener("abort", () => resolve(), { once: true })));
+        await Promise.race([g.beforeLand?.(), halted]);
+        if (!stopped) {
+          landing = true; // from here on, caps and cancel no longer apply
+          clearTimeout(timer);
+          const conflict = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
+          if (conflict) reason = `landing conflict, working tree untouched: ${conflict.split("\n")[0]}`;
+          else removeWorktree(root, worktree);
+        }
       }
     } catch (err) {
       reason = (err as Error).message;
@@ -305,7 +351,90 @@ export async function delegate(
     finished(text);
     settle(text);
   });
-  return outcome;
+  return { job, outcome, done, record: () => last };
+}
+
+/**
+ * Several groups (spec: Plan format contract, D6): each runs as its own job, up to `max_parallel` at once. A group whose
+ * `files:` overlap an earlier group's starts after that one settles (with a note); a group with `needs:` starts after its
+ * dependencies land OK, or is recorded FAIL without starting. Groups land in step order. Resolves when every group settled.
+ */
+async function runBatch(groups: Group[], shared: Shared): Promise<string> {
+  const { root, config } = shared;
+  const dir = join(root, ".cheapag", "batches");
+  mkdirSync(dir, { recursive: true });
+  let batch: string;
+  do batch = newId("b");
+  while (existsSync(join(dir, `${batch}.json`)));
+  const startedAt = new Date();
+  const notes: string[] = [];
+  const after = groups.map((g, i) => groups.slice(0, i).flatMap((earlier, j) => {
+    const path = overlap(earlier, g);
+    if (!path) return [];
+    notes.push(`steps ${earlier.label},${g.label} serialized (${path})`);
+    return [j];
+  }));
+  // shortcut: a need outside this delegation is not checked (it may have landed in an earlier call); check job records if plans rely on it
+  const needs = groups.map((g) => needsOf(g).flatMap((id) => {
+    const j = groups.findIndex((o) => o.steps.some((s) => s.id === id));
+    return j < 0 ? [] : [{ id, j }];
+  }));
+  const ids: string[] = []; // by group, as each starts
+  const finals: (JobRecord | undefined)[] = [];
+  // integration stays pending until the integration check exists (ticket 17)
+  const record = (): BatchRecord => ({ format: "cheapag/1", batch, groups: groups.map((g) => g.label), notes, integration: "pending", jobs: ids.filter(Boolean) });
+  const write = () => {
+    const ended = finals.filter((r) => r !== undefined);
+    const landed = ended.filter((r) => r.landed).map((r) => r.job); // in landing order: groups land in step order
+    const { plan, steps } = shared.input;
+    const endedAt = ended.length === groups.length ? new Date() : null;
+    writeWhole(join(dir, `${batch}.json`), redact(JSON.stringify({ ...record(), plan, steps, landed, startedAt, endedAt }, null, 2) + "\n"));
+  };
+  write();
+
+  // worker slots: held while a worker runs, released before waiting to land, so a later group can never starve an earlier one
+  let free = config.limits.max_parallel;
+  const queue: (() => void)[] = [];
+  const acquire = () => (free > 0 ? (free--, Promise.resolve()) : new Promise<void>((resolve) => queue.push(resolve)));
+  const release = () => {
+    const next = queue.shift();
+    if (next) next();
+    else free++;
+  };
+
+  // overlap and needs only ever point at earlier groups (selectGroups rejects a need on a later one), so nothing waits in a cycle
+  const settled: Promise<JobRecord>[] = [];
+  // a group lands only after every earlier group has settled: a cancelled group settles early, its successors must not
+  const turns: Promise<unknown>[] = [];
+  groups.forEach((group, i) => {
+    settled[i] = (async () => {
+      await Promise.all(after[i].map((j) => settled[j]));
+      const deps = await Promise.all(needs[i].map(async ({ id, j }) => ({ id, status: (await settled[j]).status })));
+      const failed = deps.find((d) => d.status !== "OK");
+      if (!failed) await acquire();
+      let holding = !failed;
+      const releaseSlot = () => {
+        if (holding) release();
+        holding = false;
+      };
+      const run = runGroup({
+        ...shared, group, batch, questions: false,
+        notStarted: failed && `needs ${failed.id} (${failed.status})`,
+        beforeLand: () => (releaseSlot(), turns[i - 1]),
+      });
+      ids[i] = run.job;
+      write();
+      await run.done;
+      releaseSlot();
+      const final = run.record();
+      finals[i] = final;
+      write();
+      return final;
+    })();
+    turns[i] = Promise.all([settled[i], turns[i - 1]]);
+  });
+  // jobs in group order (renderBatch sorts by urgency)
+  return renderBatch(record(), await Promise.all(settled));
 }
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
@@ -383,8 +512,8 @@ export function recoverJobs(cwd: string) {
     if (record.pid && record.pid !== process.pid && isAlive(record.pid)) continue;
     const cancelled = { ...record, status: "CANCELLED" as const, landed: false, reason: "server restart" };
     const text = renderJob(cancelled);
-    writeFileSync(join(dir, "result.json"), redact(JSON.stringify({ ...cancelled, blockTokensApprox: Math.ceil(text.length / 4) }, null, 2) + "\n"));
-    writeFileSync(join(dir, "result.txt"), redact(text + "\n"));
+    writeWhole(join(dir, "result.json"), redact(JSON.stringify({ ...cancelled, blockTokensApprox: Math.ceil(text.length / 4) }, null, 2) + "\n"));
+    writeWhole(join(dir, "result.txt"), redact(text + "\n"));
   }
 }
 
@@ -423,13 +552,16 @@ function notWaiting(job: string) {
 /** A fresh `j` + 4 base36 id whose job folder does not exist yet. */
 function newJob(root: string) {
   for (;;) {
-    const job = `j${randomBytes(4).readUInt32BE().toString(36).slice(-4).padStart(4, "0")}`;
+    const job = newId("j");
     const dir = join(root, ".cheapag", "jobs", job);
     if (existsSync(dir)) continue;
     mkdirSync(dir, { recursive: true });
     return { job, dir };
   }
 }
+
+/** `prefix` + 4 base36 chars: a job (`j`) or batch (`b`) id. */
+const newId = (prefix: string) => `${prefix}${randomBytes(4).readUInt32BE().toString(36).slice(-4).padStart(4, "0")}`;
 
 /**
  * The prompt after the agent's own rules (spec E2): the whole plan, then the current step(s), then the note.
@@ -457,3 +589,13 @@ const inside = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel !== "" && !rel.startsWith(`..${"/"}`) && rel !== ".." && !isAbsolute(rel);
 };
+
+/**
+ * Writes a file whole: to a temporary name, then renamed into place. Records are rewritten on every turn while other
+ * processes read them (`cheapag clean`, another session's `jobs list`); a half-written record must never be seen.
+ */
+function writeWhole(path: string, text: string) {
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  renameSync(temp, path);
+}

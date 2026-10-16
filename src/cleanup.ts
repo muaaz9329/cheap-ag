@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { redact } from "./credentials.js";
@@ -16,6 +16,7 @@ import { git, projectRoot } from "./workspace.js";
 const DAY_MS = 86_400_000;
 // only folders named like our job ids are ours to remove
 const JOB_ID = /^j[0-9a-z]{4}$/;
+const BATCH_FILE = /^b[0-9a-z]{4}\.json$/;
 /** How long a job folder without a readable record counts as just created, so even --all leaves it alone. */
 const UNKNOWN_GRACE_MS = 60 * 60_000;
 
@@ -80,7 +81,25 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
       out.removed.push(`job ${id}: ${opts.all ? "--all" : `${days(j.since)}d old`}`);
     }
   }
-  // shortcut: batch records (`.cheapag/batches/<id>.json`, ticket 14) are not cleaned yet; remove one with its last job folder
+  // a batch record goes with its last job folder; one that never got a job (a crashed start) goes by age
+  const batchesDir = join(state, "batches");
+  if (realDir(batchesDir)) {
+    for (const name of readdirSync(batchesDir).filter((n) => BATCH_FILE.test(n))) {
+      const file = join(batchesDir, name);
+      let jobs: string[] = [];
+      try {
+        jobs = (JSON.parse(readFileSync(file, "utf8")) as { jobs?: string[] }).jobs ?? [];
+      } catch {
+        // unreadable: judged by age alone
+      }
+      const id = name.slice(0, -".json".length);
+      if (jobs.some((j) => JOB_ID.test(j) && existsSync(join(jobsDir, j)))) continue; // its jobs say what it was: kept silently
+      const since = mtime(file) ?? now;
+      if (jobs.length === 0 && !old(since, retention.job_log_days)) continue;
+      rmSync(file, { force: true });
+      out.removed.push(`batch ${id}: ${jobs.length ? "its jobs are gone" : opts.all ? "--all" : `${days(since)}d old`}`);
+    }
+  }
   return out;
 }
 

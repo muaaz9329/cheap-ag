@@ -4,14 +4,14 @@ import { isAbsolute, join } from "node:path";
 
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
 export type Config = { test_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention };
-/** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits). */
-export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number };
+/** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits); `max_parallel` bounds a batch's concurrent groups. */
+export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number; max_parallel: number };
 /** How long cleanup keeps an unlanded worktree and a job folder, in days (spec A20). */
 export type Retention = { unlanded_worktree_days: number; job_log_days: number };
 
 const DEFAULTS: Config = {
   link_dirs: ["node_modules", ".venv", "venv", "vendor"], allow_commands: ["npx tsc --noEmit"],
-  limits: { max_turns: 40, max_minutes: 20, max_cost_usd: 0.5 },
+  limits: { max_turns: 40, max_minutes: 20, max_cost_usd: 0.5, max_parallel: 3 },
   retention: { unlanded_worktree_days: 7, job_log_days: 30 },
 };
 // build output is never linked: a job must build its own (ADR-0003)
@@ -46,11 +46,11 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   const { test_cmd, link_dirs, allow_commands, limits, retention } = value as Record<string, unknown>;
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
-  // E4's other limits keys (self_fix_attempts, max_parallel) are not read yet
-  for (const key of ["max_turns", "max_minutes", "max_cost_usd"] as const) {
+  // E4's self_fix_attempts is not read yet
+  for (const key of ["max_turns", "max_minutes", "max_cost_usd", "max_parallel"] as const) {
     const v = (limits as Record<string, unknown> | undefined)?.[key];
     if (v === undefined) continue;
-    const whole = key === "max_turns";
+    const whole = key === "max_turns" || key === "max_parallel";
     if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || (whole && !Number.isInteger(v))) {
       throw new Error(`${file}: limits.${key} must be a positive ${whole ? "whole number" : "number"}`);
     }

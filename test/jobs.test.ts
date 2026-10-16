@@ -217,6 +217,7 @@ test.each([
   [{ limits: { max_turns: 0 } }, "limits.max_turns must be a positive whole number"],
   [{ limits: { max_turns: 2.5 } }, "limits.max_turns must be a positive whole number"],
   [{ limits: { max_minutes: "20" } }, "limits.max_minutes must be a positive number"],
+  [{ limits: { max_parallel: 1.5 } }, "limits.max_parallel must be a positive whole number"],
   [{ limits: [] }, "limits must be an object"],
 ])("a bad limits config %j fails before any job", async (config, message) => {
   const { repo, fake, delegate } = await scenario({ repoConfig: config, scripts: [] });

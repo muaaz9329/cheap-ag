@@ -8,7 +8,8 @@ import { OPENCODE_PIN } from "../src/opencode.js";
  * Speaks the subset of OpenCode 1.19's HTTP + SSE protocol Cheap Agent uses, with the same paths and
  * event shapes as `@opencode-ai/sdk/v2`. Auth is accepted and ignored.
  *
- * Each `prompt_async` runs the next queued script (`fake.script(...)`); with none queued it just goes idle.
+ * Each `prompt_async` runs the first `fake.scriptFor(match, ...)` script its text contains, else the next queued
+ * script (`fake.script(...)`); with none queued it just goes idle.
  */
 
 /** Model as `prompt_async` takes it. */
@@ -63,6 +64,7 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
   const sessions = new Map<string, Session>();
   const runs = new Map<string, Run>(); // session id → active run
   const scripts: Action[][] = [];
+  const keyed: { match: string; actions: Action[] }[] = []; // taken by the first prompt whose text contains `match`
   const subscribers = new Set<{ directory: string; res: ServerResponse }>();
   const pending = new Map<string, Run>(); // question/permission request id → paused run
 
@@ -253,7 +255,9 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
       runs.set(session.id, run);
       res.writeHead(204).end();
       setStatus(session, { type: "busy" });
-      void execute(run, scripts.shift() ?? []);
+      const text = (body?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("\n");
+      const k = keyed.findIndex((s) => text.includes(s.match));
+      void execute(run, k >= 0 ? keyed.splice(k, 1)[0].actions : (scripts.shift() ?? []));
       return;
     }
 
@@ -294,6 +298,8 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
     recorded,
     /** Queues the worker's actions for the next prompt; call once per expected prompt (self-fix, fallback, reply…). */
     script: (...actions: Action[]) => void scripts.push(actions),
+    /** Queues actions for the first prompt containing `match`, ahead of the plain queue: concurrent sessions (parallel groups) get their own. */
+    scriptFor: (match: string, ...actions: Action[]) => void keyed.push({ match, actions }),
     close: () =>
       new Promise<void>((resolve) => {
         for (const run of runs.values()) stop(run);

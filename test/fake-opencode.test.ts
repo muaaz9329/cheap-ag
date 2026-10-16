@@ -203,3 +203,18 @@ test("a wait pauses the run, then it carries on; an abort cuts it short and noth
   await new Promise((r) => setTimeout(r, 20));
   expect(events.filter((e) => e.type === "message.part.updated")).toHaveLength(1); // the write never happened
 });
+
+test("a scriptFor script goes to the first prompt containing its text, ahead of the plain queue", async () => {
+  const { fake, repo, until, prompt } = await setup();
+  fake.script({ edit: "queued.txt", content: "q\n" });
+  fake.scriptFor("step 2", { edit: "never.txt", content: "x\n" });
+  fake.scriptFor("step 1", { edit: "keyed.txt", content: "k\n" });
+  await prompt(); // "do step 1"
+  await until("session.idle");
+  expect(existsSync(`${repo.dir}/keyed.txt`)).toBe(true);
+  expect(existsSync(`${repo.dir}/queued.txt`)).toBe(false);
+  await prompt(); // no keyed match left: the plain queue
+  await until("session.idle");
+  expect(existsSync(`${repo.dir}/queued.txt`)).toBe(true);
+  expect(existsSync(`${repo.dir}/never.txt`)).toBe(false);
+});

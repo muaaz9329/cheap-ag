@@ -99,10 +99,26 @@ let booted: string | undefined;
  * `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
  * Without one (ping, login) any running server will do.
  */
+let holds = 0;
+
+/** Marks the server in use for a job's or research call's lifetime, so a config change never reboots it under them. Returns the release. */
+export function holdOpencode() {
+  holds++;
+  let held = true;
+  return () => {
+    if (held) holds--;
+    held = false;
+  };
+}
+
 export function ensureOpencode(provider: Provider, projectDir = process.cwd(), route?: Route): Promise<Opencode> {
   const config = opencodeConfig(provider, route ?? fullRoute(provider.provider));
-  // shortcut: a consent change mid-session (e.g. to zero-retention only) restarts OpenCode under any running job; keep one server per config once jobs overlap (ticket 14)
-  if (started && route && booted !== config) stopOpencode();
+  if (started && route && booted !== config) {
+    // a reboot would kill every live session: refuse it while any job or research call holds the server
+    // shortcut: one server per config would let both run; worth it only if config changes mid-session become common
+    if (holds > 0) return Promise.reject(new Error("the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish"));
+    stopOpencode();
+  }
   if (!started) booted = config;
   started ??= boot(projectDir, config).catch((err) => {
     stopOpencode();
@@ -169,9 +185,11 @@ function spawnServer(configDir: string, password: string) {
     });
     proc.on("error", fail);
     proc.on("exit", (code) => {
-      // a crash after startup: forget the dead server so the next call boots a fresh one
-      if (listening && child === proc) started = child = undefined;
-      else fail(new Error(`opencode serve exited (${code}): ${output.trim().slice(-500)}`));
+      if (listening) {
+        // a crash after startup: forget the dead server so the next call boots a fresh one. An old server exiting
+        // after a reboot is not this boot's failure: it must never stop the server that replaced it.
+        if (child === proc) started = child = undefined;
+      } else fail(new Error(`opencode serve exited (${code}): ${output.trim().slice(-500)}`));
     });
   });
 }

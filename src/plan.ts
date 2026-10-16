@@ -7,7 +7,7 @@ const REQUIRED = ["files", "done-when"];
 
 /** The plan grammar in one line, for Claude: the delegate tool description and every plan-error FAIL carry it. */
 export const PLAN_FORMAT =
-  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:"), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks.';
+  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>"), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks.';
 
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
@@ -59,12 +59,56 @@ export function parsePlan(source: string): Plan {
   return { title, context: context.join("\n").trim(), steps: steps.map(({ line, ...step }) => ({ ...step, text: step.text.trim() })) };
 }
 
-/** Resolves a steps string to the steps of one group. Only a single step id for now. */
-export function selectSteps(plan: Plan, spec: string): PlanStep[] {
-  const want = spec.trim();
-  // shortcut: ranges ("3-5") and comma groups arrive with ticket 14
-  if (/[-,]/.test(want)) throw new Error(`steps "${spec}": only a single step id is supported yet; delegate one step at a time`);
-  const step = plan.steps.find((s) => s.id === want);
-  if (!step) throw new Error(`step ${want} not found (plan steps: ${plan.steps.map((s) => s.id).join(", ")})`);
-  return [step];
+/** One job's worth of steps, run in order in one session. `label` is how Claude wrote it ("3", "3-5"). */
+export type Group = { label: string; steps: PlanStep[] };
+
+/**
+ * Resolves a steps string to groups (spec D2): `"3"` one step, `"3-5"` a range run in order as one group, and commas
+ * separate groups (`"1-2,3,4"`). Groups come back in plan order; a step may be in only one group.
+ */
+export function selectGroups(plan: Plan, spec: string): Group[] {
+  const index = (id: string) => {
+    const i = plan.steps.findIndex((s) => s.id === id);
+    if (i < 0) throw new Error(`step ${id} not found (plan steps: ${plan.steps.map((s) => s.id).join(", ")})`);
+    return i;
+  };
+  const seen = new Set<string>();
+  const groups = spec.split(",").map((raw) => {
+    const part = raw.trim();
+    const m = part.match(/^(\d+[a-z]?)(?:\s*-\s*(\d+[a-z]?))?$/);
+    if (!m) throw new Error(`steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4"`);
+    const [from, to] = [index(m[1]), index(m[2] ?? m[1])];
+    if (to < from) throw new Error(`steps "${spec}": range ${part} runs backwards`);
+    const steps = plan.steps.slice(from, to + 1);
+    for (const s of steps) {
+      if (seen.has(s.id)) throw new Error(`steps "${spec}": step ${s.id} is in more than one group`);
+      seen.add(s.id);
+    }
+    return { label: m[2] ? `${m[1]}-${m[2]}` : m[1], steps, at: from };
+  });
+  const sorted = groups.sort((a, b) => a.at - b.at).map(({ at, ...g }) => g);
+  // groups land in step order, so a group waiting on a later one would never land
+  sorted.forEach((g, i) => {
+    const later = needsOf(g).find((id) => sorted.slice(i + 1).some((o) => o.steps.some((s) => s.id === id)));
+    if (later) throw new Error(`steps "${spec}": step ${g.label} needs ${later}, which comes later in the plan; put dependencies first`);
+  });
+  return sorted;
 }
+
+/** Where two groups' `files:` overlap: an equal entry, or one inside the other's directory entry. Returns the inner path. */
+export function overlap(a: Group, b: Group): string | undefined {
+  const files = (g: Group) =>
+    g.steps.flatMap((s) => s.fields.files.split(/[,\n]/)).map((f) => f.trim().replace(/^\.\//, "").replace(/\/+$/, "")).filter(Boolean);
+  const theirs = files(b);
+  for (const x of files(a)) {
+    for (const y of theirs) {
+      if (x === y || x.startsWith(`${y}/`)) return x;
+      if (y.startsWith(`${x}/`)) return y;
+    }
+  }
+  return undefined;
+}
+
+/** The step ids a group's `needs:` names, outside the group itself (a range already runs in order). */
+export const needsOf = (g: Group) =>
+  [...new Set(g.steps.flatMap((s) => (s.fields.needs ?? "").split(/[\s,]+/).filter(Boolean)))].filter((id) => !g.steps.some((s) => s.id === id));

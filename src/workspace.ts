@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { isAlive, link, normalisePath, removeLink } from "./platform.js";
@@ -122,7 +123,8 @@ const LOCK_TIMEOUT_MS = 10 * 60_000;
 /** Serialises landing across Cheap Agent processes on one project: `.cheapag/land.lock` holds pid + timestamp. */
 async function withLock<T>(root: string, fn: () => T): Promise<T> {
   const lock = join(root, ".cheapag", "land.lock");
-  const mine = `${lock}.${process.pid}`;
+  // unique per call: parallel groups in one process wait on the lock at once, and must not delete each other's file
+  const mine = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
   mkdirSync(join(root, ".cheapag"), { recursive: true });
   // written whole, then hard-linked into place: the lock never exists without its contents
   writeFileSync(mine, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));

@@ -59,7 +59,7 @@ export async function serve() {
         `Hand plan steps to the cheap worker. It edits an isolated worktree; an OK result is already landed (uncommitted) in your working tree. ${PLAN_FORMAT}`,
       inputSchema: {
         plan: z.string().describe("Plan file path, relative to the repository root"),
-        steps: z.string().describe('The plan step id to run, e.g. "3"'),
+        steps: z.string().describe('Steps to run: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them'),
         note: z.string().max(300).optional().describe("Extra guidance for this run, at most 300 characters"),
       },
     },

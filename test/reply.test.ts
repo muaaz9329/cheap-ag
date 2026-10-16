@@ -40,6 +40,7 @@ async function scenario(...scripts: Action[][]) {
     delegate: () => call("delegate", { plan: ".plan/p.md", steps: "1" }),
     reply: (job: string, answer: string) => call("reply", { job, answer }),
     jobs: (action: string, job: string) => call("jobs", { action, job }),
+    call,
   };
 }
 
@@ -151,6 +152,18 @@ test("time spent BLOCKED does not count toward the minute cap", async () => {
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_minutes: 0.01 } })); // 600 ms of working time
   const job = jobOf(await delegate());
   await new Promise((r) => setTimeout(r, 1000)); // the developer takes a while to answer
+  const done = await reply(job, "b");
+  expect(done.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `));
+});
+
+test("while a job holds OpenCode, a config change cannot reboot it: other calls FAIL clearly and the job lives on", async () => {
+  const { repo, delegate, reply, call } = await scenario([ASK, ...edit(2, "answered after the refused reboot")]);
+  const job = jobOf(await delegate());
+  // a different model config makes a different OpenCode config; with the job holding the server it must not reboot
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/qwen3.7-plus" } }));
+  writeFileSync(join(repo.dir, ".plan", "q.md"), PLAN);
+  const refused = await call("delegate", { plan: ".plan/q.md", steps: "1" });
+  expect(refused).toBe("FAIL reason: the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish");
   const done = await reply(job, "b");
   expect(done.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `));
 });
