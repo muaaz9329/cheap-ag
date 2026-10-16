@@ -16,6 +16,8 @@ export type SessionTotals = { sessionID: string; turns: number; usage: Usage; re
 /** A tool call the ruleset denied outright, or a permission request auto-rejected. */
 export type Rejection = { kind: "denied" | "asked"; permission: string; what: string };
 export type SessionResult = SessionTotals & RunResult;
+/** A question the worker asked with OpenCode's question tool: its text and option labels, in order. */
+export type Question = { question: string; options: string[] };
 
 /**
  * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
@@ -29,6 +31,8 @@ export async function openSession(opts: {
   permission?: Rule[];
   /** Called with every event of this session, in order (for the job log and progress). */
   onEvent: (event: Event, turns: number) => void;
+  /** Called when the worker asks a question; the session stays paused until it resolves with the answer. Without it, questions are rejected. */
+  onQuestion?: (question: Question) => Promise<string>;
 }) {
   const { opencode, directory } = opts;
   const client = createOpencodeClient({
@@ -98,6 +102,22 @@ export async function openSession(opts: {
             error ??= `could not reject a ${event.properties.permission} permission request: ${JSON.stringify(replied.error)}`;
             break;
           }
+        } else if (event.type === "question.asked") {
+          opts.onEvent(event, calls.size); // logged now: the answer may be a long way off
+          const [first, ...rest] = event.properties.questions;
+          const requestID = event.properties.id;
+          // shortcut: only the first question of a multi-question ask is shown, the rest get empty answers; show all if workers batch questions
+          const answer = opts.onQuestion && first ? await opts.onQuestion({ question: first.question, options: first.options.map((o) => o.label) }) : undefined;
+          const replied = await (answer === undefined
+            ? client.question.reject({ requestID, directory })
+            : client.question.reply({ requestID, directory, answers: [[answer], ...rest.map(() => [])] })
+          ).catch((err: Error) => ({ error: err.message }));
+          // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
+          if (replied.error) {
+            error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
+            break;
+          }
+          continue;
         } else if (event.type === "session.error") {
           error = describe(event.properties.error);
         }

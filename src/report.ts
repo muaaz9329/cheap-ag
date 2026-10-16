@@ -41,7 +41,8 @@ export type JobRecord = {
   /** The de-noised tail of the last failing verify command: the command first, then indented lines. */
   error?: string[];
   tried?: string[];
-  question?: { text: string; options: string[] } | null;
+  /** `answer` is the reply sent (null while waiting); recorded, not rendered. */
+  question?: { text: string; options: string[]; answer?: string | null } | null;
   /** One line per conflicting path, e.g. `src/a.ts (also changed by j3d54, landed first; redo could not reconcile)`. */
   conflict?: string[];
   redo?: number | null;

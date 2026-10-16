@@ -2,8 +2,9 @@ import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
-import { delegate } from "./jobs.js";
+import { delegate, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
 import { PLAN_FORMAT } from "./plan.js";
 import { isSupported, UNSUPPORTED } from "./platform.js";
@@ -20,6 +21,12 @@ export async function serve() {
   /** Answers every tool with the unsupported-platform FAIL on native Windows (spec A18). */
   const supported = <A extends unknown[]>(handler: (...args: A) => Promise<ReturnType<typeof safeText>>) =>
     (...args: A) => (isSupported() ? handler(...args) : Promise.resolve(safeText(UNSUPPORTED)));
+  /** Worker progress as MCP progress notifications to the calling request, when it asked for them. */
+  const progressTo = (extra: { _meta?: { progressToken?: string | number }; sendNotification: (n: ServerNotification) => Promise<void> }) =>
+    (progress: number, message: string) => {
+      const progressToken = extra._meta?.progressToken;
+      if (progressToken !== undefined) void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress, message } });
+    };
 
   server.registerTool(
     "ping",
@@ -50,19 +57,28 @@ export async function serve() {
     supported(async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
-      const progressToken = extra._meta?.progressToken;
       try {
-        return safeText(
-          await delegate(input, {
-            provider,
-            opencode: (route) => ensureOpencode(provider, process.cwd(), route),
-            progress: (progress, message) => {
-              if (progressToken !== undefined) {
-                void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress, message } });
-              }
-            },
-          }),
-        );
+        return safeText(await delegate(input, { provider, opencode: (route) => ensureOpencode(provider, process.cwd(), route), progress: progressTo(extra) }));
+      } catch (err) {
+        return safeText(failBlock((err as Error).message));
+      }
+    }),
+  );
+
+  server.registerTool(
+    "reply",
+    {
+      description:
+        "Answer a BLOCKED job's question and resume its worker in the same session. Returns the job's next result block (OK, FAIL, or BLOCKED again).",
+      inputSchema: {
+        job: z.string().describe('The BLOCKED job id, e.g. "j6a90"'),
+        answer: z.string().max(500).describe('An option letter (a-d), or a short free-text answer'),
+      },
+    },
+    supported(async (input, extra) => {
+      if (!detectProvider()) return safeText(NO_PROVIDER);
+      try {
+        return safeText(await reply(input, progressTo(extra)));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
