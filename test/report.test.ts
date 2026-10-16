@@ -102,7 +102,7 @@ describe("D5 status blocks", () => {
     ));
   });
 
-  test("BLOCKED: no tests= when verify never ran; options lettered a)–d)", () => {
+  test("BLOCKED: no tests= when verify never ran, files counted but not listed; options lettered a)–d)", () => {
     expect(renderJob(job({
       job: "j6a90", status: "BLOCKED", steps: "2", usage: { turns: 9, costUsd: 0.004 }, changed: [ch("A", "src/middleware/rateLimit.ts", 12)],
       worktree: ".cheapag/worktrees/j6a90",
@@ -111,9 +111,7 @@ describe("D5 status blocks", () => {
         options: ["run before lockout (counts all attempts)", "run after lockout (counts only non-locked users)", "replace lockout entirely"],
       },
     }))).toBe(block(
-      "BLOCKED j6a90 step=2 files=1 +12/-0 turns=9 cost=$0.004",
-      "changed:",
-      "  A src/middleware/rateLimit.ts +12",
+      "BLOCKED j6a90 step=2 files=1 +12/-0 turns=9 cost=$0.004", // files counted, not listed (D5)
       "question: login already has a per-user lockout in src/auth/lockout.ts. Rate limit should:",
       "options:",
       "  a) run before lockout (counts all attempts)",

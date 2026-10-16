@@ -105,7 +105,12 @@ export async function serve() {
   );
 
   // jobs a previous server left running or blocked can never finish now
-  recoverJobs(process.cwd());
+  try {
+    recoverJobs(process.cwd());
+  } catch (err) {
+    // recovery is housekeeping: a failure must not stop the server from starting
+    process.stderr.write(`cheapag: job recovery failed: ${(err as Error).message}\n`);
+  }
   process.on("exit", stopOpencode);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit());
   // Claude Code closing our stdin is the normal shutdown

@@ -124,7 +124,8 @@ export async function openSession(opts: {
           // shortcut: only the first question of a multi-question ask is shown, the rest get empty answers; show all if workers batch questions
           // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
           const stopped = new Promise<undefined>((resolve) => (signal?.aborted ? resolve(undefined) : signal?.addEventListener("abort", () => resolve(undefined), { once: true })));
-          const answer = opts.onQuestion && first ? await Promise.race([opts.onQuestion({ question: first.question, options: first.options.map((o) => o.label) }), stopped]) : undefined;
+          // a question asked after a stop is never put to Claude: the job is ending, not blocked
+          const answer = opts.onQuestion && first && !signal?.aborted ? await Promise.race([opts.onQuestion({ question: first.question, options: first.options.map((o) => o.label) }), stopped]) : undefined;
           const replied = await (answer === undefined
             ? client.question.reject({ requestID, directory })
             : client.question.reply({ requestID, directory, answers: [[answer], ...rest.map(() => [])] })

@@ -103,6 +103,7 @@ export async function delegate(
     // a landing in progress finishes; a turn cap's last check may still be cut short by the clock or a cancel
     if (landing || (stopped && (stopped.cap !== "turns" || why.cap === "turns"))) return;
     stopped = why;
+    blocked.delete(job); // a reply arriving now must not resume a stopped job
     halt.abort();
     if (why.cap !== "turns") kill.abort();
   };
@@ -217,6 +218,7 @@ export async function delegate(
             const part = event.properties.part;
             if (part.state.status === "completed" || part.state.status === "error") {
               progress(turns, `turn ${turns}: ${part.tool}`);
+              if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
               // finishing on the last allowed turn is fine
               if (part.tool !== "finish") overTurns();
             }
@@ -293,7 +295,13 @@ export async function delegate(
     clearTimeout(timer);
     running.delete(job);
     blocked.delete(job);
-    const text = failBlock(err.message);
+    reason = err.message;
+    let text: string;
+    try {
+      text = finalize("FAIL"); // never leave a RUNNING/BLOCKED record behind for this live process
+    } catch {
+      text = failBlock(err.message);
+    }
     finished(text);
     settle(text);
   });

@@ -137,7 +137,8 @@ function layout(r: JobRecord, c: Cuts) {
   ];
   const keep = new Set<string>(); // question/options lines are never elided
   if (r.summary) lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
-  if (r.changed.length) {
+  // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
+  if (r.changed.length && r.status !== "BLOCKED") {
     lines.push("changed:", ...r.changed.slice(0, c.changed).map((x) => `  ${x.status} ${x.path}${x.add ? ` +${x.add}` : ""}${x.del ? ` -${x.del}` : ""}`));
     if (r.changed.length > c.changed) lines.push(`  … +${r.changed.length - c.changed} more`);
   }
