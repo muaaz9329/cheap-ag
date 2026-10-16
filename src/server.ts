@@ -62,6 +62,7 @@ export async function serve() {
         plan: z.string().describe("Plan file path, relative to the repository root"),
         steps: z.string().describe('Steps to run: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them'),
         note: z.string().max(300).optional().describe("Extra guidance for this run, at most 300 characters"),
+        wait: z.boolean().optional().describe('Default true: return when every group settles or one is BLOCKED. false: return RUNNING at once; then jobs(action="wait")'),
       },
     },
     supported(async (input, extra) => {
@@ -120,16 +121,16 @@ export async function serve() {
   server.registerTool(
     "jobs",
     {
-      description: "List jobs, show a job's last result block again, or cancel a running job (keeps its worktree).",
+      description: "List jobs, show a job's last result block again, wait for a job or batch to settle, or cancel a running job (keeps its worktree).",
       inputSchema: {
-        action: z.enum(["list", "show", "cancel"]).describe("list: one line per job; show: a job's last block; cancel: stop a running job"),
-        job: z.string().optional().describe("Job id, e.g. j7f3a (show and cancel)"),
+        action: z.enum(["list", "show", "wait", "cancel"]).describe("list: one line per job; show: a job's last block; wait: block until the job's or batch's next result, then return it; cancel: stop a running job"),
+        job: z.string().optional().describe("Job id, e.g. j7f3a (show, wait, cancel), or batch id, e.g. b4k1x (wait)"),
       },
     },
-    supported(async (input) => {
+    supported(async (input, extra) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
-        return safeText(withHint(await jobs(input)));
+        return safeText(withHint(await jobs(input, progressTo(extra))));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }

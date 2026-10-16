@@ -28,7 +28,7 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 /** More rejections than this in one job earn a risk line. */
 const MAX_QUIET_REJECTIONS = 5;
 
-export type DelegateInput = { plan: string; steps: string; note?: string };
+export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean };
 
 export async function delegate(
   input: DelegateInput,
@@ -68,12 +68,15 @@ export async function delegate(
   const opencode = await ctx.opencode(route);
   const release = holdOpencode();
   const shared = { root, input, plan, config, route, opencode, provider: ctx.provider, progress: ctx.progress };
+  // wait=false: every group is RUNNING the moment it is created
   if (groups.length === 1) {
-    const one = runGroup({ ...shared, group: groups[0], batch: null, questions: true });
+    const one = runGroup({ ...shared, group: groups[0], batch: null });
     void one.done.finally(release);
-    return one.outcome;
+    return input.wait === false ? renderJob(one.record()) : one.outcome;
   }
-  return runBatch(groups, shared).finally(release);
+  const run = runBatch(groups, shared);
+  void run.all.catch(() => {}).finally(release);
+  return input.wait === false ? run.render() : run.look(false, ctx.progress);
 }
 
 type Shared = { root: string; input: DelegateInput; plan: Plan; config: Config; route: Route; opencode: Opencode; provider: Provider; progress: Progress };
@@ -82,17 +85,19 @@ type Shared = { root: string; input: DelegateInput; plan: Plan; config: Config; 
 type GroupRun = Shared & {
   group: Group;
   batch: string | null;
-  /** Whether a worker question makes the job BLOCKED; without it, questions are rejected and the worker carries on. */
-  questions: boolean;
-  /** Why the group must not start (a dependency did not land OK): the job is recorded as FAIL with this reason. */
-  notStarted?: string;
+  /**
+   * Awaited before the job starts work (a batch's scheduling: overlap, needs, a worker slot); the job is recorded RUNNING
+   * meanwhile. A reason means it must not start (a dependency did not land OK): the job is recorded as FAIL with it.
+   */
+  start?: Promise<string | undefined>;
   /** Awaited once the job is ready to land, before taking the lock: a batch lands its groups in step order. */
   beforeLand?: () => Promise<unknown>;
 };
 
 /**
  * Runs one group as one job, start to landing (spec: Job lifecycle). `outcome` is the first block a caller sees (BLOCKED,
- * or final); `done` resolves to the final block; `record()` is the job record as it stands.
+ * or final); `done` resolves to the final block; `record()` is the job record as it stands; `settles()` resolves at the
+ * job's next settlement (BLOCKED, or final).
  */
 function runGroup(g: GroupRun) {
   const { root, input, plan, config, route, opencode } = g;
@@ -115,6 +120,16 @@ function runGroup(g: GroupRun) {
   let settle!: (text: string) => void;
   const nextOutcome = () => new Promise<string>((resolve) => (settle = resolve));
   const outcome = nextOutcome();
+  // every settlement also wakes `jobs wait` and a batch watching this job
+  let pulse!: () => void;
+  let settled = new Promise<void>((resolve) => (pulse = resolve));
+  const announce = (text: string) => {
+    settle(text);
+    const wake = pulse;
+    settled = new Promise<void>((resolve) => (pulse = resolve));
+    wake();
+  };
+  let notStarted: string | undefined;
   let asked: JobRecord["question"] = null;
   let worktree: Worktree | undefined;
   let session: Session | undefined;
@@ -157,13 +172,15 @@ function runGroup(g: GroupRun) {
     timer = setTimeout(() => stop({ cap: "minutes", reason: `minute cap (${limits.max_minutes} min) reached` }), clockLeft);
   };
   const pauseClock = () => {
+    if (timer === undefined) return; // not started yet
     clearTimeout(timer);
     clockLeft -= Date.now() - clockStarted;
   };
-  startClock();
   let finished!: (text: string) => void;
   const done = new Promise<string>((resolve) => (finished = resolve));
-  running.set(job, { stop, done });
+  const halted = new Promise<void>((resolve) => (halt.signal.aborted ? resolve() : halt.signal.addEventListener("abort", () => resolve(), { once: true })));
+  let parked = false; // finished, waiting for earlier groups to land: it can only move once they settle
+  running.set(job, { stop, done, batch: g.batch, settles: () => settled, block: () => renderJob(last), parked: () => parked });
 
   /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
   const verify = async () => {
@@ -182,12 +199,10 @@ function runGroup(g: GroupRun) {
     const landed = status === "OK";
     // a BLOCKED worker has not finished: no report, no verify yet (the renderer omits what is absent)
     const waiting = status === "BLOCKED";
-    const silent = waiting || g.notStarted !== undefined; // likewise a group that never started
+    const silent = waiting || notStarted !== undefined; // likewise a group that never started
     const rejections = session?.totals().rejections ?? [];
     // server risks go first, so the 5-risk cap never cuts them
-    const unasked = rejections.filter((r) => r.permission === "question").map((r) => `the worker had a question it could not ask (parallel groups cannot block yet): ${r.what}`);
     const risks = [
-      ...unasked,
       ...(rejections.length > MAX_QUIET_REJECTIONS ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`] : []),
       ...report.risks,
     ];
@@ -239,25 +254,28 @@ function runGroup(g: GroupRun) {
         asked = { text: question.question, options: question.options, answer: text };
         const after = nextOutcome();
         answer(text);
+        finalize("RUNNING"); // a batch block shown before its next turn must not repeat the answered question
         return after;
       },
     });
-    settle(finalize("BLOCKED"));
+    announce(finalize("BLOCKED"));
   });
 
   finalize("RUNNING");
   // the job outlives this call when it blocks: it settles each outcome in turn (BLOCKED, then whatever follows a reply)
   void (async () => {
     try {
-      if (g.notStarted) throw new Error(g.notStarted);
+      notStarted = await Promise.race([g.start, halted.then(() => undefined)]);
+      if (notStarted) throw new Error(notStarted);
+      if (stopped as Stop | undefined) throw new Error("stopped before it started"); // cancelled while queued; the stop's reason is recorded
+      startClock(); // queued time is not working time
       worktree = createWorktree(root, job, config.link_dirs);
       session = await openSession({
         opencode,
         directory: worktree.path,
         model,
         permission: rulesetFor(worktree, cmds, config),
-        // shortcut: in a batch, questions are rejected until ticket 15 adds the early return; BLOCKED there would hang the call
-        onQuestion: g.questions ? onQuestion : undefined,
+        onQuestion,
         signal: halt.signal,
         onEvent: (event, turns) => {
           appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
@@ -330,9 +348,11 @@ function runGroup(g: GroupRun) {
       } else if (result.error) {
         reason = `worker error: ${result.error}`;
       } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
-        // waiting for earlier groups to land is still cancellable, and the clock still runs
-        const halted = new Promise<void>((resolve) => (halt.signal.aborted ? resolve() : halt.signal.addEventListener("abort", () => resolve(), { once: true })));
+        // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
+        pauseClock();
+        parked = true;
         await Promise.race([g.beforeLand?.(), halted]);
+        parked = false;
         if (!stopped) {
           landing = true; // from here on, caps and cancel no longer apply
           clearTimeout(timer);
@@ -365,7 +385,7 @@ function runGroup(g: GroupRun) {
     }
     const text = finalize(status);
     finished(text);
-    settle(text);
+    announce(text);
   })().catch((err: Error) => {
     clearTimeout(timer);
     running.delete(job);
@@ -378,17 +398,19 @@ function runGroup(g: GroupRun) {
       text = failBlock(err.message);
     }
     finished(text);
-    settle(text);
+    announce(text);
   });
-  return { job, outcome, done, record: () => last };
+  return { job, outcome, done, record: () => last, settles: () => settled };
 }
 
 /**
  * Several groups (spec: Plan format contract, D6): each runs as its own job, up to `max_parallel` at once. A group whose
  * `files:` overlap an earlier group's starts after that one settles (with a note); a group with `needs:` starts after its
- * dependencies land OK, or is recorded FAIL without starting. Groups land in step order. Resolves when every group settled.
+ * dependencies land OK, or is recorded FAIL without starting. Groups land in step order. Every group's job is created at
+ * once (RUNNING until it starts), so any batch block can show it. `all` resolves when every group settled; `look` is the
+ * batch block at the next point Claude should see it (spec: Job lifecycle, early return).
  */
-async function runBatch(groups: Group[], shared: Shared): Promise<string> {
+function runBatch(groups: Group[], shared: Shared) {
   const { root, config } = shared;
   const dir = join(root, ".cheapag", "batches");
   mkdirSync(dir, { recursive: true });
@@ -408,7 +430,7 @@ async function runBatch(groups: Group[], shared: Shared): Promise<string> {
     const j = groups.findIndex((o) => o.steps.some((s) => s.id === id));
     return j < 0 ? [] : [{ id, j }];
   }));
-  const ids: string[] = []; // by group, as each starts
+  const ids: string[] = []; // by group
   const finals: (JobRecord | undefined)[] = [];
   // integration stays pending until the integration check exists (ticket 17)
   const record = (): BatchRecord => ({ format: "cheapag/1", batch, groups: groups.map((g) => g.label), notes, integration: "pending", jobs: ids.filter(Boolean) });
@@ -419,9 +441,9 @@ async function runBatch(groups: Group[], shared: Shared): Promise<string> {
     const endedAt = ended.length === groups.length ? new Date() : null;
     writeWhole(join(dir, `${batch}.json`), redact(JSON.stringify({ ...record(), plan, steps, landed, startedAt, endedAt }, null, 2) + "\n"));
   };
-  write();
 
-  // worker slots: held while a worker runs, released before waiting to land, so a later group can never starve an earlier one
+  // worker slots: held while a worker runs (BLOCKED included: its worktree and session stay live, and a reply resumes it at
+  // once), released before waiting to land, so a later group can never starve an earlier one
   let free = config.limits.max_parallel;
   const queue: (() => void)[] = [];
   const acquire = () => (free > 0 ? (free--, Promise.resolve()) : new Promise<void>((resolve) => queue.push(resolve)));
@@ -431,52 +453,89 @@ async function runBatch(groups: Group[], shared: Shared): Promise<string> {
     else free++;
   };
 
+  // whoever is looking at the batch right now (delegate, a reply, a wait); nobody between looks
+  let progress: Progress = () => {};
+  const forward: Progress = (turns, message) => progress(turns, message);
   // overlap and needs only ever point at earlier groups (selectGroups rejects a need on a later one), so nothing waits in a cycle
   const settled: Promise<JobRecord>[] = [];
-  // a group lands only after every earlier group has settled: a cancelled group settles early, its successors must not
+  // a group lands only after every earlier group has settled: a cancelled or BLOCKED group holds back its successors
   const turns: Promise<unknown>[] = [];
-  groups.forEach((group, i) => {
-    settled[i] = (async () => {
+  const runs = groups.map((group, i) => {
+    let holding = false;
+    const releaseSlot = () => {
+      if (holding) release();
+      holding = false;
+    };
+    const start = (async () => {
       await Promise.all(after[i].map((j) => settled[j]));
       const deps = await Promise.all(needs[i].map(async ({ id, j }) => ({ id, status: (await settled[j]).status })));
       const failed = deps.find((d) => d.status !== "OK");
-      if (!failed) await acquire();
-      let holding = !failed;
-      const releaseSlot = () => {
-        if (holding) release();
-        holding = false;
-      };
-      const run = runGroup({
-        ...shared, group, batch, questions: false,
-        notStarted: failed && `needs ${failed.id} (${failed.status})`,
-        beforeLand: () => (releaseSlot(), turns[i - 1]),
-      });
-      ids[i] = run.job;
-      write();
+      if (failed) return `needs ${failed.id} (${failed.status})`;
+      await acquire();
+      holding = true;
+    })();
+    const run = runGroup({ ...shared, progress: forward, group, batch, start, beforeLand: () => (releaseSlot(), turns[i - 1]) });
+    ids[i] = run.job;
+    settled[i] = (async () => {
       await run.done;
-      releaseSlot();
+      void start.then(releaseSlot, () => {}); // a group cancelled while queued gives back the slot it gets later
       const final = run.record();
       finals[i] = final;
       write();
       return final;
     })();
     turns[i] = Promise.all([settled[i], turns[i - 1]]);
+    return run;
   });
+  write();
+  const all = Promise.all(settled);
   // jobs in group order (renderBatch sorts by urgency)
-  return renderBatch(record(), await Promise.all(settled));
+  const render = () => renderBatch(record(), runs.map((r) => r.record()));
+  const live = () => runs.filter((r) => running.has(r.job) && !blocked.has(r.job));
+  // nothing can move without a reply: every group still live is parked (waiting to land behind a BLOCKED one)
+  const stuck = () => anyBlocked() && live().every((r) => running.get(r.job)?.parked());
+  const anyBlocked = () => runs.some((r) => blocked.has(r.job));
+  /**
+   * Waits for the next settlement (`once`), or until a group is BLOCKED or every group settled, then returns the batch
+   * block. With nothing left working it returns at once: a BLOCKED group only moves on a reply.
+   */
+  const look = async (once: boolean, to: Progress) => {
+    progress = to;
+    try {
+      do {
+        const working = live();
+        if (!working.length || stuck()) break; // waiting would hang: a BLOCKED group only moves on a reply
+        await Promise.race(working.map((r) => r.settles()));
+      } while (!once && !anyBlocked());
+      if (!live().length && !anyBlocked()) await all; // every group settled: the batch record is complete
+      return render();
+    } finally {
+      if (progress === to) progress = () => {};
+    }
+  };
+  const entry = { look, render, forward };
+  batches.set(batch, entry);
+  void all.catch(() => {}).then(() => batches.delete(batch)); // a rejection reaches whoever looks
+  return { all, ...entry };
 }
+
+/** Batches with a group still live in this server process, by id: how `jobs wait` and `reply` attach to them. */
+const batches = new Map<string, { look: (once: boolean, progress: Progress) => Promise<string>; render: () => string; forward: Progress }>();
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
 type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider"; reason: string };
 const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provider: "BUDGET" } as const;
 
-/** Jobs running in this server process, by id: how `jobs cancel` reaches them. `done` resolves to the final block. */
-const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string> }>();
+/**
+ * Jobs running in this server process, by id: how `jobs cancel` and `jobs wait` reach them. `done` resolves to the final
+ * block, `settles()` at the next settlement (BLOCKED or final); `block()` is the current block.
+ */
+const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string>; batch: string | null; settles: () => Promise<void>; block: () => string; parked: () => boolean }>();
 
-export type JobsInput = { action: "list" | "show" | "cancel"; job?: string };
+export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string };
 
-/** The `jobs` tool: list jobs, show one's last block again, or cancel a running one. */
-export async function jobs(input: JobsInput): Promise<string> {
+/** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
+export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
   const root = projectRoot(process.cwd());
   if (input.action === "list") {
     const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
@@ -485,9 +544,15 @@ export async function jobs(input: JobsInput): Promise<string> {
     if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
     return lines.join("\n");
   }
+  if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress);
   // the id becomes a path: only well-formed ids get that far
-  if (!input.job || !/^j[0-9a-z]{4}$/.test(input.job)) return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a`);
+  if (!input.job || !/^j[0-9a-z]{4}$/.test(input.job)) return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`);
   const live = running.get(input.job);
+  if (input.action === "wait" && live) {
+    // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
+    if (!blocked.has(input.job)) await live.settles();
+    return live.block();
+  }
   if (input.action === "cancel" && live) {
     live.stop({ cap: "cancel", reason: "cancelled on request" });
     return live.done;
@@ -495,11 +560,29 @@ export async function jobs(input: JobsInput): Promise<string> {
   const dir = join(root, ".cheapag", "jobs", input.job);
   const record = readRecord(dir);
   if (!record) return failBlock(`job ${input.job} not found`);
-  if (input.action === "show") return readFileSync(join(dir, "result.txt"), "utf8").trimEnd();
+  const block = () => readFileSync(join(dir, "result.txt"), "utf8").trimEnd();
+  if (input.action === "show") return block();
   if (record.status === "RUNNING" || record.status === "BLOCKED") {
-    return failBlock(`job ${input.job} is ${record.status} but not in this session (server pid ${record.pid ?? "unknown"}); cancel it from the session that started it`);
+    return failBlock(`job ${input.job} is ${record.status} but not in this session (server pid ${record.pid ?? "unknown"}); ${input.action === "wait" ? "wait for" : "cancel"} it from the session that started it`);
   }
+  if (input.action === "wait") return block(); // finished: its final block at once
   return failBlock(`job ${input.job} already finished (${record.status}); nothing to cancel`);
+}
+
+/** `jobs wait` on a batch: the next settlement of a live one, or a finished one's block (from its records) at once. */
+function waitBatch(root: string, batch: string, progress: Progress): Promise<string> | string {
+  const live = batches.get(batch);
+  if (live) return live.look(true, progress);
+  let record: BatchRecord;
+  try {
+    record = JSON.parse(readFileSync(join(root, ".cheapag", "batches", `${batch}.json`), "utf8"));
+  } catch {
+    return failBlock(`batch ${batch} not found`);
+  }
+  // shortcut: a batch another live session runs is shown as its records stand, not waited on; wait from that session
+  const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
+  if (jobRecords.some((r) => !r)) return failBlock(`batch ${batch}: a job record is missing (cleaned up?)`);
+  return renderBatch(record, jobRecords as JobRecord[]);
 }
 
 const LIST_MAX = 20;
@@ -565,7 +648,10 @@ export async function reply(input: { job: string; answer: string }, progress: Pr
   if (!entry) return failBlock(notWaiting(input.job));
   const letter = input.answer.trim().toLowerCase().match(/^([a-d])\)?$/)?.[1];
   const option = letter && entry.question.options[letter.charCodeAt(0) - 97];
-  return entry.resume(option || input.answer, progress);
+  // in a batch, the same early return as delegate from here (spec: reply resolves like delegate): the first BLOCKED, or all settled
+  const batch = batches.get(running.get(input.job)?.batch ?? "");
+  const next = entry.resume(option || input.answer, batch ? batch.forward : progress);
+  return batch ? batch.look(false, progress) : next;
 }
 
 /** Why `job` cannot take a reply, from its record on disk. */

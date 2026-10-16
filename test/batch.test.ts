@@ -25,7 +25,7 @@ async function scenario(steps: StepSpec[], scripts: Record<string, Action[]>, re
   onTestFinished(server.close);
   const delegate = (stepsArg: string) => callText(server.client, "delegate", { plan: ".plan/p.md", steps: stepsArg });
   const inRepo = (file: string) => existsSync(join(repo.dir, file));
-  const call = (name: string, args: Record<string, string>) => callText(server.client, name, args);
+  const call = (name: string, args: Record<string, unknown>) => callText(server.client, name, args);
   return { repo, fake, delegate, inRepo, call };
 }
 
@@ -190,11 +190,147 @@ test("a group waiting to land can be cancelled at once; it never lands, and late
   expect(batch.landed).toEqual([j1, j3]); // step order held even though group 2 settled early
 }, 30_000);
 
-test("a question inside a batch cannot block yet: it is rejected and the job says so in its risks", async () => {
-  const { delegate } = await scenario(
-    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
-    { "1": writes("a.txt", { question: "Which header style?", options: ["a", "b"] }), "2": writes("b.txt") },
+const ASK: Action = { question: "Which header style?", options: ["atx", "setext"] };
+const header = (text: string) => text.split("\n")[0];
+/** `jobs wait` until the batch has nothing RUNNING or BLOCKED left (each wait returns at one settlement). */
+async function settle(call: (name: string, args: Record<string, unknown>) => Promise<string>, batch: string) {
+  for (let i = 0; i < 6; i++) {
+    const text = await call("jobs", { action: "wait", job: batch });
+    if (!/ (RUNNING|BLOCKED)=/.test(header(text))) return text;
+  }
+  throw new Error("batch never settled");
+}
+
+test("a group BLOCKED early: delegate returns at once with it first, the others RUNNING; reply, then jobs wait, reach the completed batch", async () => {
+  const { repo, fake, delegate, inRepo, call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }, { id: "3", files: "c.txt" }],
+    { "1": writes("a.txt", { tool: "read" }, { wait: 1500 }), "2": writes("b.txt", ASK), "3": writes("c.txt", { wait: 1500 }) },
   );
-  const text = await delegate("1,2");
-  expect(text).toContain("risks:\n  - the worker had a question it could not ask (parallel groups cannot block yet): Which header style?\n");
+  const t0 = Date.now();
+  const early = await delegate("1,2,3");
+  expect(Date.now() - t0).toBeLessThan(1500); // not held until groups 1 and 3 finish
+  const batch = batchOf(early);
+  const [one, two, three] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
+  expect(early).toMatch(new RegExp([
+    `^BATCH ${batch} groups=3 BLOCKED=1 RUNNING=2 landed=0 integration=pending cost=\\$0\\.000`,
+    `BLOCKED ${two} step=2 files=0 \\+0/-0 turns=0 cost=\\$0\\.000`,
+    "question: Which header style\\?",
+    "options:",
+    "  a\\) atx",
+    "  b\\) setext",
+    `log: \\.cheapag/jobs/${two}/`,
+    "",
+    `RUNNING ${one} step=1 turns=\\d+`, // current turns
+    `RUNNING ${three} step=3 turns=\\d+`,
+    `next: reply\\(job="${two}", \\.\\.\\.\\) then jobs\\(action="wait", job="${batch}"\\)$`,
+  ].join("\n")));
+  expect(fake.recorded.questionReplies).toEqual([]); // paused, not rejected
+
+  // the reply resolves like delegate (spec: Tool contracts): here nothing else blocks, so it returns the settled batch
+  const afterReply = await call("reply", { job: two, answer: "a" });
+  expect(header(afterReply)).toBe(`BATCH ${batch} groups=3 OK=3 landed=3 integration=pending cost=$0.000`);
+  expect(afterReply).not.toContain("question:");
+  expect(fake.recorded.questionReplies).toEqual([{ requestID: expect.any(String), answers: [["atx"]], rejected: false }]);
+
+  const done = await settle(call, batch);
+  expect(header(done)).toBe(`BATCH ${batch} groups=3 OK=3 landed=3 integration=pending cost=$0.000`);
+  expect(done).not.toContain("next:");
+  expect(inRepo("a.txt") && inRepo("b.txt") && inRepo("c.txt")).toBe(true);
+  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "batches", `${batch}.json`), "utf8"));
+  expect(record.landed).toEqual([one, two, three]);
+
+  // a finished batch: its final block at once
+  const t1 = Date.now();
+  expect(await call("jobs", { action: "wait", job: batch })).toBe(done);
+  expect(Date.now() - t1).toBeLessThan(500);
+}, 30_000);
+
+test("a BLOCKED group holds back later groups' landing, without their minute cap running out while they wait", async () => {
+  let dir = "";
+  const { repo, delegate, inRepo, call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
+    { "1": writes("a.txt", ASK), "2": writes("b.txt") },
+    { limits: { max_minutes: 0.02 } }, // 1.2 s of working time
+  );
+  dir = repo.dir;
+  const early = await delegate("1,2");
+  const [one, two] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
+  expect(header(early)).toMatch(/ BLOCKED=1 RUNNING=1 /);
+  // group 2 finished its work and waits, past its minute cap, for group 1 to land
+  await new Promise<void>((resolve) => {
+    const poll = setInterval(() => existsSync(join(dir, ".cheapag", "jobs", two, "diff.patch")) && (clearInterval(poll), resolve()), 20);
+  });
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(inRepo("b.txt")).toBe(false);
+  await call("reply", { job: one, answer: "b" });
+  const done = await settle(call, batchOf(early));
+  expect(header(done)).toMatch(/ OK=2 landed=2 /);
+  const record = JSON.parse(readFileSync(join(dir, ".cheapag", "batches", `${batchOf(early)}.json`), "utf8"));
+  expect(record.landed).toEqual([one, two]);
+}, 30_000);
+
+test("wait=false returns every group RUNNING at once; jobs wait follows the batch to the end", async () => {
+  const { call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
+    { "1": writes("a.txt", { wait: 500 }), "2": writes("b.txt", { wait: 500 }) },
+  );
+  const text = await call("delegate", { plan: ".plan/p.md", steps: "1,2", wait: false });
+  const batch = batchOf(text);
+  const [one, two] = jobsIn(text).map((j) => j.job);
+  expect(text).toBe([
+    `BATCH ${batch} groups=2 RUNNING=2 landed=0 integration=pending cost=$0.000`,
+    `RUNNING ${one} step=1 turns=0`,
+    `RUNNING ${two} step=2 turns=0`,
+    `next: jobs(action="wait", job="${batch}")`,
+  ].join("\n"));
+  expect(header(await settle(call, batch))).toMatch(/ OK=2 landed=2 /);
+}, 30_000);
+
+test("jobs wait on a single job: blocks until it settles, returns a BLOCKED one at once, and a finished one's block", async () => {
+  const { call, inRepo } = await scenario([{ id: "1", files: "a.txt" }], { "1": writes("a.txt", { wait: 300 }, ASK) });
+  const running = await call("delegate", { plan: ".plan/p.md", steps: "1", wait: false });
+  const job = jobsIn(running)[0].job;
+  expect(running).toBe(`RUNNING ${job} step=1 turns=0`);
+  const blocked = await call("jobs", { action: "wait", job });
+  expect(header(blocked)).toMatch(new RegExp(`^BLOCKED ${job} `));
+  expect(await call("jobs", { action: "wait", job })).toBe(blocked); // nothing moves until a reply
+  const done = await call("reply", { job, answer: "a" });
+  expect(header(done)).toMatch(new RegExp(`^OK ${job} `));
+  expect(inRepo("a.txt")).toBe(true);
+  expect(await call("jobs", { action: "wait", job })).toBe(done);
+  expect(await call("jobs", { action: "wait", job: "bzzzz" })).toBe("FAIL reason: batch bzzzz not found");
+  expect(await call("jobs", { action: "wait" })).toBe("FAIL reason: jobs wait needs a job id, e.g. j7f3a or a batch id, e.g. b4k1x");
 });
+
+test("a group still queued for a worker slot has a job from the start, and is cancellable at once", async () => {
+  const { fake, call, inRepo } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
+    { "1": writes("a.txt", { wait: 1000 }), "2": writes("b.txt") },
+    { limits: { max_parallel: 1 } },
+  );
+  const text = await call("delegate", { plan: ".plan/p.md", steps: "1,2", wait: false });
+  const two = jobsIn(text).find((j) => j.step === "2")!.job;
+  const t0 = Date.now();
+  expect(header(await call("jobs", { action: "cancel", job: two }))).toMatch(new RegExp(`^CANCELLED ${two} step=2 `));
+  expect(Date.now() - t0).toBeLessThan(800);
+  expect(header(await settle(call, batchOf(text)))).toMatch(/ CANCELLED=1 OK=1 landed=1 /);
+  expect(fake.recorded.sessions).toHaveLength(1); // group 2 never started
+  expect(inRepo("b.txt")).toBe(false);
+}, 30_000);
+
+test("jobs wait on a batch returns at once when nothing can move without a reply (the others are waiting to land behind it)", async () => {
+  const { delegate, call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
+    { "1": writes("a.txt", ASK), "2": writes("b.txt") },
+  );
+  const early = await delegate("1,2");
+  const batch = batchOf(early);
+  const [one] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
+  // group 2 finishes its work and parks behind the BLOCKED group 1
+  await new Promise((r) => setTimeout(r, 500));
+  const t0 = Date.now();
+  const waited = await call("jobs", { action: "wait", job: batch });
+  expect(Date.now() - t0).toBeLessThan(2_000); // never hangs waiting for a reply only Claude can give
+  expect(waited).toContain(`BLOCKED ${one} step=1 `);
+  expect(waited).toContain(`next: reply(job="${one}", ...)`);
+}, 30_000);
