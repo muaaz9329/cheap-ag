@@ -135,7 +135,9 @@ function runGroup(g: GroupRun) {
     wake();
   };
   let notStarted: string | undefined;
-  let asked: JobRecord["question"] = null;
+  let asked: NonNullable<JobRecord["question"]>[] | null = null;
+  let blockedAt: Date | undefined;
+  let expiry: NodeJS.Timeout | undefined; // max_blocked_minutes, while BLOCKED
   let worktree: Worktree | undefined;
   let session: Session | undefined;
   let report: FinishReport = finishReport({ text: "" });
@@ -160,6 +162,7 @@ function runGroup(g: GroupRun) {
     // a landing in progress finishes; a turn cap's last check may still be cut short by the clock or a cancel
     if (landing || (stopped && (stopped.cap !== "turns" || why.cap === "turns"))) return;
     stopped = why;
+    clearTimeout(expiry);
     blocked.delete(job); // a reply arriving now must not resume a stopped job
     halt.abort();
     if (why.cap !== "turns") kill.abort();
@@ -238,9 +241,9 @@ function runGroup(g: GroupRun) {
       // a worker stopped at the turn cap rarely says what it left undone
       missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped at the turn cap (${limits.max_turns}); compare the diff with the step`] : report.missing,
       reason, conflict,
-      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, question: asked, autoRejected: rejections,
+      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
       usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
-      timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime() },
+      timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime(), ...(waiting && { blockedAt }) },
     };
     last = record;
     const text = renderJob(record);
@@ -250,19 +253,24 @@ function runGroup(g: GroupRun) {
   };
 
   /** The worker asked: the job is BLOCKED, its block goes to whoever waits, and the session stays paused until `reply` resumes it. */
-  const onQuestion = (question: Question) => new Promise<string>((answer) => {
+  const onQuestion = (questions: Question[]) => new Promise<string[]>((answer) => {
     pauseClock();
-    asked = { text: question.question, options: question.options, answer: null };
+    asked = questions.map((q) => ({ text: q.question, options: q.options, answer: null }));
     changed = worktreeDiff(worktree!).changed;
+    blockedAt = new Date();
+    // a forgotten question must not hold the session, the worktree and a worker slot forever
+    expiry = setTimeout(() => stop({ cap: "cancel", reason: `no reply within ${limits.max_blocked_minutes} min` }), limits.max_blocked_minutes * 60_000).unref();
     blocked.set(job, {
-      job, question,
-      resume: (text, replyProgress) => {
+      job, questions,
+      resume: (answers, replyProgress) => {
+        clearTimeout(expiry);
+        blockedAt = undefined;
         blocked.delete(job);
         startClock();
         progress = replyProgress;
-        asked = { text: question.question, options: question.options, answer: text };
+        asked = questions.map((q, i) => ({ text: q.question, options: q.options, answer: answers[i] }));
         const after = nextOutcome();
-        answer(text);
+        answer(answers);
         finalize("RUNNING"); // a batch block shown before its next turn must not repeat the answered question
         return after;
       },
@@ -606,7 +614,7 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
   if (input.action === "list") {
     const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
     if (!all.length) return "no jobs yet";
-    const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0]);
+    const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0] + blockedFor(r));
     if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
     return lines.join("\n");
   }
@@ -654,8 +662,12 @@ function waitBatch(root: string, batch: string, progress: Progress): Promise<str
 const LIST_MAX = 20;
 
 type StoredRecord = JobRecord & {
-  pid?: number; batch?: string | null; timing?: { startedAt?: string; endedAt?: string | null }; baseline?: { tree?: string | null }; discarded?: boolean;
+  pid?: number; batch?: string | null; timing?: { startedAt?: string; endedAt?: string | null; blockedAt?: string }; baseline?: { tree?: string | null }; discarded?: boolean;
 };
+
+/** How long a BLOCKED job has waited for a reply, as a suffix for its one-line headline (jobs list, cheapag status). */
+export const blockedFor = (r: StoredRecord) =>
+  r.status === "BLOCKED" && r.timing?.blockedAt && r.pid && isAlive(r.pid) ? ` waiting=${Math.floor((Date.now() - Date.parse(r.timing.blockedAt)) / 60_000)}m` : "";
 
 function readRecord(dir: string): StoredRecord | undefined {
   try {
@@ -780,9 +792,9 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
 /** A job paused on a worker question. It lives only in this process, as does its paused session. */
 export type BlockedJob = {
   job: string;
-  question: Question;
-  /** Answers the question and resumes the session; resolves with the job's next block (final, or BLOCKED again). */
-  resume: (answer: string, progress: Progress) => Promise<string>;
+  questions: Question[];
+  /** Answers the questions (one answer each) and resumes the session; resolves with the job's next block (final, or BLOCKED again). */
+  resume: (answers: string[], progress: Progress) => Promise<string>;
 };
 type Progress = (turns: number, message: string) => void;
 const blocked = new Map<string, BlockedJob>();
@@ -794,12 +806,35 @@ export const blockedJobs = (): ReadonlyMap<string, BlockedJob> => blocked;
 export async function reply(input: { job: string; answer: string }, progress: Progress): Promise<string> {
   const entry = blocked.get(input.job);
   if (!entry) return failBlock(notWaiting(input.job));
-  const letter = input.answer.trim().toLowerCase().match(/^([a-d])\)?$/)?.[1];
-  const option = letter && entry.question.options[letter.charCodeAt(0) - 97];
+  if (!input.answer.trim()) return failBlock("empty answer; reply with an option letter or free text"); // the job stays BLOCKED
+  // one question also takes the numbered form ("1a", "1: text") that several questions need
+  const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(input.answer);
+  const answers = entry.questions.length === 1 && !numbered ? [pick(input.answer, entry.questions[0])] : answerEach(input.answer, entry.questions);
+  if (typeof answers === "string") return failBlock(answers); // the job stays BLOCKED
   // in a batch, the same early return as delegate from here (spec: reply resolves like delegate): the first BLOCKED, or all settled
   const batch = batches.get(running.get(input.job)?.batch ?? "");
-  const next = entry.resume(option || input.answer, batch ? batch.forward : progress);
+  const next = entry.resume(answers, batch ? batch.forward : progress);
   return batch ? batch.look(false, progress) : next;
+}
+
+/** A letter picks that option's label; anything else is free text. */
+function pick(answer: string, question: Question) {
+  const letter = answer.trim().toLowerCase().match(/^([a-d])\)?$/)?.[1];
+  return (letter && question.options[letter.charCodeAt(0) - 97]) || answer;
+}
+
+/** Several questions take one answer each, "1a, 2b" or "1a, 2: free text" (commas allowed in free text); the error when any is left out. */
+function answerEach(answer: string, questions: Question[]): string[] | string {
+  const answers: string[] = [];
+  for (const part of answer.split(/,(?=\s*\d+\s*(?:[a-d]\)?\s*(?:,|$)|:))/i)) {
+    const m = part.trim().match(/^(\d+)\s*(?:([a-d])\)?|:\s*([\s\S]*\S))$/i);
+    const n = Number(m?.[1]) - 1;
+    const option = m?.[2] && questions[n]?.options[m[2].toLowerCase().charCodeAt(0) - 97];
+    if (!m || !questions[n] || answers[n] !== undefined || (m[2] && !option)) return `cannot read "${part.trim()}" (or answered twice); answer each question as "1a, 2b" or "1a, 2: free text"`;
+    answers[n] = option || m[3];
+  }
+  const missing = questions.map((_, i) => i + 1).filter((i) => !answers[i - 1]);
+  return missing.length ? `unanswered: question ${missing.join(", ")}; answer each question as "1a, 2b" or "1a, 2: free text"` : answers;
 }
 
 /** Why `job` cannot take a reply, from its record on disk. */

@@ -35,8 +35,8 @@ export async function openSession(opts: {
   permission?: Rule[];
   /** Called with every event of this session, in order (for the job log and progress). */
   onEvent: (event: Event, turns: number) => void;
-  /** Called when the worker asks a question; the session stays paused until it resolves with the answer. Without it, questions are rejected. */
-  onQuestion?: (question: Question) => Promise<string>;
+  /** Called when the worker asks (one or several questions at once); the session stays paused until it resolves with one answer per question. Without it, questions are rejected. */
+  onQuestion?: (questions: Question[]) => Promise<string[]>;
   /** Aborting it aborts the session's current prompt (OpenCode abort) and refuses later ones: caps and cancel. */
   signal?: AbortSignal;
 }) {
@@ -127,18 +127,17 @@ export async function openSession(opts: {
           }
         } else if (event.type === "question.asked") {
           opts.onEvent(event, calls.size); // logged now: the answer may be a long way off
-          const [first, ...rest] = event.properties.questions;
+          const questions = event.properties.questions.map((q) => ({ question: q.question, options: q.options.map((o) => o.label) }));
           const requestID = event.properties.id;
-          // shortcut: only the first question of a multi-question ask is shown, the rest get empty answers; show all if workers batch questions
           // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
           const stopped = new Promise<undefined>((resolve) => (signal?.aborted ? resolve(undefined) : signal?.addEventListener("abort", () => resolve(undefined), { once: true })));
           // a question asked after a stop is never put to Claude: the job is ending, not blocked
-          const answer = opts.onQuestion && first && !signal?.aborted ? await Promise.race([opts.onQuestion({ question: first.question, options: first.options.map((o) => o.label) }), stopped]) : undefined;
+          const answers = opts.onQuestion && questions.length && !signal?.aborted ? await Promise.race([opts.onQuestion(questions), stopped]) : undefined;
           // nowhere to put the question (a parallel group until early return exists, or the login check): it is rejected, and said so
-          if (!opts.onQuestion && first) rejections.push({ kind: "asked", permission: "question", what: first.question });
-          const replied = await (answer === undefined
+          if (!opts.onQuestion && questions.length) rejections.push({ kind: "asked", permission: "question", what: questions.map((q) => q.question).join(" / ") });
+          const replied = await (answers === undefined
             ? client.question.reject({ requestID, directory })
-            : client.question.reply({ requestID, directory, answers: [[answer], ...rest.map(() => [])] })
+            : client.question.reply({ requestID, directory, answers: answers.map((a) => [a]) })
           ).catch((err: Error) => ({ error: err.message }));
           // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
           if (replied.error) {

@@ -415,6 +415,41 @@ describe("D9 budget and truncation", () => {
     expect(errorLines.length).toBeLessThan(25);
   });
 
+  test("golden: several questions, numbered, each with its own lettered options, within the default budget", () => {
+    const text = renderJob(job({
+      job: "j6a90", status: "BLOCKED", steps: "2", usage: { turns: 4, costUsd: 0.002 }, question: null,
+      questions: [
+        { text: "login already has a per-user lockout in src/auth/lockout.ts. Rate limit should:", options: ["run before lockout (counts all attempts)", "run after lockout (counts only non-locked users)", "replace lockout entirely"] },
+        { text: "Where should the counters live?", options: ["in memory (per process)", "redis (shared across instances)"] },
+        { text: "Name the config key for the limit", options: [] },
+      ],
+    }));
+    expect(text).toBe(block(
+      "BLOCKED j6a90 step=2 files=0 +0/-0 turns=4 cost=$0.002",
+      "question 1: login already has a per-user lockout in src/auth/lockout.ts. Rate limit should:",
+      "options:",
+      "  a) run before lockout (counts all attempts)",
+      "  b) run after lockout (counts only non-locked users)",
+      "  c) replace lockout entirely",
+      "question 2: Where should the counters live?",
+      "options:",
+      "  a) in memory (per process)",
+      "  b) redis (shared across instances)",
+      "question 3: Name the config key for the limit",
+      "log: .cheapag/jobs/j6a90/",
+    ));
+    expect(text.length / 4).toBeLessThanOrEqual(250);
+  });
+
+  test("never cut: several long questions and all their options survive an over-budget block", () => {
+    const qs = [1, 2].map((n) => ({ text: long(`question${n}`, 300), options: ["a", "b", "c", "d"].map((x) => long(`option ${n}${x}`, 150)) }));
+    const text = renderJob(job({ job: "j7", status: "BLOCKED", risks: ["r".repeat(100)], question: null, questions: qs }));
+    for (const [i, q] of qs.entries()) {
+      expect(text).toContain(`\nquestion ${i + 1}: ${q.text}\n`);
+      for (const o of q.options) expect(text).toContain(`) ${o}\n`);
+    }
+  });
+
   test("never cut: a long question and all options survive an over-budget block", () => {
     const options = ["a", "b", "c", "d"].map((x) => long(`option ${x}`, 300));
     const text = renderJob(job({ job: "j7", status: "BLOCKED", question: { text: long("question", 400), options } }));

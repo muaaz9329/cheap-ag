@@ -117,7 +117,7 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   expect(listening).not.toMatch(/\*:\d+ \(LISTEN\)/);
 
   const configDir = join(server.home, ".cheapag", "opencode");
-  expect(readdirSync(configDir).sort()).toEqual(["agents", "opencode.json", "tools"]);
+  expect(readdirSync(configDir).sort()).toEqual(["agents", "opencode.json", "plugins", "tools"]);
 
   // a crashed OpenCode is replaced on the next call, not reused
   process.kill(opencodePid, "SIGKILL");

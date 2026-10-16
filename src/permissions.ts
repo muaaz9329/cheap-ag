@@ -53,6 +53,12 @@ const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern
 /** A command allowed as typed, and with any arguments after it. */
 const command = (cmd: string) => [allow("bash", cmd), allow("bash", `${cmd} *`)];
 
+/** Secrets: OpenCode's default does not cover .env reads under these rulesets; examples stay readable (last match wins). */
+const ENV_READS = [
+  ...[".env*", "**/.env*"].map((p) => deny("read", p)),
+  ...[".env.example", "**/.env.example", ".env.sample", "**/.env.sample"].map((p) => allow("read", p)),
+];
+
 /**
  * The full ruleset for one worker session: catch-all deny first, then explicit allows and denies for every key,
  * then the hard denylist. `scripts` and `allowCommands` are allowed with any arguments; `exact` only as written
@@ -64,8 +70,7 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
     // `finish` is Cheap Agent's own tool (tools/finish.ts): custom tools are permission-checked by name, so the
     // catch-all would otherwise hide it from the worker
     ...["read", "glob", "grep", "list", "lsp", "todowrite", "question", "finish"].map((p) => allow(p)),
-    // secrets: OpenCode's default does not cover .env reads under this ruleset (shown with the research worker)
-    ...[".env*", "**/.env*"].map((p) => deny("read", p)),
+    ...ENV_READS,
     ...["external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
     allow("edit"),
     ...PROTECTED.map((p) => deny("edit", p)),
@@ -85,7 +90,7 @@ export function researchRuleset(): Rule[] {
   return [
     deny("*"),
     ...["read", "glob", "grep", "list"].map((p) => allow(p)),
-    ...[".env*", "**/.env*"].map((p) => deny("read", p)),
+    ...ENV_READS,
     ...["edit", "bash", "question", "lsp", "todowrite", "finish", "external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
   ];
 }

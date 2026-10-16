@@ -269,6 +269,25 @@ test("a BLOCKED group holds back later groups' landing, without their minute cap
   expect(record.landed).toEqual([one, two]);
 }, 30_000);
 
+test("max_blocked_minutes inside a batch: the unanswered group is CANCELLED, jobs wait settles, and later groups still land", async () => {
+  const { delegate, inRepo, call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
+    { "1": writes("a.txt", ASK), "2": writes("b.txt") },
+    { limits: { max_blocked_minutes: 0.01 } }, // 600 ms
+  );
+  const early = await delegate("1,2");
+  const batch = batchOf(early);
+  const [one] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
+  expect(header(early)).toMatch(/ BLOCKED=1 /);
+  await new Promise((r) => setTimeout(r, 1000));
+  const done = await settle(call, batch);
+  expect(header(done)).toBe(`BATCH ${batch} groups=2 CANCELLED=1 OK=1 landed=1 integration=pending cost=$0.000`);
+  expect(done).toContain(`CANCELLED ${one} step=1 `);
+  expect(done).toContain("\nreason: no reply within 0.01 min\n");
+  expect(inRepo("a.txt")).toBe(false);
+  expect(inRepo("b.txt")).toBe(true);
+}, 30_000);
+
 test("wait=false returns every group RUNNING at once; jobs wait follows the batch to the end", async () => {
   const { call } = await scenario(
     [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],

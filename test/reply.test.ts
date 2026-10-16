@@ -84,6 +84,45 @@ test("a free-text reply passes through unchanged", async () => {
   expect(fake.recorded.questionReplies[0].answers).toEqual([["  cap at 5 per minute, keep the lockout  "]]);
 });
 
+test("several questions at once: all shown numbered; a partial or unreadable reply FAILs and the job stays BLOCKED; one answer each resumes it", async () => {
+  const both: Action = { questions: [{ question: "Rate limit should:", options: ["run before lockout", "run after lockout"] }, { question: "Store counters in:", options: ["memory", "redis"] }] };
+  const { fake, record, delegate, reply } = await scenario([both, ...edit(2, "done")]);
+  const blocked = await delegate();
+  const job = jobOf(blocked);
+  expect(blocked).toBe([
+    `BLOCKED ${job} step=1 files=0 +0/-0 turns=0 cost=$0.000`,
+    "question 1: Rate limit should:", "options:", "  a) run before lockout", "  b) run after lockout",
+    "question 2: Store counters in:", "options:", "  a) memory", "  b) redis",
+    `log: .cheapag/jobs/${job}/`,
+  ].join("\n"));
+  expect(record(job)).toMatchObject({ status: "BLOCKED", question: null, questions: [{ text: "Rate limit should:", answer: null }, { text: "Store counters in:", answer: null }] });
+  for (const [answer, why] of [
+    ["1b", "unanswered: question 2"], ["b", 'cannot read "b"'], ["1b, 2c", 'cannot read "2c"'], ["1b, 3a", 'cannot read "3a"'], ["1a, 1b, 2a", 'cannot read "1b"'], ["   ", "empty answer"],
+  ]) expect(await reply(job, answer), answer).toMatch(new RegExp(`^FAIL reason: ${why}`));
+  expect(fake.recorded.questionReplies).toEqual([]); // nothing answered, nothing empty sent: still BLOCKED
+  expect(record(job).status).toBe("BLOCKED");
+  expect((await reply(job, "1b, 2: redis, with a 60s TTL")).split("\n")[0]).toMatch(/^OK /);
+  expect(fake.recorded.questionReplies.map((r) => r.answers)).toEqual([[["run after lockout"], ["redis, with a 60s TTL"]]]);
+  expect(record(job).questions.map((q: { answer: string }) => q.answer)).toEqual(["run after lockout", "redis, with a 60s TTL"]);
+});
+
+test("one question also takes the numbered form; free text may span lines", async () => {
+  const again: Action = { question: "Window length?", options: ["1 minute", "15 minutes"] };
+  const { fake, delegate, reply } = await scenario([ASK, again, ...edit(2, "done")]);
+  const job = jobOf(await delegate());
+  expect((await reply(job, "1c")).split("\n")[0]).toMatch(/^BLOCKED /);
+  expect((await reply(job, "1: fifteen,\nrolling")).split("\n")[0]).toMatch(/^OK /);
+  expect(fake.recorded.questionReplies.map((r) => r.answers)).toEqual([[[OPTIONS[2]]], [["fifteen,\nrolling"]]]);
+});
+
+test("several questions answered by letters only", async () => {
+  const both: Action = { questions: [{ question: "A?", options: ["x", "y"] }, { question: "B?", options: ["p", "q"] }] };
+  const { fake, delegate, reply } = await scenario([both, ...edit(2, "done")]);
+  const job = jobOf(await delegate());
+  expect((await reply(job, "2A,1b")).split("\n")[0]).toMatch(/^OK /);
+  expect(fake.recorded.questionReplies[0].answers).toEqual([["y"], ["p"]]);
+});
+
 test("reply to an unknown job, or to a malformed id, is a clear FAIL", async () => {
   const { reply } = await scenario();
   expect(await reply("jzzzz", "a")).toBe("FAIL reason: no job jzzzz; reply only to a BLOCKED job's id");
@@ -145,6 +184,31 @@ test("jobs cancel ends a BLOCKED job: the question is rejected, the session abor
   expect(record(job)).toMatchObject({ status: "CANCELLED", landed: false });
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job))).toBe(true);
   expect(await reply(job, "a")).toBe(`FAIL reason: job ${job} is CANCELLED, not BLOCKED; only a BLOCKED job takes a reply`);
+});
+
+test("max_blocked_minutes: an unanswered job is CANCELLED, its question rejected and worktree kept; jobs list shows the wait", async () => {
+  const { repo, fake, record, delegate, reply, call } = await scenario([ASK, ...edit(2, "never reached")]);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_blocked_minutes: 0.01 } })); // 600 ms
+  const job = jobOf(await delegate());
+  expect(await call("jobs", { action: "list" })).toMatch(new RegExp(`^BLOCKED ${job} step=1 .* waiting=0m$`));
+  await new Promise((r) => setTimeout(r, 1000));
+  expect(record(job)).toMatchObject({ status: "CANCELLED", landed: false, reason: "no reply within 0.01 min", worktree: `.cheapag/worktrees/${job}` });
+  expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job))).toBe(true);
+  expect(fake.recorded.questionReplies).toEqual([expect.objectContaining({ rejected: true })]);
+  expect(fake.recorded.aborts).toHaveLength(1);
+  expect(await call("land", { job, action: "apply" })).toMatch(new RegExp(`^OK ${job} applied `)); // recoverable
+  const list = await call("jobs", { action: "list" });
+  expect(list).toMatch(new RegExp(`^CANCELLED ${job} step=1 `));
+  expect(list).not.toContain("waiting="); // no wait shown once it ended
+  expect(await reply(job, "a")).toBe(`FAIL reason: job ${job} is CANCELLED, not BLOCKED; only a BLOCKED job takes a reply`);
+});
+
+test("max_blocked_minutes: a reply just before expiry resumes the job, and the expiry no longer applies", async () => {
+  const { repo, delegate, reply } = await scenario([ASK, { wait: 1000 }, ...edit(2, "answered in time")]);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_blocked_minutes: 0.02 } })); // 1.2 s
+  const job = jobOf(await delegate());
+  await new Promise((r) => setTimeout(r, 800));
+  expect((await reply(job, "b")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `)); // ran past the original expiry
 });
 
 test("time spent BLOCKED does not count toward the minute cap", async () => {

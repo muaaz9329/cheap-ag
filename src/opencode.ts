@@ -80,13 +80,43 @@ export default tool({
 });
 `;
 
-/** Cheap Agent's own OpenCode config dir: worker and research agents, finish tool, model pins and options. */
+/**
+ * Runs inside OpenCode (Bun), for every session: grep returns matching lines, and the read deny on .env* does not
+ * cover it (proven on 1.19, even with an explicit include: ".env*"), so .env* match blocks are cut from grep output
+ * before the model sees them. .env.example and .env.sample stay visible. Glob and list only return names.
+ */
+export const SECRETS_PLUGIN = `const SECRET = /(^|[\\\\/])\\.env(?!\\.(example|sample)$)[^\\\\/]*$/;
+
+export const CheapagSecrets = async () => ({
+  "tool.execute.after": async (input, output) => {
+    if (input.tool !== "grep" || typeof output.output !== "string") return;
+    let file = "";
+    let hidden = 0;
+    const kept = [];
+    for (const line of output.output.split("\\n")) {
+      const header = line.match(/^(\\S.*):$/);
+      if (header) file = header[1];
+      else if (line === "") file = "";
+      if (SECRET.test(file)) {
+        if (header) hidden++;
+        continue;
+      }
+      kept.push(line);
+    }
+    if (hidden) output.output = kept.join("\\n") + "\\n(" + hidden + " .env file(s) hidden by cheapag)";
+  },
+});
+`;
+
+/** Cheap Agent's own OpenCode config dir: worker and research agents, finish tool, secrets plugin, model pins and options. */
 export function writeConfigDir(dir: string, config: string) {
   mkdirSync(join(dir, "agents"), { recursive: true });
   mkdirSync(join(dir, "tools"), { recursive: true });
+  mkdirSync(join(dir, "plugins"), { recursive: true });
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "agents", "cheapag-research.md"), RESEARCH_PROMPT);
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
+  writeFileSync(join(dir, "plugins", "cheapag-secrets.js"), SECRETS_PLUGIN);
   writeFileSync(join(dir, "opencode.json"), config);
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { opencodeBinary } from "../src/opencode.js";
+import { opencodeBinary, SECRETS_PLUGIN } from "../src/opencode.js";
 import { baselinePermission, projectScripts, workerRuleset } from "../src/permissions.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
 import { hermeticHome, tempRepo } from "./harness.js";
@@ -34,6 +34,8 @@ beforeAll(async () => {
   const config = join(home, "oc");
   mkdirSync(join(config, "agents"), { recursive: true });
   writeFileSync(join(config, "opencode.json"), JSON.stringify({ small_model: "openrouter/m", provider: { openrouter: { options: { baseURL: llm.url }, models: { m: {} } } } }));
+  mkdirSync(join(config, "plugins"));
+  writeFileSync(join(config, "plugins", "cheapag-secrets.js"), SECRETS_PLUGIN);
   writeFileSync(join(config, "agents", "cheapag-worker.md"), "---\ndescription: worker\nmode: primary\n---\nYou implement plan steps.\n");
   const oc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     detached: true,
@@ -126,6 +128,15 @@ test("env files cannot even be read", async () => {
   expect(await call("read", { filePath: join(repo.dir, ".env") })).toBe("denied");
   expect(await call("read", { filePath: join(repo.dir, "config", ".env.local") })).toBe("denied");
   expect(await call("read", { filePath: join(repo.dir, "package.json") })).toBe("allowed");
+  writeFileSync(join(repo.dir, ".env.sample"), "SECRET=put-yours-here\n");
+  expect(await call("read", { filePath: join(repo.dir, ".env.sample") })).toBe("allowed");
+  // grep is allowed, and would return the lines themselves: the secrets plugin cuts them before the model sees them
+  for (const args of [{ pattern: "SECRET" }, { pattern: "SECRET", include: ".env*" }]) {
+    expect(await call("grep", args)).toBe("allowed");
+    const seen = JSON.stringify(llm.requests.at(-1).messages);
+    expect(seen).toContain("put-yours-here");
+    expect(seen).not.toMatch(/SECRET=[12]/);
+  }
 }, 60_000);
 
 test("protected paths cannot be edited; ordinary files can", async () => {

@@ -43,6 +43,8 @@ export type JobRecord = {
   tried?: string[];
   /** `answer` is the reply sent (null while waiting); recorded, not rendered. */
   question?: { text: string; options: string[]; answer?: string | null } | null;
+  /** Several questions asked at once (then `question` is null), answered one by one. */
+  questions?: NonNullable<JobRecord["question"]>[];
   /** One line per conflicting path, e.g. `src/a.ts (also changed by j3d54, landed first; redo could not reconcile)`. */
   conflict?: string[];
   redo?: number | null;
@@ -144,12 +146,13 @@ function layout(r: JobRecord, c: Cuts) {
   }
   if (r.risks.length) lines.push("risks:", ...r.risks.slice(0, c.risks).map((x) => `  - ${clip(oneLine(x), 120)}`));
   if (r.review.length) lines.push(`review: ${r.review.slice(0, c.review).map((v) => `${v.path}:${v.start}-${v.end}`).join(", ")}`);
-  if (has("question") && r.question) {
-    const q = [`question: ${oneLine(r.question.text)}`];
-    if (r.question.options.length) q.push("options:", ...r.question.options.slice(0, 4).map((o, i) => `  ${"abcd"[i]}) ${oneLine(o)}`));
+  const asked = r.questions ?? (r.question ? [r.question] : []);
+  if (has("question")) asked.forEach((question, n) => {
+    const q = [`question${asked.length > 1 ? ` ${n + 1}` : ""}: ${oneLine(question.text)}`];
+    if (question.options.length) q.push("options:", ...question.options.slice(0, 4).map((o, i) => `  ${"abcd"[i]}) ${oneLine(o)}`));
     q.forEach((l) => keep.add(l));
     lines.push(...q);
-  }
+  });
   if (has("conflict") && r.conflict?.length) lines.push("conflict:", ...r.conflict.map((x) => `  ${oneLine(x)}`));
   if (has("error") && r.error?.length) {
     const e = r.error.slice(0, c.error);

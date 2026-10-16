@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { describe, readConsent } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
-import { records } from "./jobs.js";
+import { blockedFor, records } from "./jobs.js";
 import { isAlive, isSupported, UNSUPPORTED_REASON } from "./platform.js";
 import { renderJob } from "./report.js";
 import { spendWindows } from "./routing.js";
@@ -43,7 +43,7 @@ export function status(args: string[]): number {
     const live = all.filter((r) => inFlight(r) && !!r.pid && isAlive(r.pid));
     const rest = all.filter((r) => !live.includes(r));
     const headline = (r: (typeof all)[number]) =>
-      `  ${renderJob(r).split("\n")[0]}${inFlight(r) && !live.includes(r) ? " (its server is gone; cancelled at next start)" : ""}`;
+      `  ${renderJob(r).split("\n")[0]}${blockedFor(r)}${inFlight(r) && !live.includes(r) ? " (its server is gone; cancelled at next start)" : ""}`;
     out(live.length ? "running:" : "running: none");
     live.forEach((r) => out(headline(r)));
     out(rest.length ? "recent:" : "recent: none");

@@ -123,7 +123,7 @@ export async function serve() {
         "Answer a BLOCKED job's question and resume its worker in the same session. Returns the job's next result block (OK, FAIL, or BLOCKED again); for a job in a batch, the batch block at its next settlement.",
       inputSchema: {
         job: z.string().describe('The BLOCKED job id, e.g. "j6a90"'),
-        answer: z.string().max(500).describe('An option letter (a-d), or a short free-text answer'),
+        answer: z.string().max(500).describe('An option letter (a-d), or a short free-text answer; for several numbered questions, one answer each: "1a, 2b" or "1a, 2: use redis"'),
       },
     },
     supported(async (input, extra) => {

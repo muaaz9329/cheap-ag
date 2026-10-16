@@ -32,6 +32,8 @@ export type Action =
   | { text: string }
   /** Asks via the question tool, then pauses until Cheap Agent replies or rejects. */
   | { question: string; options: string[]; header?: string }
+  /** Asks several questions in one question-tool call. */
+  | { questions: { question: string; options: string[] }[] }
   /** Requests a permission, then pauses until Cheap Agent replies. */
   | { permission: string; patterns?: string[] }
   /**
@@ -173,6 +175,10 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
         emit(dir, "message.updated", { sessionID: session.id, info: assistantMessage(run) });
       } else if ("text" in action) {
         part({ id: id("prt"), sessionID: session.id, messageID: run.assistantID, type: "text", text: action.text, time: { start: Date.now(), end: Date.now() } });
+      } else if ("questions" in action) {
+        await ask(run, "question.asked", {
+          questions: action.questions.map((q) => ({ question: q.question, header: "Question", options: q.options.map((label) => ({ label, description: label })) })),
+        });
       } else if ("question" in action) {
         await ask(run, "question.asked", {
           questions: [{ question: action.question, header: action.header ?? "Question", options: action.options.map((label) => ({ label, description: label })) }],

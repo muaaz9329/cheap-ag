@@ -26,6 +26,7 @@ beforeAll(async () => {
   writeFileSync(join(repo.dir, ".env"), "SECRET=1\n");
   mkdirSync(join(repo.dir, "config"));
   writeFileSync(join(repo.dir, "config", ".env.local"), "SECRET=2\n");
+  writeFileSync(join(repo.dir, ".env.example"), "SECRET=put-yours-here\n");
   status = repo.git("status", "--porcelain", "--untracked-files=all");
   const { home, env } = hermeticHome({ openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   const config = join(home, "oc");
@@ -127,3 +128,15 @@ test("cannot edit, run commands, ask questions, or read secrets and outside path
   expect(repo.git("status", "--porcelain", "--untracked-files=all")).toBe(status);
   expect(existsSync(join(repo.dir, "made.txt"))).toBe(false);
 }, 120_000);
+
+test("secrets never reach the model through grep; .env.example stays readable", async () => {
+  for (const args of [{ pattern: "SECRET" }, { pattern: "SECRET", include: ".env*" }]) {
+    const grep = await call("grep", args);
+    expect(grep.outcome).toBe("allowed");
+    expect(grep.output).toContain(".env.example");
+    expect(JSON.stringify(llm.requests.at(-1).messages)).not.toMatch(/SECRET=[12]/);
+  }
+  const example = await call("read", { filePath: join(repo.dir, ".env.example") });
+  expect(example.outcome).toBe("allowed");
+  expect(example.output).toContain("put-yours-here");
+}, 60_000);
