@@ -6,6 +6,7 @@ import type { Opencode } from "./opencode.js";
 import { parsePlan, PLAN_FORMAT, selectSteps, type Plan, type PlanStep } from "./plan.js";
 import { failBlock, renderJob, type JobRecord } from "./report.js";
 import { loadConfig, type Config } from "./config.js";
+import { projectScripts, workerRuleset } from "./permissions.js";
 import { ESCALATION_MODEL, IMPLEMENT_MODEL, modelName } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Session } from "./worker.js";
@@ -13,6 +14,18 @@ import { createWorktree, land, operationInProgress, projectRoot, removeWorktree,
 import { normalisePath } from "./platform.js";
 
 /** Jobs: runs one group of plan steps as one job, start to landing. */
+
+/**
+ * The worker session's ruleset for this job. The step's own done-when checks are allowed exactly as written, so the
+ * worker can check its work before finishing (Cheap Agent runs them anyway); the hard denylist still comes last.
+ */
+function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
+  const { scripts, exact } = projectScripts(worktree.path);
+  return workerRuleset({ scripts, exact: [...exact, ...cmds], allowCommands: config.allow_commands, linked: worktree.linked });
+}
+
+/** More rejections than this in one job earn a risk line. */
+const MAX_QUIET_REJECTIONS = 5;
 
 export type DelegateInput = { plan: string; steps: string; note?: string };
 
@@ -84,6 +97,7 @@ export async function delegate(
       opencode,
       directory: worktree.path,
       model,
+      permission: rulesetFor(worktree, cmds, config),
       onEvent: (event, turns) => {
         appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
         // one progress notification per worker turn; finer events (deltas, usage) would only be noise in /tasks
@@ -133,6 +147,11 @@ export async function delegate(
   }
 
   const landed = reason === undefined && !failing;
+  const rejections = session?.totals().rejections ?? [];
+  const risks = rejections.length > MAX_QUIET_REJECTIONS
+    // first, so the 5-risk cap never cuts it
+    ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`, ...report.risks]
+    : report.risks;
   const record = {
     format: "cheapag/1" as const, job, batch: null, kind: "implement", status: (landed ? "OK" : "FAIL") as JobRecord["status"], landed,
     plan: input.plan, steps: stepIds, provider: ctx.provider.provider,
@@ -144,11 +163,11 @@ export async function delegate(
     tests: (!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"],
     error: failing?.tail,
     tried,
-    summary: report.summary, changed, risks: report.risks,
+    summary: report.summary, changed, risks,
     // a landed job's files are in the working tree; an unlanded one's only in its worktree
     review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
     missing: report.missing, reason,
-    verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: 0, question: null, autoRejected: 0,
+    verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: 0, question: null, autoRejected: rejections,
     usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
     timing: { startedAt, endedAt: new Date(), ms: Date.now() - startedAt.getTime() },
   };

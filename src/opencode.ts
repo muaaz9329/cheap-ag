@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { arch } from "node:os";
 import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
+import { baselinePermission } from "./permissions.js";
 import { killProcessGroup, opencodePlatform } from "./platform.js";
 import { IMPLEMENT_MODEL, modelName, workerModels } from "./routing.js";
 
@@ -128,6 +129,8 @@ function spawnServer(configDir: string, password: string) {
         OPENCODE_SERVER_PASSWORD: password,
         OPENCODE_CONFIG_DIR: configDir,
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
+        OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
       },
     });
     child = proc;

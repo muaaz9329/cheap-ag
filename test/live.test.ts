@@ -38,6 +38,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
   const text = (result.content as { text: string }[])[0].text;
   console.log(`LIVE delegate block:\n${text}\nprogress: ${JSON.stringify(progress)}`);
   expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 .* tests=pass /);
+  const reported = !text.includes("worker did not report");
   expect(readFileSync(join(repo.dir, "hello.txt"), "utf8").trim()).toBe("hello from cheapag");
   expect(repo.git("log", "--oneline").trim().split("\n")).toHaveLength(1);
   expect(repo.git("status", "--porcelain", "--", "hello.txt")).toBe("?? hello.txt\n");
@@ -48,9 +49,14 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
   const costs = new Map<string, number[]>();
   for (const e of events) if (e.type === "message.updated" && e.properties.info.role === "assistant") costs.set(e.properties.info.id, [...(costs.get(e.properties.info.id) ?? []), e.properties.info.cost]);
   const finish = events.find((e) => e.type === "message.part.updated" && e.properties.part.type === "tool" && e.properties.part.tool === "finish" && e.properties.part.state.status === "completed");
+  const calls = events.flatMap((e) => (e.type === "message.part.updated" && e.properties.part.type === "tool" && e.properties.part.state.status !== "pending" && e.properties.part.state.status !== "running" ? [`${e.properties.part.tool}:${e.properties.part.state.status}:${JSON.stringify(e.properties.part.state.input).slice(0, 80)}`] : []));
+  console.log(`LIVE tool calls: ${JSON.stringify([...new Set(calls)])}`);
   console.log(`LIVE message.updated cost series per assistant message: ${JSON.stringify([...costs.values()])}`);
   console.log(`LIVE finish part state.input: ${JSON.stringify(finish && (finish.properties as any).part.state.input)}`);
   console.log(`LIVE event types: ${JSON.stringify([...new Set(events.map((e) => e.type))])}`);
+  // a real model sometimes just stops after checking its work; the placeholder covers that, so this is logged, not
+  // asserted. That `finish` is allowed at all is pinned in delegate.test.ts.
+  console.log(`LIVE worker called finish: ${reported}`);
 }, 300_000);
 
 live("abort on a real session: observed event sequence", async () => {

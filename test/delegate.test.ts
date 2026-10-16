@@ -222,3 +222,51 @@ test("with only an OpenRouter login, the job runs on an openrouter model and lan
     provider: "openrouter", models: { requested: "openrouter/deepseek/deepseek-v4.1-flash" },
   });
 });
+
+test("every worker session carries the ruleset: catch-all deny first, project scripts allowed, hard denylist last", async () => {
+  const { repo, fake, delegate } = await scenario([{ finish: REPORT }], PLAN.replace("done-when: hello is exported", "done-when: `node check.mjs` passes"));
+  writeFileSync(join(repo.dir, "package.json"), JSON.stringify({ scripts: { lint: "eslint ." } }));
+  repo.git("add", "package.json");
+  repo.git("commit", "-q", "-m", "pkg");
+  mkdirSync(join(repo.dir, "node_modules"));
+  await delegate("1");
+  const rules = fake.recorded.sessions[0].permission as { permission: string; pattern: string; action: string }[];
+  expect(rules[0]).toEqual({ permission: "*", pattern: "*", action: "deny" });
+  expect(rules).toContainEqual({ permission: "bash", pattern: "npm run lint", action: "allow" });
+  expect(rules).toContainEqual({ permission: "bash", pattern: "npx tsc --noEmit", action: "allow" }); // allow_commands default
+  expect(rules).toContainEqual({ permission: "bash", pattern: "node check.mjs", action: "allow" }); // the step's done-when command
+  expect(rules).toContainEqual({ permission: "edit", pattern: "node_modules/**", action: "deny" }); // the linked dir
+  expect(rules).toContainEqual({ permission: "external_directory", pattern: "*", action: "deny" });
+  // custom tools are permission-checked by name: without this the catch-all hides finish (seen live)
+  expect(rules).toContainEqual({ permission: "finish", pattern: "*", action: "allow" });
+  expect(rules.at(-1)).toMatchObject({ permission: "bash", action: "deny" });
+  expect(rules).toContainEqual({ permission: "bash", pattern: "chmod -R*", action: "deny" });
+  // the hard denylist comes after every allow, so no script or config can loosen it
+  const lastAllow = rules.map((r) => r.action).lastIndexOf("allow");
+  expect(rules.findIndex((r) => r.pattern === "npm install*")).toBeGreaterThan(lastAllow);
+});
+
+test("a permission request is auto-rejected with a reason, so the job never hangs; it is recorded", async () => {
+  const { repo, fake, delegate } = await scenario([
+    { permission: "bash", patterns: ["npm install zod"] },
+    { edit: "src/hello.ts", content: "x\n" },
+    { tool: "write" },
+    { finish: REPORT },
+  ]);
+  const text = await delegate("1");
+  expect(text).toMatch(/^OK /);
+  expect(fake.recorded.permissionReplies).toEqual([{
+    requestID: expect.any(String), reply: "reject",
+    message: "Not allowed in cheapag: `npm install zod`. If you need a dependency, use the question tool. Otherwise finish and list it in risks.",
+  }]);
+  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", jobOf(text), "result.json"), "utf8"));
+  expect(record.autoRejected).toEqual([{ kind: "asked", permission: "bash", what: "npm install zod" }]);
+  expect(text).not.toContain("rejected; check"); // 5 or fewer: no risk line
+});
+
+test("more than 5 rejections in a job put a risk line first", async () => {
+  const asks: Action[] = Array.from({ length: 6 }, (_, i) => ({ permission: "bash", patterns: [`curl https://x/${i}`] }));
+  const { delegate } = await scenario([...asks, { finish: REPORT }]);
+  const text = await delegate("1");
+  expect(text).toContain("\nrisks:\n  - 6 tool calls or permission requests were rejected; check the worker stayed in scope (see the log)\n  - none known\n");
+});

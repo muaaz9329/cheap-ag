@@ -1,5 +1,6 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import type { Opencode } from "./opencode.js";
+import { rejectionMessage, type Rule } from "./permissions.js";
 import type { WorkerModel } from "./routing.js";
 
 /** Worker: one OpenCode session for one job, reduced to what the job layer needs. */
@@ -11,7 +12,9 @@ export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens
 /** What one prompt of a session produced. */
 export type RunResult = { finish?: FinishReport; text: string; error?: string };
 /** Session totals so far: turns and usage accumulate across every prompt of the session. */
-export type SessionTotals = { sessionID: string; turns: number; usage: Usage };
+export type SessionTotals = { sessionID: string; turns: number; usage: Usage; rejections: Rejection[] };
+/** A tool call the ruleset denied outright, or a permission request auto-rejected. */
+export type Rejection = { kind: "denied" | "asked"; permission: string; what: string };
 export type SessionResult = SessionTotals & RunResult;
 
 /**
@@ -22,6 +25,8 @@ export async function openSession(opts: {
   opencode: Opencode;
   directory: string;
   model: WorkerModel;
+  /** The session's permission ruleset (see src/permissions.ts); OpenCode enforces it, last matching rule winning. */
+  permission?: Rule[];
   /** Called with every event of this session, in order (for the job log and progress). */
   onEvent: (event: Event, turns: number) => void;
 }) {
@@ -31,11 +36,14 @@ export async function openSession(opts: {
     directory,
     headers: { authorization: `Basic ${Buffer.from(`opencode:${opencode.password}`).toString("base64")}` },
   });
-  const created = await client.session.create({ directory, agent: WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id } });
+  const created = await client.session.create({
+    directory, agent: WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id }, ...(opts.permission && { permission: opts.permission }),
+  });
   if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
   const sessionID = created.data.id;
   const calls = new Set<string>();
   const messages = new Map<string, Usage>(); // assistant message id → its latest running totals
+  const rejections: Rejection[] = [];
 
   async function run(prompt: string, model?: WorkerModel): Promise<RunResult> {
     const abort = new AbortController();
@@ -62,6 +70,10 @@ export async function openSession(opts: {
         if (event.type === "message.part.updated") {
           const part = event.properties.part;
           if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
+            // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
+            if (!calls.has(part.callID) && part.state.status === "error" && part.state.error.startsWith("The user has specified a rule which prevents")) {
+              rejections.push({ kind: "denied", permission: part.tool, what: describeCall(part.state.input) });
+            }
             calls.add(part.callID);
             if (part.tool === "finish" && part.state.status === "completed") finish = asReport(part.state.input);
           }
@@ -74,6 +86,18 @@ export async function openSession(opts: {
             inputTokens: tokens.input, outputTokens: tokens.output, reasoningTokens: tokens.reasoning,
             cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
           });
+        } else if (event.type === "permission.asked") {
+          // an unanswered ask blocks forever in server mode: reject every one, with a reason the worker sees
+          const what = event.properties.patterns.join(" ") || event.properties.permission;
+          rejections.push({ kind: "asked", permission: event.properties.permission, what });
+          const replied = await client.permission
+            .reply({ requestID: event.properties.id, directory, reply: "reject", message: rejectionMessage(what) })
+            .catch((err: Error) => ({ error: err.message }));
+          // a reject that did not go through would leave the session blocked: end this run as a worker error instead
+          if (replied.error) {
+            error ??= `could not reject a ${event.properties.permission} permission request: ${JSON.stringify(replied.error)}`;
+            break;
+          }
         } else if (event.type === "session.error") {
           error = describe(event.properties.error);
         }
@@ -96,7 +120,7 @@ export async function openSession(opts: {
   function totals(): SessionTotals {
     const usage: Usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
     for (const m of messages.values()) for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
-    return { sessionID, turns: calls.size, usage };
+    return { sessionID, turns: calls.size, usage, rejections: [...rejections] };
   }
 
   return { sessionID, run, totals };
@@ -115,6 +139,11 @@ export async function runSession(opts: Parameters<typeof openSession>[0] & { pro
 function asReport(input: Record<string, unknown>): FinishReport {
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : []);
   return { summary: String(input.summary ?? ""), risks: list(input.risks), review: list(input.review), missing: list(input.missing) };
+}
+
+/** The command or path a tool call targeted, for rejection records. */
+function describeCall(input: Record<string, unknown>) {
+  return String(input.command ?? input.filePath ?? input.url ?? input.pattern ?? JSON.stringify(input)).slice(0, 200);
 }
 
 function describe(err: unknown) {

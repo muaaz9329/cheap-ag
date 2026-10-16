@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
-export type Config = { test_cmd?: string; link_dirs: string[] };
+export type Config = { test_cmd?: string; link_dirs: string[]; allow_commands: string[] };
 
-const DEFAULTS: Config = { link_dirs: ["node_modules", ".venv", "venv", "vendor"] };
+const DEFAULTS: Config = { link_dirs: ["node_modules", ".venv", "venv", "vendor"], allow_commands: ["npx tsc --noEmit"] };
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 
@@ -29,7 +29,10 @@ function read(file: string): Partial<Config> {
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, link_dirs } = value as Record<string, unknown>;
+  const { test_cmd, link_dirs, allow_commands } = value as Record<string, unknown>;
+  if (allow_commands !== undefined && (!Array.isArray(allow_commands) || allow_commands.some((c) => typeof c !== "string" || !c.trim()))) {
+    throw new Error(`${file}: allow_commands must be a list of commands`);
+  }
   if (test_cmd !== undefined && (typeof test_cmd !== "string" || !test_cmd.trim())) throw new Error(`${file}: test_cmd must be a non-empty string`);
   let dirs: string[] | undefined;
   if (link_dirs !== undefined) {
@@ -41,5 +44,9 @@ function read(file: string): Partial<Config> {
       return parts.join("/");
     });
   }
-  return { ...(test_cmd !== undefined && { test_cmd }), ...(dirs && { link_dirs: dirs }) };
+  return {
+    ...(test_cmd !== undefined && { test_cmd }),
+    ...(dirs && { link_dirs: dirs }),
+    ...(allow_commands !== undefined && { allow_commands: (allow_commands as string[]).map((c) => c.trim()) }),
+  };
 }
