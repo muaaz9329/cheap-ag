@@ -167,6 +167,19 @@ export function capUse(name: string, extra = 0): { used: number; window: string;
   }).reduce((a, b) => (b.used > a.used ? b : a));
 }
 
+/** Tracked spend per model and window, with the window's cap where Go has one (for `cheapag status`); models unspent this month are left out. */
+export function spendWindows(now = Date.now()) {
+  const ledger = readLedger();
+  return [...new Set(ledger.map((e) => e.model))].sort().flatMap((model) => {
+    const windows = WINDOWS.map(({ name: window, ms, share }) => ({
+      window,
+      spent: ledger.filter((e) => e.model === model && now - e.at < ms).reduce((sum, e) => sum + e.costUsd, 0),
+      capUsd: GO_CAPS[model] ? GO_CAPS[model] * share : undefined,
+    }));
+    return windows.at(-1)!.spent > 0 ? [{ model, windows }] : [];
+  });
+}
+
 function readLedger(): { at: number; model: string; costUsd: number }[] {
   if (!existsSync(ledgerFile())) return [];
   return readFileSync(ledgerFile(), "utf8").split("\n").flatMap((line) => {

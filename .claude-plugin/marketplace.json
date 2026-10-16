@@ -1,0 +1,12 @@
+{
+  "name": "cheap-agent",
+  "description": "Cheap Agent: Claude plans and reviews while a cheaper model implements, over MCP.",
+  "owner": { "name": "muaaz9329" },
+  "plugins": [
+    {
+      "name": "cheapag",
+      "source": "./plugin",
+      "description": "Cheap Agent's MCP server, plan-writing skill, and /cheapag:status, /cheapag:allow, /cheapag:clean."
+    }
+  ]
+}

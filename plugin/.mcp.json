@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cheapag": {
+      "command": "npx",
+      "args": ["-y", "cheap-agent@0.1.0"]
+    }
+  }
+}
