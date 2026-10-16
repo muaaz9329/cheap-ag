@@ -137,7 +137,8 @@ function transcriptMetrics(sessionId) {
       if (c.type !== "tool_use") continue;
       names.push(c.name);
       // a Bash command that writes files (heredoc, redirect, sed -i, python/node one-liners) edits code without the Edit tools or the hook
-      if (c.name === "Bash" && /<<|>>?\s*["']?[\w./-]+|\bsed\s+-i|\btee\b|\bcat\s*>|python3? -c|node -e/.test(String(c.input?.command ?? ""))) bashWrites++;
+      const cmd = String(c.input?.command ?? "").replace(/\d?>>?\s*\/dev\/null|\d?>&\d/g, "");
+      if (c.name === "Bash" && /<<|(?:^|[^<>])>>?\s*["']?[\w./-]+|\bsed\s+-i|\bperl\s+-i|\btee\s+[\w./-]|python3? -c.*open\(|node -e.*writeFile/.test(cmd)) bashWrites++;
     }
   }
   const isCheapag = (n) => /^mcp__.*cheapag.*__(delegate|research|reply|jobs|land)$/.test(n);
