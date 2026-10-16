@@ -109,3 +109,32 @@ live("abort on a real session: observed event sequence", async () => {
   console.log(`LIVE abort sequence: ${JSON.stringify(seen.filter((t, i) => t !== seen[i - 1] || !t.startsWith("message.part")))}`);
   expect(seen).toContain("session.idle");
 }, 120_000);
+
+live("a worker question → BLOCKED; after a long wait a free-text reply resumes the same session and lands", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  mkdirSync(join(repo.dir, ".plan"));
+  writeFileSync(join(repo.dir, ".plan", "ask.md"), [
+    "# Live question",
+    "## 1 named greeting",
+    "files: greeting.txt",
+    "do: BEFORE writing anything, use the question tool to ask which name to greet, with the options Ada and Linus.",
+    "  Then create greeting.txt containing exactly: hello <name>",
+    "done-when: `test -s greeting.txt`",
+    "",
+  ].join("\n"));
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! }, allow: [] });
+  onTestFinished(server.close);
+  const call = async (name: string, args: Record<string, string>) =>
+    ((await server.client.callTool({ name, arguments: args }, undefined, { timeout: 300_000 })).content as { text: string }[])[0].text;
+
+  const blocked = await call("delegate", { plan: ".plan/ask.md", steps: "1" });
+  console.log(`LIVE blocked block:\n${blocked}`);
+  expect(blocked).toMatch(/^BLOCKED j[0-9a-z]{4} step=1 /);
+  const job = blocked.match(/^BLOCKED (j[0-9a-z]{4})/)![1];
+  await new Promise((r) => setTimeout(r, 30_000)); // an idle event stream held open across a slow answer
+  const done = await call("reply", { job, answer: "Grace" }); // free text, not one of the options
+  console.log(`LIVE after reply:\n${done}`);
+  expect(done).toMatch(new RegExp(`^OK ${job} step=1 .* tests=pass `));
+  expect(readFileSync(join(repo.dir, "greeting.txt"), "utf8").trim()).toBe("hello Grace");
+}, 300_000);
