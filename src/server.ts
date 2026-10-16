@@ -18,8 +18,9 @@ const { version } = createRequire(import.meta.url)("../package.json") as { versi
  * The MCP `instructions` (spec: Server instructions; D12 is the status part): Claude Code loads them at session start,
  * so the usage rules travel with the server and nobody edits CLAUDE.md. Claude Code cuts them at 4,096 characters.
  */
-const INSTRUCTIONS = `Cheap Agent: a cheap worker model implements plan steps; you plan and review.
-delegate any change over ~20 lines or touching several files: write a plan (plan-writing skill, or the format in delegate's description), then delegate its steps. research read-only questions that need wide code reading; verify low-confidence answers.
+const INSTRUCTIONS = `Cheap Agent: a cheap worker model implements; you plan and review. Delegating is the default for every code change.
+Edit directly only for a change under ~10 lines in one file. For anything else: write a plan (plan-writing skill, or the format in delegate's description) to .plan/<feature>.md, then delegate its steps. Writing code through Bash (heredocs, redirects, sed -i) is still writing code yourself: delegate it instead.
+research: read-only questions that need wide code reading; verify low-confidence answers.
 cheapag results: the first word decides.
 OK: landed (uncommitted). Read risks; open review ranges only if non-trivial.
 PARTIAL: read missing; re-delegate same step or land apply. FAIL: read error+tried; fix the plan step, re-delegate; after 2 FAILs on a step, do it yourself.

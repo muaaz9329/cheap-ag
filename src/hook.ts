@@ -4,7 +4,17 @@ import { loadConfig } from "./config.js";
 import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Bash"]);
+// Bash forms that write a file: redirects and heredocs into a path, in-place sed/perl, tee, cp/mv targets, and
+// python/node one-liners that open files for writing. The benchmark showed Claude writing whole files this way.
+const BASH_WRITES = [
+  /(?:^|[^<>])>{1,2}\s*(?!&)["']?(?<path>[^\s"'|;&]+)/g,
+  /\btee\s+(?:-a\s+)?["']?(?<path>[^\s"'|;&]+)/g,
+  /\b(?:cp|mv)\s+(?:-\S+\s+)*\S+\s+["']?(?<path>[^\s"'|;&]+)/g,
+];
+// in-place edits name their files after the script, so they are denied as a whole (plan files are never edited this way)
+const BASH_INPLACE = /\b(?:sed|perl)\s+(?:-[a-zA-Z]*i|--in-place)\b/;
+const BASH_CODE_WRITES = /\b(?:python3?|node)\s+-[ce]\b[\s\S]*(?:open\([^)]*["'][wa]|writeFile|writeFileSync|\.write_text)/;
 // the plugin's server and a `cheapag login` registration give the tool different prefixes, so name both
 const REDIRECT = "write a plan step and use the cheapag server's delegate tool (mcp__plugin_cheapag_cheapag__delegate, or mcp__cheapag__delegate) instead.";
 
@@ -40,7 +50,7 @@ export function hook(args: string[]): number {
     lines = `? (${(err as Error).message})`;
   }
   out(existsSync(flag(root))
-    ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, or a 3rd edit to one file in a turn, is denied with a pointer to delegate. CHEAPAG_ALLOW_EDITS=1 bypasses it.`
+    ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`
     : `✓ edit guard off for ${root}: Claude's edits are not limited.`);
   return 0;
 }
@@ -64,10 +74,13 @@ type Input = { session_id?: string; prompt_id?: string; cwd?: string; tool_name?
 function check(input: Input): string | undefined {
   if (process.env.CHEAPAG_ALLOW_EDITS === "1" || !EDIT_TOOLS.has(input.tool_name ?? "")) return;
   const tool = input.tool_input ?? {};
-  if (typeof tool.file_path !== "string" || typeof input.cwd !== "string") return;
+  if (typeof input.cwd !== "string") return;
+  if (input.tool_name === "Bash") return typeof tool.command === "string" ? bashCheck(input.cwd, tool.command) : undefined;
+  if (typeof tool.file_path !== "string") return;
   const root = projectRoot(input.cwd);
   if (!existsSync(flag(root))) return;
   const file = resolve(input.cwd, tool.file_path);
+  if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
   const lines = changed(input.tool_name!, tool, file);
   if (lines > limit) return `Large edit (${lines} changed lines, over ${limit}): ${REDIRECT}`;
@@ -86,6 +99,22 @@ function check(input: Input): string | undefined {
   turn.edits[file] = (turn.edits[file] ?? 0) + 1;
   mkdirSync(join(root, ".cheapag", "hook"), { recursive: true });
   writeFileSync(state, JSON.stringify(turn));
+}
+
+/** Plans live in .plan/ and are how Claude delegates, so the guard never blocks them. */
+const isPlan = (root: string, file: string) => file.startsWith(join(root, ".plan") + "/");
+
+/** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
+function bashCheck(cwd: string, command: string): string | undefined {
+  const root = projectRoot(cwd);
+  if (!existsSync(flag(root))) return;
+  const targets: string[] = [];
+  for (const re of BASH_WRITES) for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);
+  const inRepo = (p: string) => { const abs = resolve(cwd, p); return abs.startsWith(root + "/") && !isPlan(root, abs); };
+  const written = targets.filter((p) => p !== "/dev/null" && inRepo(p));
+  if (written.length) return `Bash writing ${written[0]}: ${REDIRECT}`;
+  if (BASH_INPLACE.test(command)) return `Bash in-place edit (sed/perl -i): ${REDIRECT}`;
+  if (BASH_CODE_WRITES.test(command)) return `Bash running code that writes files: ${REDIRECT}`;
 }
 
 /** Changed lines of an edit: the larger side once the lines both sides share at the start and end are dropped. */

@@ -67,6 +67,26 @@ test("on: a large edit is denied with a redirect to delegate; small edits pass; 
   expect(spawnSync(process.execPath, [serverEntry, "hook", "maybe"], { cwd: repo.dir, encoding: "utf8" }).stdout).toMatch(/usage: cheapag hook \[on \| off\]/);
 });
 
+test("on: Bash commands that write repo files are denied; reads, tests, /dev/null and .plan/ pass", () => {
+  const { run, cli } = setup();
+  cli("on");
+  const bash = (command: string, extraEnv?: Record<string, string>) => run("Bash", { command }, { extraEnv });
+  expect(bash("cat > src/errors.js <<'EOF'\nexport class X {}\nEOF")).toMatch(/^Bash writing src\/errors.js: write a plan step/);
+  expect(bash("echo hi >> src/a.js")).toMatch(/Bash writing src\/a.js/);
+  expect(bash("sed -i '' '1i\\\nimport x\n' src/inventory.js src/pricing.js")).toMatch(/Bash in-place edit \(sed\/perl -i\)/);
+  expect(bash("tee src/b.js <<EOF\nx\nEOF")).toMatch(/Bash writing src\/b.js/);
+  expect(bash("cp /tmp/new.js src/new.js")).toMatch(/Bash writing src\/new.js/);
+  expect(bash("python3 -c \"open('src/x.js','w').write('1')\"")).toMatch(/Bash running code that writes files/);
+  expect(bash("node -e \"require('fs').writeFileSync('src/x.js','1')\"")).toMatch(/Bash running code that writes files/);
+  for (const ok of ["grep -rn 'throw new Error' src; ls src", "cat src/a.js | head", "node --test", "npm test 2>&1 | tail -5", "git diff --stat", "npm test > /dev/null 2>&1; echo $?", "cat > .plan/feature.md <<'EOF'\n# plan\nEOF", "mkdir -p .plan && tee .plan/x.md <<EOF\nx\nEOF", "echo x > /tmp/outside.txt", "node -e \"console.log(1)\""]) {
+    expect(bash(ok), ok).toBeNull();
+  }
+  expect(bash("cat > src/errors.js <<'EOF'\nx\nEOF", { CHEAPAG_ALLOW_EDITS: "1" })).toBeNull();
+  // plans are exempt from the edit tools too
+  expect(run("Write", { file_path: ".plan/big.md", content: lines(60) })).toBeNull();
+  expect(run("Write", { file_path: "src/big.js", content: lines(60) })).toMatch(/Large edit/);
+});
+
 test("on: the 3rd edit to one file in a turn is denied; other files and a new turn start fresh", () => {
   const { edit, cli, repo } = setup();
   cli("on");
