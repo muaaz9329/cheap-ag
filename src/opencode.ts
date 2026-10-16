@@ -2,9 +2,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { arch, platform } from "node:os";
+import { arch } from "node:os";
 import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
+import { killProcessGroup, opencodePlatform } from "./platform.js";
 import { IMPLEMENT_MODEL, modelName, workerModels } from "./routing.js";
 
 const require = createRequire(import.meta.url);
@@ -16,12 +17,12 @@ export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: s
  * shortcut: takes the first installed variant, not the avx2/musl-aware pick postinstall makes; mirror it if x64 baseline users report crashes.
  */
 export function opencodeBinary() {
-  const os = platform() === "win32" ? "windows" : platform();
+  const { os, binary } = opencodePlatform();
   const base = `opencode-${os}-${arch()}`;
   const fromPkg = createRequire(require.resolve("opencode-ai/package.json"));
   for (const name of [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]) {
     try {
-      const bin = join(dirname(fromPkg.resolve(`${name}/package.json`)), "bin", os === "windows" ? "opencode.exe" : "opencode");
+      const bin = join(dirname(fromPkg.resolve(`${name}/package.json`)), "bin", binary);
       if (existsSync(bin)) return bin;
     } catch {
       // variant not installed for this platform
@@ -161,12 +162,6 @@ function spawnServer(configDir: string, password: string) {
 
 export function stopOpencode() {
   started = undefined; // the next ensureOpencode boots afresh
-  if (child?.pid && child.exitCode === null) {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      // group already gone
-    }
-  }
+  if (child?.exitCode === null) killProcessGroup(child.pid);
   child = undefined;
 }

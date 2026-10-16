@@ -1,16 +1,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
-export type Config = { test_cmd?: string };
+export type Config = { test_cmd?: string; link_dirs: string[] };
+
+const DEFAULTS: Config = { link_dirs: ["node_modules", ".venv", "venv", "vendor"] };
+// build output is never linked: a job must build its own (ADR-0003)
+const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 
 export function loadConfig(root: string): Config {
   const user = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
-  return { ...read(user), ...read(join(root, "cheapag.json")) };
+  return { ...DEFAULTS, ...read(user), ...read(join(root, "cheapag.json")) };
 }
 
-function read(file: string): Config {
+function read(file: string): Partial<Config> {
   if (!existsSync(file)) return {};
   let raw: string;
   try {
@@ -25,7 +29,17 @@ function read(file: string): Config {
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd } = value as Record<string, unknown>;
+  const { test_cmd, link_dirs } = value as Record<string, unknown>;
   if (test_cmd !== undefined && (typeof test_cmd !== "string" || !test_cmd.trim())) throw new Error(`${file}: test_cmd must be a non-empty string`);
-  return { test_cmd };
+  let dirs: string[] | undefined;
+  if (link_dirs !== undefined) {
+    if (!Array.isArray(link_dirs) || link_dirs.some((d) => typeof d !== "string" || !d.trim())) throw new Error(`${file}: link_dirs must be a list of directory paths`);
+    dirs = (link_dirs as string[]).map((dir) => {
+      const parts = dir.split(/[\\/]+/).filter(Boolean);
+      if (isAbsolute(dir) || parts.includes("..")) throw new Error(`${file}: link_dirs entry "${dir}" must be a path inside the repository`);
+      if (BUILD_OUTPUT.test(parts.at(-1)!)) throw new Error(`${file}: link_dirs entry "${dir}" is build output, which is never linked`);
+      return parts.join("/");
+    });
+  }
+  return { ...(test_cmd !== undefined && { test_cmd }), ...(dirs && { link_dirs: dirs }) };
 }

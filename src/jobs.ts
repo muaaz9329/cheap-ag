@@ -5,11 +5,12 @@ import { redact, type Provider } from "./credentials.js";
 import type { Opencode } from "./opencode.js";
 import { parsePlan, PLAN_FORMAT, selectSteps, type Plan, type PlanStep } from "./plan.js";
 import { failBlock, renderJob, type JobRecord } from "./report.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 import { ESCALATION_MODEL, IMPLEMENT_MODEL, modelName } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Session } from "./worker.js";
-import { createWorktree, land, projectRoot, removeWorktree, worktreeDiff, type Changed } from "./workspace.js";
+import { createWorktree, land, operationInProgress, projectRoot, removeWorktree, worktreeDiff, type Changed, type Worktree } from "./workspace.js";
+import { normalisePath } from "./platform.js";
 
 /** Jobs: runs one group of plan steps as one job, start to landing. */
 
@@ -36,12 +37,15 @@ export async function delegate(
     return failBlock(`plan ${input.plan}: ${(err as Error).message}`);
   }
 
-  let cmds: string[];
+  let config: Config;
   try {
-    cmds = verifyCommands(steps.map((s) => s.fields["done-when"]), loadConfig(root).test_cmd);
+    config = loadConfig(root);
   } catch (err) {
     return failBlock((err as Error).message);
   }
+  const cmds = verifyCommands(steps.map((s) => s.fields["done-when"]), config.test_cmd);
+  const busy = operationInProgress(root);
+  if (busy) return failBlock(`${busy} in the working tree; finish or abort it, then delegate again`);
 
   const opencode = await ctx.opencode();
   const { job, dir } = newJob(root);
@@ -53,7 +57,7 @@ export async function delegate(
   write("request.json", { ...input, steps: stepIds, model: requested, startedAt });
 
   const escalation = ESCALATION_MODEL[ctx.provider.provider];
-  let worktree: { head: string; path: string } | undefined;
+  let worktree: Worktree | undefined;
   let session: Session | undefined;
   let report: FinishReport = finishReport({ text: "" });
   let changed: Changed[] = [];
@@ -75,8 +79,7 @@ export async function delegate(
   };
 
   try {
-    // shortcut: no carry-over of uncommitted state or dependency links yet (ADR-0003); ticket 06 adds them
-    worktree = createWorktree(root, job);
+    worktree = createWorktree(root, job, config.link_dirs);
     session = await openSession({
       opencode,
       directory: worktree.path,
@@ -115,15 +118,15 @@ export async function delegate(
       }
     }
     write("finish.json", report);
-    const diff = worktreeDiff(worktree.path, worktree.head);
+    const diff = worktreeDiff(worktree);
     changed = diff.changed;
     write("diff.patch", diff.patch); // the log copy is redacted; landing applies the in-memory patch
     if (result.error) {
       reason = `worker error: ${result.error}`;
     } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
-      const conflict = await land(root, job, diff.patch);
+      const conflict = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
       if (conflict) reason = `landing conflict, working tree untouched: ${conflict.split("\n")[0]}`;
-      else removeWorktree(root, worktree.path);
+      else removeWorktree(root, worktree);
     }
   } catch (err) {
     reason = (err as Error).message;
@@ -134,8 +137,8 @@ export async function delegate(
     format: "cheapag/1" as const, job, batch: null, kind: "implement", status: (landed ? "OK" : "FAIL") as JobRecord["status"], landed,
     plan: input.plan, steps: stepIds, provider: ctx.provider.provider,
     models: { requested, final: escalated ? modelName(escalation) : requested, fallbacks: [], escalated },
-    baseline: { head: worktree?.head ?? null, stash: null },
-    worktree: !landed && worktree ? relative(root, worktree.path) : null,
+    baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null },
+    worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
     sessionID: session?.sessionID ?? null,
     // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
     tests: (!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"],

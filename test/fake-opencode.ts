@@ -37,6 +37,8 @@ export type Action =
   | { retry: { reason: "account_rate_limit" | "free_tier_limit"; message: string } }
   /** Calls the custom `finish` tool with this report (as a completed `finish` tool part). */
   | { finish: FinishReport }
+  /** Runs a test callback at this point of the run, e.g. to change the main checkout while the job is in flight. */
+  | { hook: () => void }
   /** Fails the run, then goes idle: via `session.error`, or (`on: "message"`) only on the assistant message, as abort does live. */
   | { error: { name: string; message: string }; on?: "session" | "message" };
 
@@ -140,7 +142,9 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
     for (const action of actions) {
       await new Promise((r) => setImmediate(r)); // let the client observe each event in order, as a real worker would
       if (run.aborted) return;
-      if ("edit" in action) {
+      if ("hook" in action) {
+        action.hook();
+      } else if ("edit" in action) {
         const file = join(dir, action.edit);
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, action.content);

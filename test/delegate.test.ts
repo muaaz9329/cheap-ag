@@ -156,9 +156,27 @@ test("an error reported only on the assistant message (no session.error) is stil
   expect(existsSync(join(repo.dir, "src/hello.ts"))).toBe(false);
 });
 
+test("an uncommitted edit the developer made before delegating is the worker's starting point, not a conflict", async () => {
+  let dir = "";
+  const { repo, delegate } = await scenario([{ edit: "README.md", content: "# fixture\n\nmine\nworker's line\n" }, { tool: "edit" }, { finish: REPORT }]);
+  dir = repo.dir;
+  writeFileSync(join(dir, "README.md"), "# fixture\n\nmine\n");
+  const text = await delegate("1");
+  expect(text).toMatch(/^OK /);
+  expect(text).toContain("\n  M README.md +1\n"); // only the worker's line, not the developer's
+  expect(readFileSync(join(dir, "README.md"), "utf8")).toBe("# fixture\n\nmine\nworker's line\n");
+});
+
 test("a landing conflict leaves the working tree untouched and keeps the worktree", async () => {
-  const { repo, delegate } = await scenario([{ edit: "README.md", content: "# worker's title\n" }, { tool: "edit" }, { finish: REPORT }]);
-  writeFileSync(join(repo.dir, "README.md"), "# user's title\n"); // uncommitted edit to the same line
+  let dir = "";
+  const { repo, delegate } = await scenario([
+    { edit: "README.md", content: "# worker's title\n" },
+    // the developer edits the same line in the main checkout while the job runs
+    { hook: () => writeFileSync(join(dir, "README.md"), "# user's title\n") },
+    { tool: "edit" },
+    { finish: REPORT },
+  ]);
+  dir = repo.dir;
   const text = await delegate("1");
   expect(text).toMatch(/^FAIL /);
   expect(text).toContain("\nreason: landing conflict, working tree untouched");

@@ -6,6 +6,7 @@ import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
+import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
 import { IMPLEMENT_MODEL, modelName } from "./routing.js";
 import { runSession } from "./worker.js";
 
@@ -20,6 +21,10 @@ const CHECK_TIMEOUT_MS = 90_000;
 
 export async function login(): Promise<number> {
   const out = (line = "") => process.stdout.write(redact(line) + "\n");
+  if (!isSupported()) {
+    out(`✗ ${UNSUPPORTED_REASON}`);
+    return 1;
+  }
   if (!process.stdin.isTTY) {
     out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
     return 1;

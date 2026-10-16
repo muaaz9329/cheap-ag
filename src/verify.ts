@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { killProcessGroup } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
 
@@ -31,13 +32,7 @@ function runOne(cwd: string, cmd: string): Promise<VerifyRun> {
   return new Promise((resolve) => {
     // its own process group, so everything it spawned can be stopped with it
     const child = spawn("sh", ["-c", cmd], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1", FORCE_COLOR: "0" } });
-    const killGroup = () => {
-      try {
-        process.kill(-child.pid!, "SIGKILL");
-      } catch {
-        // already gone
-      }
-    };
+    const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;
     // keep the end: failures and summaries come last

@@ -36,11 +36,11 @@ export function hermeticHome(logins: Logins = {}) {
  * Spawns the built server over stdio, exactly as Claude Code would, and connects a client.
  * Hermetic (see `hermeticHome`); `cwd` defaults to that home, so `.cheapag/` never lands in this repo.
  */
-export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins } = {}) {
+export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[] } = {}) {
   const { home, env } = hermeticHome(opts.logins);
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [serverEntry],
+    args: [...(opts.nodeArgs ?? []), serverEntry],
     cwd: opts.cwd ?? home,
     env: { ...env, ...opts.env },
     stderr: "inherit",

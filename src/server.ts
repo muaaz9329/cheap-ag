@@ -6,6 +6,7 @@ import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
 import { delegate } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
 import { PLAN_FORMAT } from "./plan.js";
+import { isSupported, UNSUPPORTED } from "./platform.js";
 import { failBlock } from "./report.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -16,11 +17,14 @@ export async function serve() {
 
   /** Every tool answers through here, so no key value can reach Claude. */
   const safeText = (s: string) => ({ content: [{ type: "text" as const, text: redact(s) }] });
+  /** Answers every tool with the unsupported-platform FAIL on native Windows (spec A18). */
+  const supported = <A extends unknown[]>(handler: (...args: A) => Promise<ReturnType<typeof safeText>>) =>
+    (...args: A) => (isSupported() ? handler(...args) : Promise.resolve(safeText(UNSUPPORTED)));
 
   server.registerTool(
     "ping",
     { description: "Check that the Cheap Agent server is running and report its version." },
-    async () => {
+    supported(async () => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
@@ -29,7 +33,7 @@ export async function serve() {
       } catch (err) {
         return safeText(`FAIL reason: ${(err as Error).message}`);
       }
-    },
+    }),
   );
 
   server.registerTool(
@@ -43,7 +47,7 @@ export async function serve() {
         note: z.string().max(300).optional().describe("Extra guidance for this run, at most 300 characters"),
       },
     },
-    async (input, extra) => {
+    supported(async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       const progressToken = extra._meta?.progressToken;
@@ -62,7 +66,7 @@ export async function serve() {
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
-    },
+    }),
   );
 
   process.on("exit", stopOpencode);
