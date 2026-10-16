@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ServerNotification } from "@modelcontextprotocol/sdk/types.js";
+import { cleanProject, gitignoreHint } from "./cleanup.js";
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
 import { delegate, jobs, recoverJobs, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
@@ -18,6 +19,14 @@ export async function serve() {
 
   /** Every tool answers through here, so no key value can reach Claude. */
   const safeText = (s: string) => ({ content: [{ type: "text" as const, text: redact(s) }] });
+  let hinted = false;
+  /** The first job result of this process carries the gitignore offer, on its own line after the block (outside the renderer's contract). */
+  const withHint = (text: string) => {
+    if (hinted) return text;
+    hinted = true;
+    const hint = gitignoreHint(process.cwd());
+    return hint ? `${text}\n\n${hint}` : text;
+  };
   /** Answers every tool with the unsupported-platform FAIL on native Windows (spec A18). */
   const supported = <A extends unknown[]>(handler: (...args: A) => Promise<ReturnType<typeof safeText>>) =>
     (...args: A) => (isSupported() ? handler(...args) : Promise.resolve(safeText(UNSUPPORTED)));
@@ -58,7 +67,7 @@ export async function serve() {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
-        return safeText(await delegate(input, { provider, opencode: (route) => ensureOpencode(provider, process.cwd(), route), progress: progressTo(extra) }));
+        return safeText(withHint(await delegate(input, { provider, opencode: (route) => ensureOpencode(provider, process.cwd(), route), progress: progressTo(extra) })));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -78,7 +87,7 @@ export async function serve() {
     supported(async (input, extra) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
-        return safeText(await reply(input, progressTo(extra)));
+        return safeText(withHint(await reply(input, progressTo(extra))));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -97,7 +106,7 @@ export async function serve() {
     supported(async (input) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
-        return safeText(await jobs(input));
+        return safeText(withHint(await jobs(input)));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -110,6 +119,12 @@ export async function serve() {
   } catch (err) {
     // recovery is housekeeping: a failure must not stop the server from starting
     process.stderr.write(`cheapag: job recovery failed: ${(err as Error).message}\n`);
+  }
+  // after recovery, so a crashed server's jobs age like any other (spec A20: cleanup at server start)
+  try {
+    cleanProject(process.cwd());
+  } catch {
+    // not a repository, or a bad config (delegate reports that): nothing to clean
   }
   process.on("exit", () => stopOpencode(true));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit());
