@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -94,4 +94,14 @@ export function tempRepo(state: RepoState = "clean") {
   if (state === "untracked") writeFileSync(join(dir, "notes.txt"), "untracked\n");
 
   return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** Every file in a checkout (but .git and .cheapag) with its bytes, plus git's view: index entries and status. Equal snapshots = an untouched tree. */
+export function snapshot(dir: string) {
+  const files = Object.fromEntries((readdirSync(dir, { recursive: true }) as string[])
+    .filter((p) => !/^\.(git|cheapag)(\/|$)/.test(p) && lstatSync(join(dir, p)).isFile())
+    .sort()
+    .map((p) => [p, readFileSync(join(dir, p)).toString("base64")]));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: dir }).toString();
+  return { files, index: git("ls-files", "-s"), status: git("status", "--porcelain", "--untracked-files=all") };
 }

@@ -334,3 +334,61 @@ test("jobs wait on a batch returns at once when nothing can move without a reply
   expect(waited).toContain(`BLOCKED ${one} step=1 `);
   expect(waited).toContain(`next: reply(job="${one}", ...)`);
 }, 30_000);
+
+test("a redo after a long wait to land does not start out of time: the wait is counted once, not at all", async () => {
+  let dir = "";
+  const { repo, delegate, call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "README.md" }],
+    {
+      "1": writes("a.txt", ASK),
+      // group 2 changes README while the developer edits the same line in the main checkout: its landing conflicts
+      "2": [{ edit: "README.md", content: "# two\n" }, { hook: () => writeFileSync(join(dir, "README.md"), "# mine\n") }, { tool: "edit" }, finish("two")],
+      "2 redo": [],
+    },
+    { limits: { max_minutes: 0.02 } }, // 1.2 s of working time per job
+  );
+  dir = repo.dir;
+  const early = await delegate("1,2");
+  const [one] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
+  await new Promise((r) => setTimeout(r, 2_000)); // group 2 sits parked far longer than its whole minute cap
+  const done = await call("reply", { job: one, answer: "a" });
+  expect(done).not.toContain("TIMEOUT");
+  expect(done).toMatch(/^CONFLICT j\w{4} step=2 .* redo=1$/m); // the redo ran (and, unscripted, left its markers)
+});
+
+test("a redo's worker counts against max_parallel: it waits for a slot instead of running alongside another group", async () => {
+  let dir = "";
+  const t: Record<string, number> = {};
+  const { repo, fake, delegate } = await scenario(
+    [{ id: "1", files: "README.md" }, { id: "2", files: "b.txt" }],
+    {
+      // group 1's landing conflicts (the developer edits README meanwhile), so it redoes while group 2 works
+      "1": [{ edit: "README.md", content: "# one\n" }, { hook: () => writeFileSync(join(dir, "README.md"), "# mine\n") }, { tool: "edit" }, finish("one")],
+      "2": writes("b.txt", { wait: 600 }, { hook: () => (t.end2 = Date.now()) }),
+    },
+    { limits: { max_parallel: 1 } },
+  );
+  dir = repo.dir;
+  fake.scriptFor(">>> REDO STEP(S): 1\n", { hook: () => (t.redo = Date.now()) }, { edit: "README.md", content: "# one\n" }, { tool: "edit" }, finish("one, again"));
+  const text = await delegate("1,2");
+  expect(text).toMatch(/^OK j\w{4} step=1 .* redo=1$/m);
+  expect(t.redo).toBeGreaterThanOrEqual(t.end2); // the redo's worker started only after group 2's had finished
+});
+
+test("land apply refuses a job whose batch is still running: it would land ahead of later groups", async () => {
+  const { call } = await scenario(
+    [{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }],
+    { "1": [{ edit: "a.txt", content: "a\n" }, { error: { name: "APIError", message: "boom" } }], "2": writes("b.txt", { wait: 2_500 }) },
+  );
+  const running = await call("delegate", { plan: ".plan/p.md", steps: "1,2", wait: false });
+  const batch = batchOf(running);
+  let failed = "";
+  while (!failed) {
+    await new Promise((r) => setTimeout(r, 100));
+    failed = (await call("jobs", { action: "list" })).split("\n").find((l) => /^FAIL j\w{4} step=1 /.test(l))?.split(" ")[1] ?? "";
+  }
+  expect(await call("land", { job: failed, action: "apply" })).toBe(
+    `FAIL ${failed} reason: job ${failed} belongs to batch ${batch}, still running; land it once the batch settles (jobs wait)`,
+  );
+  await call("jobs", { action: "wait", job: batch });
+});

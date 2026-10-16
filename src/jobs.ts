@@ -10,8 +10,11 @@ import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
 import { chain, escalationSkip, modelName, recordSpend, runRouted, usedBalance, type Route } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
-import { finishReport, openSession, type FinishReport, type Question, type Session } from "./worker.js";
-import { createWorktree, land, operationInProgress, projectRoot, removeWorktree, worktreeDiff, type Changed, type Worktree } from "./workspace.js";
+import { finishReport, openSession, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
+import {
+  conflictPaths, createWorktree, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, worktreeDiff,
+  type Changed, type Worktree,
+} from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
 
 /** Jobs: runs each group of plan steps as one job, start to landing, under per-job caps (several groups make a batch); lists, shows and cancels jobs. */
@@ -92,6 +95,8 @@ type GroupRun = Shared & {
   start?: Promise<string | undefined>;
   /** Awaited once the job is ready to land, before taking the lock: a batch lands its groups in step order. */
   beforeLand?: () => Promise<unknown>;
+  /** Waits for a worker slot again before a redo's worker runs (batches: its slot was given back before landing). */
+  beforeRedo?: () => Promise<unknown>;
 };
 
 /**
@@ -142,6 +147,8 @@ function runGroup(g: GroupRun) {
   let escalated = false;
   let failing: { run: VerifyRun; tail: string[] } | undefined;
   let checked = false; // whether verify has seen the worker's latest changes
+  let redone = 0; // 1 once a landing conflict started the redo (spec: Landing and redo)
+  let conflict: string[] | undefined; // set when the redo could not land either: the job is CONFLICT
 
   // caps count across the whole job; any stop aborts the session, and all but the turn cap also kill verify
   const { limits } = config;
@@ -172,8 +179,9 @@ function runGroup(g: GroupRun) {
     timer = setTimeout(() => stop({ cap: "minutes", reason: `minute cap (${limits.max_minutes} min) reached` }), clockLeft);
   };
   const pauseClock = () => {
-    if (timer === undefined) return; // not started yet
+    if (timer === undefined) return; // not started yet, or already paused: never count the same stretch twice
     clearTimeout(timer);
+    timer = undefined;
     clockLeft -= Date.now() - clockStarted;
   };
   let finished!: (text: string) => void;
@@ -216,7 +224,8 @@ function runGroup(g: GroupRun) {
         fallbacks: models.used,
       },
       billing,
-      baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null },
+      // tree: what the worktree's diff is measured against, so `land apply` can land it later
+      baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null, tree: worktree?.base ?? null },
       worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
       sessionID: session?.sessionID ?? null,
       // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
@@ -228,8 +237,8 @@ function runGroup(g: GroupRun) {
       review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
       // a worker stopped at the turn cap rarely says what it left undone
       missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped at the turn cap (${limits.max_turns}); compare the diff with the step`] : report.missing,
-      reason,
-      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: 0, question: asked, autoRejected: rejections,
+      reason, conflict,
+      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, question: asked, autoRejected: rejections,
       usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
       timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime() },
     };
@@ -260,6 +269,52 @@ function runGroup(g: GroupRun) {
     });
     announce(finalize("BLOCKED"));
   });
+
+  /**
+   * Its patch clashed with the working tree on landing (spec: Landing and redo): the tree is untouched, and one redo
+   * applies the change again onto a fresh worktree of the current state, then takes the normal path in the same
+   * session (same job, so caps and usage carry on). It lands OK with redo=1, or sets `conflict`: the files, and the jobs
+   * that changed them meanwhile. Called where the job lands, so a batch's landing order holds.
+   */
+  const redo = async (patch: string, clash: string, work: (prompt: string, tag: string) => Promise<RunResult>) => {
+    redone = 1;
+    write("conflict.patch", patch); // log copy of the change that clashed
+    removeWorktree(root, worktree!);
+    // the same path, so the session's directory stays valid
+    worktree = createWorktree(root, job, config.link_dirs);
+    const marked = reapply(worktree, patch);
+    const named = conflictPaths(clash);
+    const files = marked.length ? marked : named.length ? named : changed.map((c) => c.path);
+    landing = false;
+    await Promise.race([g.beforeRedo?.(), halted]); // max_parallel counts a redo's worker too
+    startClock();
+    finalize("RUNNING");
+    const result = await work(redoPrompt(steps, files, marked, patch), "redo ");
+    write("finish.json", report);
+    const diff = worktreeDiff(worktree);
+    changed = diff.changed;
+    write("diff.patch", diff.patch);
+    if (stopped) return; // the cap or cancel explains it
+    let why = result.error ? "redo worker error"
+      : failing ? "redo failed verification"
+      : leftoverMarkers(worktree).length ? "redo left conflict markers"
+      : !diff.changed.length ? "redo made no changes"
+      : undefined;
+    if (!why) {
+      landing = true;
+      pauseClock();
+      if (!(await land(root, job, diff.patch, diff.changed.map((c) => c.path)))) {
+        removeWorktree(root, worktree);
+        return;
+      }
+      why = "redo could not reconcile";
+    }
+    const others = landedSince(root, job, startedAt);
+    conflict = files.map((f) => {
+      const by = others.filter((r) => r.changed.some((c) => c.path === f)).map((r) => r.job);
+      return `${f} (${by.length ? `also changed by ${by.join(", ")}, landed first` : "changed in the working tree meanwhile"}; ${why})`;
+    });
+  };
 
   finalize("RUNNING");
   // the job outlives this call when it blocks: it settles each outcome in turn (BLOCKED, then whatever follows a reply)
@@ -300,45 +355,52 @@ function runGroup(g: GroupRun) {
         if (r.budget) stopped ??= { cap: "provider", reason: r.budget };
         return r;
       };
-      let result = await routed(contextPack(plan, steps, input.note));
-      report = finishReport(result);
-      if (!result.error && cmds.length) {
-        failing = await verify();
-        // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
-        for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
-          if (!failing) break;
-          overTurns(); // a fix needs at least one more turn
-          if (stopped as Stop | undefined) break; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
-          const esc = attempt === "esc";
-          const skip = esc && escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
-          if (skip) {
-            tried.push(skip);
-            break;
-          }
-          if (esc) escalated = true;
-          else selfFix++;
-          const before = failing.tail;
-          result = await routed(`Verification failed. Fix the cause, then call finish again.\n\n${before.join("\n")}`, esc ? escalation : undefined);
-          checked = false;
-          // an attempt that reports nothing keeps the last real report rather than a placeholder
-          const fresh = result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
-          if (fresh) report = fresh;
-          const label = `${esc ? "esc" : attempt}: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
-          if (result.limit && esc) {
-            tried.push(`${label} → usage limit: ${result.limit.message.slice(0, 80)}`);
-            escalated = false; // it never ran: the job ends on the implement chain's model and result
-            break;
-          }
-          if (result.error) {
-            tried.push(`${label} → ${stopped ? `stopped: ${stopped.reason}` : "worker error"}`);
-            break;
-          }
+      /** One prompt through the normal path: the run, then verify with up to 2 self-fixes and 1 escalation. `tag` prefixes tried: lines. */
+      const work = async (prompt: string, tag = "") => {
+        let result = await routed(prompt);
+        report = finishReport(result);
+        failing = undefined;
+        checked = false;
+        if (!result.error && cmds.length) {
           failing = await verify();
-          tried.push(`${label} → ${!failing ? "passed" : sameFailure(before, failing.tail) ? "same failure" : "different failure"}`);
+          // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
+          for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
+            if (!failing) break;
+            overTurns(); // a fix needs at least one more turn
+            if (stopped as Stop | undefined) break; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
+            const esc = attempt === "esc";
+            const skip = esc && escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
+            if (skip) {
+              tried.push(tag + skip);
+              break;
+            }
+            if (esc) escalated = true;
+            else selfFix++;
+            const before: string[] = failing.tail;
+            result = await routed(`Verification failed. Fix the cause, then call finish again.\n\n${before.join("\n")}`, esc ? escalation : undefined);
+            checked = false;
+            // an attempt that reports nothing keeps the last real report rather than a placeholder
+            const fresh = result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
+            if (fresh) report = fresh;
+            const label = `${tag}${esc ? "esc" : attempt}: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
+            if (result.limit && esc) {
+              tried.push(`${label} → usage limit: ${result.limit.message.slice(0, 80)}`);
+              escalated = false; // it never ran: the job ends on the implement chain's model and result
+              break;
+            }
+            if (result.error) {
+              tried.push(`${label} → ${stopped ? `stopped: ${stopped.reason}` : "worker error"}`);
+              break;
+            }
+            failing = await verify();
+            tried.push(`${label} → ${!failing ? "passed" : sameFailure(before, failing.tail) ? "same failure" : "different failure"}`);
+          }
         }
-      }
-      // stopped mid-change by the turn cap: check what the worker left, to tell PARTIAL from FAIL
-      if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
+        // stopped mid-change by the turn cap: check what the worker left, to tell PARTIAL from FAIL
+        if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
+        return result;
+      };
+      const result = await work(contextPack(plan, steps, input.note));
       write("finish.json", report);
       const diff = worktreeDiff(worktree);
       changed = diff.changed;
@@ -354,11 +416,11 @@ function runGroup(g: GroupRun) {
         await Promise.race([g.beforeLand?.(), halted]);
         parked = false;
         if (!stopped) {
-          landing = true; // from here on, caps and cancel no longer apply
-          clearTimeout(timer);
-          const conflict = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
-          if (conflict) reason = `landing conflict, working tree untouched: ${conflict.split("\n")[0]}`;
-          else removeWorktree(root, worktree);
+          landing = true; // from here on, caps and cancel no longer apply (until a redo works again)
+          pauseClock();
+          const clash = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
+          if (!clash) removeWorktree(root, worktree);
+          else await redo(diff.patch, clash, work);
         }
       }
     } catch (err) {
@@ -382,7 +444,7 @@ function runGroup(g: GroupRun) {
       reason = stopped.reason;
       status = stopped.cap === "turns" ? (changed.length && !failing ? "PARTIAL" : "FAIL") : STOPPED[stopped.cap];
       if (status === "PARTIAL") reason = undefined; // spec D5: PARTIAL says it through missing:
-    }
+    } else if (conflict) status = "CONFLICT";
     const text = finalize(status);
     finished(text);
     announce(text);
@@ -474,7 +536,11 @@ function runBatch(groups: Group[], shared: Shared) {
       await acquire();
       holding = true;
     })();
-    const run = runGroup({ ...shared, progress: forward, group, batch, start, beforeLand: () => (releaseSlot(), turns[i - 1]) });
+    const run = runGroup({
+      ...shared, progress: forward, group, batch, start,
+      beforeLand: () => (releaseSlot(), turns[i - 1]),
+      beforeRedo: () => acquire().then(() => (holding = true)),
+    });
     ids[i] = run.job;
     settled[i] = (async () => {
       await run.done;
@@ -587,7 +653,9 @@ function waitBatch(root: string, batch: string, progress: Progress): Promise<str
 
 const LIST_MAX = 20;
 
-type StoredRecord = JobRecord & { pid?: number; timing?: { startedAt?: string } };
+type StoredRecord = JobRecord & {
+  pid?: number; batch?: string | null; timing?: { startedAt?: string; endedAt?: string | null }; baseline?: { tree?: string | null }; discarded?: boolean;
+};
 
 function readRecord(dir: string): StoredRecord | undefined {
   try {
@@ -627,6 +695,86 @@ export function recoverJobs(cwd: string) {
     writeWhole(join(dir, "result.json"), redact(JSON.stringify({ ...cancelled, blockTokensApprox: Math.ceil(text.length / 4) }, null, 2) + "\n"));
     writeWhole(join(dir, "result.txt"), redact(text + "\n"));
   }
+}
+
+/** Jobs other than `job` that landed since `since`: who changed a file under it meanwhile. */
+function landedSince(root: string, job: string, since: Date) {
+  // shortcut: a job landed later by `land apply` counts by when it ended, not when it landed; add a landedAt if that misleads
+  return records(root).filter((r) => r.job !== job && r.landed && Date.parse(r.timing?.endedAt ?? "") >= since.getTime());
+}
+
+export type LandInput = { job: string; action: "apply" | "discard" };
+
+/**
+ * The `land` tool (spec: Tool contracts, A13): `apply` 3-way applies unlanded jobs' worktree changes to the working
+ * tree under the lock, in the order given, stopping at the first that fails; `discard` deletes their worktrees. One line
+ * per job. Records are updated (`landed`, `worktree`, `discarded`) so research's unlanded note and cleanup stay truthful.
+ */
+export async function landJobs(input: LandInput): Promise<string> {
+  const root = projectRoot(process.cwd());
+  const ids = input.job.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return failBlock('land needs a job id, or several in landing order, e.g. "j7f3a,j7f3b"');
+  let config: Config;
+  try {
+    config = loadConfig(root);
+  } catch (err) {
+    return failBlock((err as Error).message);
+  }
+  const lines: string[] = [];
+  let failed: string | undefined;
+  for (const id of ids) {
+    if (failed && input.action === "apply") {
+      lines.push(`FAIL ${id} reason: not applied, since ${failed} before it did not land`);
+      continue;
+    }
+    try {
+      lines.push(await landOne(root, config, id, input.action));
+    } catch (err) {
+      lines.push(`FAIL ${id} reason: ${(err as Error).message}`);
+      failed = id;
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Applies or discards one finished, unlanded job; returns its OK line, or throws why not. */
+async function landOne(root: string, config: Config, id: string, action: LandInput["action"]) {
+  if (!/^j[0-9a-z]{4}$/.test(id)) throw new Error(`${id} is not a job id, e.g. j7f3a`); // the id becomes a path
+  const dir = join(root, ".cheapag", "jobs", id);
+  const record = readRecord(dir);
+  if (!record) throw new Error(`job ${id} not found`);
+  if (running.has(id)) throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
+  if (record.status === "RUNNING" || record.status === "BLOCKED") throw new Error(`job ${id} is ${record.status} in another session (server pid ${record.pid ?? "unknown"})`);
+  if (record.landed) throw new Error(`job ${id} already landed`);
+  if (record.discarded) throw new Error(`job ${id} was already discarded`);
+  // landing it now would put it ahead of its batch's later groups, out of step order
+  if (record.batch && batches.has(record.batch)) throw new Error(`job ${id} belongs to batch ${record.batch}, still running; land it once the batch settles (jobs wait)`);
+  const worktree = jobWorktree(root, id, record.baseline?.tree ?? "", config.link_dirs);
+  if (!worktree) throw new Error(`job ${id} has no worktree left (cleaned up); nothing to ${action}`);
+  const save = (update: Partial<StoredRecord>) => {
+    const next = { ...record, ...update, worktree: null };
+    const text = renderJob(next);
+    writeWhole(join(dir, "result.json"), redact(JSON.stringify({ ...next, blockTokensApprox: Math.ceil(text.length / 4) }, null, 2) + "\n"));
+    writeWhole(join(dir, "result.txt"), redact(text + "\n"));
+  };
+  if (action === "discard") {
+    removeWorktree(root, worktree); // dependency links are unlinked first
+    save({ discarded: true });
+    return `OK ${id} discarded`;
+  }
+  if (!record.baseline?.tree) throw new Error(`job ${id} has no recorded base (made by an older version); land it by hand from .cheapag/worktrees/${id}/`);
+  const diff = worktreeDiff(worktree);
+  // shortcut: two sessions applying the same job at once could both pass the checks above; the second 3-way apply then conflicts
+  const clash = await land(root, id, diff.patch, diff.changed.map((c) => c.path));
+  if (clash) {
+    const files = conflictPaths(clash);
+    throw new Error(`landing conflict${files.length ? ` in ${files.join(", ")}` : ""}, working tree untouched; discard it, or fix the overlap and delegate again`);
+  }
+  removeWorktree(root, worktree);
+  save({ landed: true, changed: diff.changed });
+  const add = diff.changed.reduce((n, c) => n + c.add, 0);
+  const del = diff.changed.reduce((n, c) => n + c.del, 0);
+  return `OK ${id} applied files=${diff.changed.length} +${add}/-${del}`;
 }
 
 /** A job paused on a worker question. It lives only in this process, as does its paused session. */
@@ -689,6 +837,22 @@ function contextPack(plan: Plan, steps: PlanStep[], note?: string) {
     `>>> CURRENT STEP(S): ${steps.map((s) => s.id).join(", ")}\n\n${steps.map((s) => s.text).join("\n\n")}`,
     note && `Note: ${note}`,
   ].filter(Boolean).join("\n\n");
+}
+
+/** A redo diff longer than this is cut in its prompt. */
+const MAX_REDO_PATCH = 50_000;
+
+/** The redo's prompt to the same session: what clashed, where the conflict markers are, the step again and the original diff. */
+function redoPrompt(steps: PlanStep[], files: string[], marked: string[], patch: string) {
+  return [
+    `>>> REDO STEP(S): ${steps.map((s) => s.id).join(", ")}`,
+    `Your change could not land: the working tree changed meanwhile (${files.join(", ")}). This worktree was rebuilt from the current code, ` +
+      `with your change applied again where it could be. Files where both changed the same lines hold <<<<<<< ======= >>>>>>> conflict markers: ` +
+      `${marked.join(", ") || "none"}. Keep the current code's changes, redo the step's intent on top of them, leave no conflict markers, then call finish again.`,
+    steps.map((s) => s.text).join("\n\n"),
+    // shortcut: a huge diff is cut here; the worktree still holds the change wherever it applied
+    `Your original change:\n\`\`\`diff\n${patch.length > MAX_REDO_PATCH ? `${patch.slice(0, MAX_REDO_PATCH)}\n… (cut)` : patch}\`\`\``,
+  ].join("\n\n");
 }
 
 /** Keeps well-formed `path:start-end` ranges for files that exist under `base`, at most 5 (the server validates, not the worker). */

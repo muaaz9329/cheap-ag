@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { expect, onTestFinished, test } from "vitest";
@@ -154,4 +154,37 @@ live("research answers from the main checkout with refs, read-only", async () =>
   expect(text).toMatch(/^(ANSWER|UNSURE) r[0-9a-z]{4} /);
   expect(text).toContain("src/auth.ts");
   expect(repo.git("status", "--porcelain", "--untracked-files=all")).toBe(before); // read-only (.cheapag is excluded)
+}, 300_000);
+
+live("a landing conflict on a real model: one redo in the same session (worktree recreated) → OK redo=1, or CONFLICT", async () => {
+  const repo = tempRepo(); // README.md is tracked: "# fixture"
+  onTestFinished(repo.cleanup);
+  mkdirSync(join(repo.dir, ".plan"));
+  writeFileSync(join(repo.dir, ".plan", "redo.md"), [
+    "# Live redo",
+    "## 1 title",
+    "files: README.md",
+    "do: replace the first line of README.md with exactly: # Cheap Agent",
+    "done-when: `grep -q 'Cheap Agent' README.md` succeeds",
+    "",
+  ].join("\n"));
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! }, allow: [] });
+  onTestFinished(server.close);
+  const pending = server.client.callTool({ name: "delegate", arguments: { plan: ".plan/redo.md", steps: "1" } }, undefined, { timeout: 300_000 });
+  // the developer edits the same line in the main checkout once the worker has made its change, before it lands
+  const worktrees = join(repo.dir, ".cheapag", "worktrees");
+  await new Promise<void>((resolve) => {
+    const poll = setInterval(() => {
+      const [job] = existsSync(worktrees) ? readdirSync(worktrees) : [];
+      if (job && readFileSync(join(worktrees, job, "README.md"), "utf8").includes("Cheap Agent")) {
+        clearInterval(poll);
+        writeFileSync(join(repo.dir, "README.md"), "# Mine\n");
+        resolve();
+      }
+    }, 20);
+  });
+  const text = ((await pending).content as { text: string }[])[0].text;
+  console.log(`LIVE redo block:\n${text}`);
+  expect(text).toMatch(/^(OK j[0-9a-z]{4} .* redo=1|CONFLICT j[0-9a-z]{4} )/);
+  if (text.startsWith("CONFLICT")) expect(readFileSync(join(repo.dir, "README.md"), "utf8")).toBe("# Mine\n"); // untouched
 }, 300_000);

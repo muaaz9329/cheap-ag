@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { startServer, tempRepo, type Logins } from "./harness.js";
+import { snapshot, startServer, tempRepo, type Logins } from "./harness.js";
 import { PLAN_FORMAT } from "../src/plan.js";
 
 const PLAN = `# Hello feature
@@ -169,21 +169,28 @@ test("an uncommitted edit the developer made before delegating is the worker's s
   expect(readFileSync(join(dir, "README.md"), "utf8")).toBe("# fixture\n\nmine\nworker's line\n");
 });
 
-test("a landing conflict leaves the working tree untouched and keeps the worktree", async () => {
+test("a landing conflict the redo cannot reconcile is CONFLICT: the working tree is byte-identical, the worktree kept", async () => {
   let dir = "";
-  const { repo, delegate } = await scenario([
+  let before: ReturnType<typeof snapshot> | undefined;
+  const { repo, fake, delegate } = await scenario([
     { edit: "README.md", content: "# worker's title\n" },
     // the developer edits the same line in the main checkout while the job runs
-    { hook: () => writeFileSync(join(dir, "README.md"), "# user's title\n") },
+    { hook: () => (writeFileSync(join(dir, "README.md"), "# user's title\n"), (before = snapshot(dir))) },
     { tool: "edit" },
     { finish: REPORT },
-  ]);
+  ]); // the redo prompt gets no script: the worker leaves the conflict markers in place
   dir = repo.dir;
   const text = await delegate("1");
-  expect(text).toMatch(/^FAIL /);
-  expect(text).toContain("\nreason: landing conflict, working tree untouched");
-  expect(readFileSync(join(repo.dir, "README.md"), "utf8")).toBe("# user's title\n");
-  expect(repo.git("status", "--porcelain", "--", "README.md")).toBe(" M README.md\n");
+  const job = jobOf(text);
+  expect(text).toMatch(new RegExp(`^CONFLICT ${job} step=1 files=1 .* redo=1\n`));
+  expect(text).toContain(`\nconflict:\n  README.md (changed in the working tree meanwhile; redo left conflict markers)\nworktree: .cheapag/worktrees/${job}/\nlog: .cheapag/jobs/${job}/`);
+  expect(snapshot(repo.dir)).toEqual(before);
+  expect(fake.recorded.prompts).toHaveLength(2); // exactly one redo
+  // the redo's worktree holds the change applied again, with the clash marked
+  expect(readFileSync(join(repo.dir, ".cheapag", "worktrees", job, "README.md"), "utf8")).toMatch(/^<<<<<<< [\s\S]*# user's title\n=======\n# worker's title\n>>>>>>> /);
+  expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"))).toMatchObject({
+    status: "CONFLICT", landed: false, redo: 1, worktree: `.cheapag/worktrees/${job}`,
+  });
 });
 
 test("key-shaped strings in the worker's code land intact; only the log copy is redacted", async () => {

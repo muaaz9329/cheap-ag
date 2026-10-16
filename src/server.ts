@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { cleanProject, gitignoreHint } from "./cleanup.js";
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
-import { delegate, jobs, recoverJobs, reply } from "./jobs.js";
+import { delegate, jobs, landJobs, recoverJobs, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
 import { PLAN_FORMAT } from "./plan.js";
 import { isSupported, UNSUPPORTED } from "./platform.js";
@@ -131,6 +131,26 @@ export async function serve() {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
         return safeText(withHint(await jobs(input, progressTo(extra))));
+      } catch (err) {
+        return safeText(failBlock((err as Error).message));
+      }
+    }),
+  );
+
+  server.registerTool(
+    "land",
+    {
+      description:
+        "Land or discard finished jobs that did not land (PARTIAL, FAIL, CONFLICT…). apply: 3-way applies a job's worktree changes to your working tree, uncommitted (a conflict leaves the tree untouched); discard: deletes its worktree. One line per job.",
+      inputSchema: {
+        job: z.string().describe('Job id, or several comma-separated in landing order, e.g. "j3d55" or "j3d54,j3d55" (apply stops at the first that fails)'),
+        action: z.enum(["apply", "discard"]).describe("apply: land the job's changes; discard: delete its worktree"),
+      },
+    },
+    supported(async (input) => {
+      if (!detectProvider()) return safeText(NO_PROVIDER);
+      try {
+        return safeText(await landJobs(input));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
