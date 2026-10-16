@@ -16,6 +16,8 @@ const tasks = JSON.parse(readFileSync(join(here, "tasks.json"), "utf8")).filter(
 const arms = (opts.arms ?? "baseline,cheapag").split(",");
 const model = opts.model ?? "opus";
 const timeoutMs = Number(opts.timeout ?? 25) * 60_000;
+// one id per invocation: the dashboard groups rows into benchmark runs by it
+const sweep = { id: new Date().toISOString(), label: opts.label ?? `${model} · ${arms.join("+")}` };
 
 if (!existsSync(dist)) fail("build first: npm run build");
 mkdirSync(runs, { recursive: true });
@@ -25,7 +27,10 @@ for (let n = 1; n <= Number(opts.runs ?? 1); n++) {
   for (const task of tasks) {
     for (const arm of arms) {
       const row = await runOne(task, arm, n);
-      if (!row.dry) appendFileSync(join(here, "results.jsonl"), JSON.stringify(row) + "\n");
+      if (!row.dry) {
+        appendFileSync(join(here, "results.jsonl"), JSON.stringify({ sweep: sweep.id, sweep_label: sweep.label, ...row }) + "\n");
+        spawnSync(process.execPath, [join(here, "dashboard.mjs")], { stdio: "ignore" }); // keep bench/dashboard.html current, run by run
+      }
       console.log(`${row.task} ${row.arm} #${n}: ${row.pass ? "PASS" : "FAIL"} tokens=${row.claude_tokens} out=${row.output_tokens} cost=$${row.claude_cost_usd?.toFixed(3)} worker=$${row.worker_cost_usd.toFixed(4)} ${Math.round(row.duration_ms / 1000)}s delegate=${row.delegate_calls} edits=${row.claude_edits}`);
     }
   }

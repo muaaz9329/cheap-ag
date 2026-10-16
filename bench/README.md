@@ -23,6 +23,8 @@ node bench/report.mjs --write                               # docs/benchmark.md
 node bench/format.mjs                                       # result block vs JSON token sizes
 ```
 
+**Dashboard:** `bench/dashboard.html` (open it in a browser) is regenerated after every recorded task, one section per benchmark run plus a trend chart across runs. `node bench/dashboard.mjs` rebuilds it by hand. `--label "<text>"` on `run.mjs` names a run on the dashboard (default: `<model> · <arms>`). Both the HTML and `results.jsonl` stay local (gitignored).
+
 Flags: `--tasks t1,t3` (id prefixes), `--arms baseline,cheapag,cheapag-hook`, `--runs N`, `--model <alias>`, `--timeout <minutes>` (default 25), `--dry`.
 
 Needs a saved worker login (`npx cheap-agent login`) for the cheapag arm. Run dirs live under `bench/.runs/` (gitignored); each keeps `.bench-stdout.json` (the raw `claude -p` result), `.bench-grade.txt` and, for the cheapag arm, the full `.cheapag/` job records.
