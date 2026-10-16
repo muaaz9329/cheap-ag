@@ -40,6 +40,38 @@ async function scenario(actions: Action[] | null, plan = PLAN, logins: Logins = 
 
 const jobOf = (text: string) => text.match(/^\w+ (j[0-9a-z]{4}) /)![1];
 
+test("an inline task runs as a one-step job without a plan file, and lands OK", async () => {
+  const { repo, fake, server } = await scenarioWithServer([{ edit: "src/inline.ts", content: "export const inline = 1;\n" }, { finish: { summary: "added inline", risks: [], review: [], missing: [] } }]);
+  const call = async (args: Record<string, unknown>) => ((await server.client.callTool({ name: "delegate", arguments: args })).content as { text: string }[])[0].text;
+  const text = await call({ task: "Add src/inline.ts exporting inline = 1", files: "src/inline.ts" });
+  expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 /);
+  expect(readFileSync(join(repo.dir, "src", "inline.ts"), "utf8")).toBe("export const inline = 1;\n");
+  const plans = readdirSync(join(repo.dir, ".cheapag", "plans"));
+  expect(plans).toHaveLength(1);
+  const plan = readFileSync(join(repo.dir, ".cheapag", "plans", plans[0]), "utf8");
+  expect(plan).toContain("files: src/inline.ts");
+  expect(plan).toContain("do: Add src/inline.ts exporting inline = 1");
+  expect(JSON.stringify(fake.recorded.prompts[0].parts)).toContain("Add src/inline.ts exporting inline = 1");
+  // neither form, both forms, or an empty task fail before any job
+  expect(await call({})).toBe("FAIL reason: give task (what to change, files, how to check), or plan and steps");
+  expect(await call({ task: "x", plan: ".plan/hello.md", steps: "1" })).toBe("FAIL reason: give either task, or plan and steps, not both");
+  expect(await call({ task: "  " })).toBe("FAIL reason: task is empty: say what to change, in which files, and how to check it");
+});
+
+/** scenario() plus the raw server, for calls with arbitrary arguments. */
+async function scenarioWithServer(actions: Action[]) {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  mkdirSync(join(repo.dir, ".plan"));
+  writeFileSync(join(repo.dir, ".plan", "hello.md"), PLAN);
+  const fake = await startFakeOpencode();
+  onTestFinished(fake.close);
+  fake.script(...actions);
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "go-key" }, allow: [] });
+  onTestFinished(server.close);
+  return { repo, fake, server };
+}
+
 test("a single step runs in a worktree and lands OK, uncommitted, with the result block and job record", async () => {
   const { repo, fake, delegate, progress } = await scenario([
     { edit: "src/hello.ts", content: "export const hello = 1;\n" },

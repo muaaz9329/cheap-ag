@@ -56,7 +56,9 @@ test("skills: plan-writing for Claude; status, and user-only allow, clean and ho
 
 test("the edit guard hook: PreToolUse on Edit/Write/MultiEdit/Bash, a shell test that skips npx while off, never a failing exit", () => {
   const hooks = json(join(plugin, "hooks", "hooks.json"));
-  expect(Object.keys(hooks.hooks)).toEqual(["PreToolUse"]);
+  expect(Object.keys(hooks.hooks).sort()).toEqual(["PreToolUse", "SessionStart"]);
+  // SessionStart puts the delegation rule into the session's context (benchmark run 2: MCP instructions alone were not enough)
+  expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook context`, timeout: expect.any(Number) }] }]);
   expect(hooks.hooks.PreToolUse).toEqual([{ matcher: "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: expect.any(String), timeout: expect.any(Number) }] }]);
   const { command } = hooks.hooks.PreToolUse[0].hooks[0];
   expect(command).toBe(`r=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f "$r/.cheapag/hook.json" ] && npx -y cheap-agent@${version} hook guard; exit 0`);

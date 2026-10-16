@@ -169,7 +169,7 @@ function preparePlugin() {
   cpSync(join(root, "plugin"), dir, { recursive: true });
   rmSync(join(dir, ".mcp.json"), { force: true });
   const hooks = join(dir, "hooks", "hooks.json");
-  writeFileSync(hooks, readFileSync(hooks, "utf8").replace(/npx -y cheap-agent@[^ ]+ hook guard/, `${process.execPath} ${dist} hook guard`));
+  writeFileSync(hooks, readFileSync(hooks, "utf8").replace(/npx -y cheap-agent@[^ ]+ hook/g, `${process.execPath} ${dist} hook`));
   return dir;
 }
 

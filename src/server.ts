@@ -18,9 +18,10 @@ const { version } = createRequire(import.meta.url)("../package.json") as { versi
  * The MCP `instructions` (spec: Server instructions; D12 is the status part): Claude Code loads them at session start,
  * so the usage rules travel with the server and nobody edits CLAUDE.md. Claude Code cuts them at 4,096 characters.
  */
-const INSTRUCTIONS = `Cheap Agent: a cheap worker model implements; you plan and review. Delegating is the default for every code change.
-Edit directly only for a change under ~10 lines in one file. For anything else: write a plan (plan-writing skill, or the format in delegate's description) to .plan/<feature>.md, then delegate its steps. Writing code through Bash (heredocs, redirects, sed -i) is still writing code yourself: delegate it instead.
-research: read-only questions that need wide code reading; verify low-confidence answers.
+const INSTRUCTIONS = `Cheap Agent: a cheap worker model writes the code; you decide what to change and review the results. The user pays for your tokens, not the worker's.
+Send every code change to delegate, including small, mechanical, "quick" or multi-file ones: those are exactly what the worker is for. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only when the user asks you to, or to fix one line after a worker result. Writing files through Bash (heredocs, redirects, sed -i) is editing yourself.
+Trust OK: it already passed its checks. Don't re-run tests or re-read the diff unless risks: says so.
+research: questions that need reading several files; verify low-confidence answers.
 cheapag results: the first word decides.
 OK: landed (uncommitted). Read risks; open review ranges only if non-trivial.
 PARTIAL: read missing; re-delegate same step or land apply. FAIL: read error+tried; fix the plan step, re-delegate; after 2 FAILs on a step, do it yourself.
@@ -74,10 +75,13 @@ export async function serve() {
     "delegate",
     {
       description:
-        `Implement code changes cheaply: hands plan steps to the cheap worker model. It edits an isolated worktree; an OK result is already landed (uncommitted) in your working tree. ${PLAN_FORMAT}`,
+        `Make any code change: use this for every edit, including small, mechanical, "quick" or multi-file ones; those are exactly what the cheap worker is for, and your tokens cost the user far more than its. One call: task = what to change, which files, how to check. The worker edits an isolated worktree, runs the checks, and lands an OK result (uncommitted) in your working tree; read the result block instead of re-checking. For multi-step work pass plan + steps instead of task. ${PLAN_FORMAT}`,
       inputSchema: {
-        plan: z.string().describe("Plan file path, relative to the repository root"),
-        steps: z.string().describe('Steps to run: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them'),
+        task: z.string().max(4000).optional().describe("The change in plain words: what to change, which files, how to check. One step, no plan file needed"),
+        files: z.string().optional().describe("With task: files or directories it touches, comma-separated (default: the whole repo)"),
+        done_when: z.string().optional().describe("With task: how to check it; `backticked` shell commands must succeed (default: the repo's tests)"),
+        plan: z.string().optional().describe("Instead of task: plan file path, relative to the repository root"),
+        steps: z.string().optional().describe('With plan: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them'),
         note: z.string().max(300).optional().describe("Extra guidance for this run, at most 300 characters"),
         wait: z.boolean().optional().describe('Default true: return when every group settles or one is BLOCKED. false: return RUNNING at once; then jobs(action="wait")'),
       },

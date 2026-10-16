@@ -105,3 +105,10 @@ test("guard_lines comes from the repo's cheapag.json", () => {
   expect(run("Write", { file_path: "f.ts", content: lines(5) })).toBeNull();
   expect(run("Write", { file_path: "f.ts", content: lines(6) })).toMatch(/Large edit \(6 changed lines, over 5\)/);
 });
+
+test("context: the SessionStart hook prints the delegation rule as additionalContext", () => {
+  const out = JSON.parse(execFileSync(process.execPath, [serverEntry, "hook", "context"], { encoding: "utf8" }));
+  expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  expect(out.hookSpecificOutput.additionalContext).toMatch(/every code change.*including small, mechanical/s);
+  expect(out.hookSpecificOutput.additionalContext).toContain('task: "<what to change, which files, how to check>"');
+});

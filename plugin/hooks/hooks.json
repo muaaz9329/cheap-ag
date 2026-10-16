@@ -1,5 +1,5 @@
 {
-  "description": "Cheap Agent's edit guard (edits and Bash file writes): off until /cheapag:hook on; the shell test keeps it free (no npx) while off.",
+  "description": "Cheap Agent: SessionStart adds the delegation rule to the session's context; the edit guard (edits and Bash file writes) is off until /cheapag:hook on, and its shell test keeps it free (no npx) while off.",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,6 +8,17 @@
           {
             "type": "command",
             "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f \"$r/.cheapag/hook.json\" ] && npx -y cheap-agent@0.1.0 hook guard; exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y cheap-agent@0.1.0 hook context",
             "timeout": 60
           }
         ]

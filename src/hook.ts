@@ -27,6 +27,7 @@ const flag = (root: string) => join(root, ".cheapag", "hook.json");
  */
 export function hook(args: string[]): number {
   if (args.length === 1 && args[0] === "guard") return guard();
+  if (args.length === 1 && args[0] === "context") return context();
   const out = (line: string) => process.stdout.write(line + "\n");
   if (args.length > 1 || (args.length && args[0] !== "on" && args[0] !== "off")) {
     out(`✗ ${USAGE}`);
@@ -52,6 +53,17 @@ export function hook(args: string[]): number {
   out(existsSync(flag(root))
     ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`
     : `✓ edit guard off for ${root}: Claude's edits are not limited.`);
+  return 0;
+}
+
+/**
+ * The plugin's SessionStart hook: puts the delegation rule into the session's own context, where it weighs more than
+ * the MCP server's instructions (benchmark run 2: Claude saw those and still wrote code itself, "small mechanical change").
+ */
+export const SESSION_CONTEXT = `Cheap Agent is connected in this session. Its cheap worker model writes code so the user's Claude tokens aren't spent on it. For every code change you make here, including small, mechanical, "quick" or multi-file ones, call the cheapag delegate tool with task: "<what to change, which files, how to check>" instead of editing files yourself (Edit/Write, or Bash heredocs, redirects, sed -i). Then read its result block: OK means it already passed its checks and landed. Only edit directly when the user asks you to, or to fix one line after a worker result.`;
+
+function context(): number {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: SESSION_CONTEXT } }) + "\n");
   return 0;
 }
 

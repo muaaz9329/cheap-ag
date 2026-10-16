@@ -32,16 +32,44 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 const MAX_QUIET_REJECTIONS = 5;
 
 export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean };
+/** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
+export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
+
+/**
+ * An inline task becomes a one-step plan under .cheapag/plans/ so everything downstream (records, integration checks,
+ * re-delegation) sees an ordinary plan file. Without done_when, verification falls back to the repo's test_cmd.
+ * shortcut: these plan files are never cleaned up; fold them into the job-log retention if they pile up.
+ */
+function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fail: string } {
+  const task = req.task!.trim();
+  if (!task) return { fail: "task is empty: say what to change, in which files, and how to check it" };
+  if (req.plan || req.steps) return { fail: "give either task, or plan and steps, not both" };
+  const indent = (text: string) => text.split(/\r?\n/).map((l, i) => (i ? "  " + l : l)).join("\n");
+  const title = task.split(/\r?\n/)[0].slice(0, 70);
+  const body = [`# ${title}`, "", "## 1 task", `files: ${req.files?.trim() || "./"}`, `do: ${indent(task)}`,
+    `done-when: ${indent(req.done_when?.trim() || "the change described in do: is made and the existing tests still pass")}`, ""].join("\n");
+  const rel = join(".cheapag", "plans", `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(2).toString("hex")}.md`);
+  mkdirSync(join(root, ".cheapag", "plans"), { recursive: true });
+  writeFileSync(join(root, rel), body);
+  return { plan: rel };
+}
 
 /** What a tool call that may start workers gets from the server. */
 export type WorkerContext = { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: Progress };
 
-export async function delegate(input: DelegateInput, ctx: WorkerContext): Promise<string> {
+export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promise<string> {
   const root = projectRoot(process.cwd());
   // first: an unapproved repo gets CONSENT before any job, worktree, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
   const { route } = gate;
+  let input: DelegateInput;
+  if (req.task !== undefined) {
+    const made = inlinePlan(root, req);
+    if ("fail" in made) return failBlock(made.fail);
+    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait };
+  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait };
+  else return failBlock("give task (what to change, files, how to check), or plan and steps");
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
   if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
