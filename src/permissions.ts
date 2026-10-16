@@ -77,6 +77,19 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
   ];
 }
 
+/**
+ * The research worker's ruleset (spec E1, research): read-only search and nothing else, every key explicit. It runs in
+ * the main checkout itself, so env files (secrets) are unreadable too; outside the repo is denied as for the worker.
+ */
+export function researchRuleset(): Rule[] {
+  return [
+    deny("*"),
+    ...["read", "glob", "grep", "list"].map((p) => allow(p)),
+    ...[".env*", "**/.env*"].map((p) => deny("read", p)),
+    ...["edit", "bash", "question", "lsp", "todowrite", "finish", "external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
+  ];
+}
+
 /** The same static rules in OpenCode's config form, for the server-wide `OPENCODE_PERMISSION` baseline. */
 export function baselinePermission() {
   const config: Record<string, string | Record<string, string>> = {};

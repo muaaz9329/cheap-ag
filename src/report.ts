@@ -172,7 +172,8 @@ export function renderResearch(r: ResearchRecord) {
       r.models && r.models.final !== r.models.requested && `model=${r.models.final}`,
     ].filter(Boolean).join(" "),
   ];
-  if (r.answer.trim()) lines.push(...r.answer.trim().split("\n"));
+  // prose is word-wrapped, not elided like other long lines
+  if (r.answer.trim()) lines.push(...r.answer.trim().split("\n").flatMap((l) => wrap(l.trimEnd())));
   if (r.refs.length) lines.push(`refs: ${r.refs.map((v) => `${v.path}:${v.start}${v.end !== v.start ? `-${v.end}` : ""}`).join(", ")}`);
   if (r.confidence) lines.push(`confidence: ${r.confidence}`);
   if (r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
@@ -214,6 +215,17 @@ export const renderConsent = (c: ConsentRecord) =>
 
 const oneLine = (s: string) => s.trim().replace(/\s*\n\s*/g, " ");
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
+/** A line broken at spaces into lines of at most 200 chars (a longer word is left to `fit`). */
+function wrap(line: string) {
+  const out = [""];
+  for (const word of line.replaceAll("\t", "  ").split(" ")) {
+    const last = out[out.length - 1];
+    if (last && last.length + 1 + word.length > LINE_MAX) out.push(word);
+    else out[out.length - 1] = last ? `${last} ${word}` : word;
+  }
+  return out;
+}
 
 /** D9 line rules: no tabs (2 spaces), at most 200 chars with the middle elided. */
 function fit(line: string) {

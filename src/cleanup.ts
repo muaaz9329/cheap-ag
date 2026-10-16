@@ -16,6 +16,8 @@ import { git, projectRoot } from "./workspace.js";
 const DAY_MS = 86_400_000;
 // only folders named like our job ids are ours to remove
 const JOB_ID = /^j[0-9a-z]{4}$/;
+/** A job (`j…`) or research (`r…`) log folder under `.cheapag/jobs/`. */
+const LOG_ID = /^[jr][0-9a-z]{4}$/;
 const BATCH_FILE = /^b[0-9a-z]{4}\.json$/;
 /** How long a job folder without a readable record counts as just created, so even --all leaves it alone. */
 const UNKNOWN_GRACE_MS = 60 * 60_000;
@@ -38,7 +40,8 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
     const dir = join(jobsDir, id);
     let record: { status?: string; pid?: number; timing?: { startedAt?: string; endedAt?: string | null } } | undefined;
     try {
-      record = JSON.parse(readFileSync(join(dir, "result.json"), "utf8"));
+      // research logs keep their record as research.json (never in flight across a restart: it has no RUNNING state)
+      record = JSON.parse(readFileSync(join(dir, id.startsWith("r") ? "research.json" : "result.json"), "utf8"));
     } catch {
       // no record (yet), or unreadable
     }
@@ -70,7 +73,7 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
   }
   if (removedTree) git(root, ["worktree", "prune"]);
 
-  for (const id of entries(jobsDir)) {
+  for (const id of entries(jobsDir, LOG_ID)) {
     const j = job(id);
     if (j.live) out.kept.push(`job ${id}: ${j.status} job in flight`);
     // the record explains its worktree: it stays while the worktree does
@@ -149,7 +152,7 @@ export function gitignoreHint(cwd: string) {
 }
 
 /** Our job-id folders directly under `dir`, if `dir` is a real directory. */
-const entries = (dir: string) => (realDir(dir) ? readdirSync(dir).filter((id) => JOB_ID.test(id) && realDir(join(dir, id))) : []);
+const entries = (dir: string, ids = JOB_ID) => (realDir(dir) ? readdirSync(dir).filter((id) => ids.test(id) && realDir(join(dir, id))) : []);
 
 /** A directory that is not a symlink. */
 function realDir(path: string) {

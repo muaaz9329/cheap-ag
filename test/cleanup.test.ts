@@ -126,6 +126,22 @@ test("a batch record goes with its last job folder; one that never got a job goe
   expect(exists("batches/bkeep.json") && exists("batches/bnew0.json")).toBe(true);
 });
 
+test("research logs (r… folders) age out like job logs", () => {
+  const { repo, clean, exists } = repoWithState();
+  const research = (id: string, days: number) => {
+    const dir = join(repo.dir, ".cheapag", "jobs", id);
+    mkdirSync(dir, { recursive: true });
+    const at = new Date(Date.now() - days * DAY).toISOString();
+    writeFileSync(join(dir, "research.json"), JSON.stringify({ job: id, kind: "research", status: "ANSWER", timing: { startedAt: at, endedAt: at } }));
+  };
+  research("rold1", 31);
+  research("rnew1", 2);
+  const out = clean();
+  expect(out).toContain("  removed job rold1: 31d old\n");
+  expect(exists("jobs/rold1")).toBe(false);
+  expect(exists("jobs/rnew1")).toBe(true);
+});
+
 test("retention is configurable in cheapag.json, and a bad value is an error", () => {
   const { repo, job, clean, failed, exists } = repoWithState();
   job("jnew1", "FAIL", 2, { worktree: true });

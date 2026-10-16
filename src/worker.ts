@@ -29,6 +29,8 @@ export async function openSession(opts: {
   opencode: Opencode;
   directory: string;
   model: WorkerModel;
+  /** The generated OpenCode agent to run (src/opencode.ts); the implementation worker by default. */
+  agent?: string;
   /** The session's permission ruleset (see src/permissions.ts); OpenCode enforces it, last matching rule winning. */
   permission?: Rule[];
   /** Called with every event of this session, in order (for the job log and progress). */
@@ -45,7 +47,7 @@ export async function openSession(opts: {
     headers: { authorization: `Basic ${Buffer.from(`opencode:${opencode.password}`).toString("base64")}` },
   });
   const created = await client.session.create({
-    directory, agent: WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id }, ...(opts.permission && { permission: opts.permission }),
+    directory, agent: opts.agent ?? WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id }, ...(opts.permission && { permission: opts.permission }),
   });
   if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
   const sessionID = created.data.id;

@@ -57,9 +57,9 @@ function withZdr(m: WorkerModel): WorkerModel {
 }
 
 /**
- * The repo's consent gate, for delegate and (ticket 13) research. Call it before anything is created or booted:
+ * The repo's consent gate, for delegate and research. Call it before anything is created or booted:
  * - `block`: the CONSENT block (not approved for this provider) or a FAIL (approved, but no allowed model);
- * - `route`: the allowlisted models the job may use. A disallowed escalation model is dropped, not a failure.
+ * - `route`: the allowlisted models the job may use. A disallowed escalation or research model is dropped, not a failure.
  */
 export function consentGate(root: string, provider: Provider["provider"]): { block: string } | { route: Route } {
   const consent = readConsent(root);
@@ -72,7 +72,7 @@ export function consentGate(root: string, provider: Provider["provider"]): { blo
   const implement = pick(full.implement) ?? pick(full.escalation);
   const escalation = pick(full.escalation);
   if (!implement) return { block: failBlock(`no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`) };
-  return { route: { implement, escalation: escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined } };
+  return { route: { implement, escalation: escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined, research: pick(full.research) } };
 }
 
 export const describe = (c: Consent) => (c.mode === "all" ? "all models" : c.mode === "zdr-only" ? "zero-retention only" : `models ${c.models!.join(", ")}`);
@@ -80,9 +80,10 @@ export const describe = (c: Consent) => (c.mode === "all" ? "all models" : c.mod
 /** Spec D5's CONSENT block: who would receive the code, their known retention, and how the user approves. */
 function consentBlock(root: string, provider: Provider["provider"]) {
   const full = fullRoute(provider);
-  const models = [full.implement, full.escalation].filter((m): m is WorkerModel => !!m);
+  // every model that may receive code; deduped, as DeepSeek researches on its implement model
+  const models = [full.implement, full.escalation, full.research].filter((m, i, all): m is WorkerModel => !!m && all.findIndex((o) => o?.id === m.id) === i);
   const ids = models.map((m) => m.id).join(", ");
-  // shortcut: lists the implement and escalation models only; ticket 12 adds "(+fallbacks …)"
+  // shortcut: lists the implement, escalation and research models only; ticket 12 adds "(+fallbacks …)"
   const retentionLine = provider === "openrouter"
     ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
     : models.map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`).join("; ");

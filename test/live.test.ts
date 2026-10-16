@@ -138,3 +138,20 @@ live("a worker question → BLOCKED; after a long wait a free-text reply resumes
   expect(done).toMatch(new RegExp(`^OK ${job} step=1 .* tests=pass `));
   expect(readFileSync(join(repo.dir, "greeting.txt"), "utf8").trim()).toBe("hello Grace");
 }, 300_000);
+
+live("research answers from the main checkout with refs, read-only", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  mkdirSync(join(repo.dir, "src"));
+  writeFileSync(join(repo.dir, "src", "auth.ts"), "export function login(user: string) {\n  return user === \"admin\";\n}\n");
+  repo.git("add", "-A");
+  repo.git("commit", "-q", "-m", "auth");
+  const before = repo.git("status", "--porcelain", "--untracked-files=all");
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! }, allow: [] });
+  onTestFinished(server.close);
+  const text = ((await server.client.callTool({ name: "research", arguments: { question: "Where is the login function defined, and what does it return?" } }, undefined, { timeout: 300_000 })).content as { text: string }[])[0].text;
+  console.log(`LIVE research block:\n${text}`);
+  expect(text).toMatch(/^(ANSWER|UNSURE) r[0-9a-z]{4} /);
+  expect(text).toContain("src/auth.ts");
+  expect(repo.git("status", "--porcelain", "--untracked-files=all")).toBe(before); // read-only (.cheapag is excluded)
+}, 300_000);

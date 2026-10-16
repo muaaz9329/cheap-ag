@@ -10,6 +10,7 @@ import { ensureOpencode, stopOpencode } from "./opencode.js";
 import { PLAN_FORMAT } from "./plan.js";
 import { isSupported, UNSUPPORTED } from "./platform.js";
 import { failBlock } from "./report.js";
+import { MAX_WORDS, research } from "./research.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -68,6 +69,28 @@ export async function serve() {
       if (!provider) return safeText(NO_PROVIDER);
       try {
         return safeText(withHint(await delegate(input, { provider, opencode: (route) => ensureOpencode(provider, process.cwd(), route), progress: progressTo(extra) })));
+      } catch (err) {
+        return safeText(failBlock((err as Error).message));
+      }
+    }),
+  );
+
+  server.registerTool(
+    "research",
+    {
+      description:
+        "Ask the cheap read-only research worker a question about this repository's code (it reads the working tree, uncommitted changes included). Returns a short answer with path:line refs and a confidence; verify low-confidence answers before acting.",
+      inputSchema: {
+        question: z.string().min(1).max(2000).describe("The question, e.g. where is JWT validated and how are expiry errors mapped?"),
+        paths: z.string().optional().describe('Comma-separated repo-relative paths to limit the search to, e.g. "src/auth, src/app.ts"'),
+        max_words: z.number().int().positive().optional().describe(`Answer length cap in words; default 200, at most ${MAX_WORDS}`),
+      },
+    },
+    supported(async (input, extra) => {
+      const provider = detectProvider();
+      if (!provider) return safeText(NO_PROVIDER);
+      try {
+        return safeText(withHint(await research(input, { provider, opencode: (route) => ensureOpencode(provider, process.cwd(), route), progress: progressTo(extra) })));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }

@@ -24,10 +24,23 @@ export const ESCALATION_MODEL: Record<Provider["provider"], WorkerModel> = {
   deepseek: { providerID: "deepseek", id: "deepseek-v4-pro" },
 };
 
-/** The models one job may run: the implement model and, unless the allowlist drops it, the escalation model (src/consent.ts). */
-export type Route = { implement: WorkerModel; escalation?: WorkerModel };
+// ticket 13, minimal until ticket 12's role table: the research role's default model (spec: Models and limits). Its one
+// fallback is the implement model (DeepSeek V4.1 Flash), see src/research.ts. Go's id is the spec's (E4), not yet seen
+// live; OpenRouter's is unverified; DeepSeek serves no Qwen, so research there runs the implement model.
+export const RESEARCH_MODEL: Record<Provider["provider"], WorkerModel> = {
+  "opencode-go": { providerID: "opencode-go", id: "qwen3.8-flash" },
+  openrouter: { providerID: "openrouter", id: "qwen/qwen3.8-flash", options: OPENROUTER_PRIVATE },
+  deepseek: IMPLEMENT_MODEL.deepseek,
+};
+
+/**
+ * The models one job may run: the implement model and, unless the allowlist drops them, the escalation and research
+ * models (src/consent.ts).
+ */
+export type Route = { implement: WorkerModel; escalation?: WorkerModel; research?: WorkerModel };
 
 /** Every model a provider's worker may run, before the repo's allowlist filters them. */
-export const fullRoute = (provider: Provider["provider"]): Route => ({ implement: IMPLEMENT_MODEL[provider], escalation: ESCALATION_MODEL[provider] });
+export const fullRoute = (provider: Provider["provider"]): Route =>
+  ({ implement: IMPLEMENT_MODEL[provider], escalation: ESCALATION_MODEL[provider], research: RESEARCH_MODEL[provider] });
 
 export const modelName = (m: WorkerModel) => `${m.providerID}/${m.id}`;

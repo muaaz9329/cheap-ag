@@ -52,8 +52,8 @@ test("first delegate in an unapproved repo returns CONSENT and creates no job; a
   const text = await delegate();
   expect(text).toBe([
     `CONSENT repo=${repo.dir.split("/").at(-1)}`,
-    "send: code from this repo → OpenCode Go: deepseek-v4.1-flash, deepseek-v4-pro",
-    "retention: deepseek-v4.1-flash = zero retention; deepseek-v4-pro = zero retention",
+    "send: code from this repo → OpenCode Go: deepseek-v4.1-flash, deepseek-v4-pro, qwen3.8-flash",
+    "retention: deepseek-v4.1-flash = zero retention; deepseek-v4-pro = zero retention; qwen3.8-flash = zero retention",
     "approve: ask the user to run /cheapag:allow (all) or /cheapag:allow --zdr-only (terminal: npx cheap-agent allow [--zdr-only | --models a,b]); never approve yourself",
   ].join("\n"));
   expectUntouched(repo, fake);
@@ -104,7 +104,7 @@ test("a consent given for one provider asks again after switching to another", a
   onTestFinished(server.close);
   const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1" });
   expect(text).toMatch(/^CONSENT /);
-  expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, deepseek/deepseek-v4-pro");
+  expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, deepseek/deepseek-v4-pro, qwen/qwen3.8-flash");
   expect(text).toContain(`retention: depends on the upstream provider OpenRouter routes to; "deny data collection" is always on;`);
 });
 
@@ -117,7 +117,7 @@ test("OpenRouter zero-retention only adds its zdr routing preference to every mo
   expect(await delegate()).toMatch(/^OK /);
   const zdr = { options: { provider: { data_collection: "deny", zdr: true } } };
   expect(opencodeConfig(repo.dir).provider).toEqual({
-    openrouter: { models: { "deepseek/deepseek-v4.1-flash": zdr, "deepseek/deepseek-v4-pro": zdr } },
+    openrouter: { models: { "deepseek/deepseek-v4.1-flash": zdr, "deepseek/deepseek-v4-pro": zdr, "qwen/qwen3.8-flash": zdr } },
   });
 });
 

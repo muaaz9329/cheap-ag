@@ -45,6 +45,24 @@ You implement the plan step marked >>> CURRENT STEP(S), in this repository, by e
 - If you cannot call finish, end your last message with a fenced cheapag-result block holding the same fields.
 `;
 
+// The research worker reports in its final text, not a custom tool: its ruleset stays exactly read, glob, grep, list
+const RESEARCH_PROMPT = `---
+description: Cheap Agent research worker. Answers questions about this repository, read-only.
+mode: primary
+---
+You answer one question about the code in this repository. You are read-only: you can read, grep, glob and list, nothing else (no edits, no commands, no questions, no web).
+- Answer from the code itself, never from memory. Cite what you state as path:line or path:start-end, paths relative to the repository root.
+- Stay within the scope and the word limit you are given.
+- End your last message with exactly one fenced block:
+\`\`\`cheapag-research
+status: answer (or unsure, if the code does not settle the question)
+confidence: high (seen directly in code) | medium (inferred) | low (a guess)
+refs: src/a.ts:18-42, src/b.ts:31
+answer:
+<your answer, in prose, within the word limit>
+\`\`\`
+`;
+
 // Runs inside OpenCode (Bun). Its input is captured from the event stream, so it only has to exist and validate.
 const FINISH_TOOL = `import { tool } from "@opencode-ai/plugin";
 
@@ -62,11 +80,12 @@ export default tool({
 });
 `;
 
-/** Cheap Agent's own OpenCode config dir: worker agent, finish tool, model pins and options. */
-function writeConfigDir(dir: string, config: string) {
+/** Cheap Agent's own OpenCode config dir: worker and research agents, finish tool, model pins and options. */
+export function writeConfigDir(dir: string, config: string) {
   mkdirSync(join(dir, "agents"), { recursive: true });
   mkdirSync(join(dir, "tools"), { recursive: true });
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
+  writeFileSync(join(dir, "agents", "cheapag-research.md"), RESEARCH_PROMPT);
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
   writeFileSync(join(dir, "opencode.json"), config);
 }
@@ -74,7 +93,7 @@ function writeConfigDir(dir: string, config: string) {
 /** The generated opencode.json for the route's models: their options (e.g. OpenRouter routing) and the small model. */
 function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
-  const models = Object.fromEntries([route.implement, route.escalation].filter((m) => m?.options).map((m) => [m!.id, { options: m!.options }]));
+  const models = Object.fromEntries([route.implement, route.escalation, route.research].filter((m) => m?.options).map((m) => [m!.id, { options: m!.options }]));
   const providerConfig = Object.keys(models).length ? { models } : {};
   const config = {
     $schema: "https://opencode.ai/config.json",

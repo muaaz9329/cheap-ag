@@ -486,7 +486,7 @@ function readRecord(dir: string): StoredRecord | undefined {
 }
 
 /** Every readable job record in the project, with the folder it lives in. */
-function records(root: string) {
+export function records(root: string) {
   const base = join(root, ".cheapag", "jobs");
   if (!existsSync(base)) return [];
   return readdirSync(base).flatMap((id) => {
