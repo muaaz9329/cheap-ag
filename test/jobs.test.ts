@@ -219,7 +219,8 @@ test.each([
   [{ limits: { max_minutes: "20" } }, "limits.max_minutes must be a positive number"],
   [{ limits: { max_parallel: 1.5 } }, "limits.max_parallel must be a positive whole number"],
   [{ limits: [] }, "limits must be an object"],
-])("a bad limits config %j fails before any job", async (config, message) => {
+  [{ integration_cmd: " " }, "integration_cmd must be a non-empty string"],
+])("a bad config %j fails before any job", async (config, message) => {
   const { repo, fake, delegate } = await scenario({ repoConfig: config, scripts: [] });
   expect(await delegate()).toBe(`FAIL reason: ${join(repo.dir, "cheapag.json")}: ${message}`);
   expect(fake.recorded.sessions).toEqual([]);

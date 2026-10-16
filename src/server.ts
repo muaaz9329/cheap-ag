@@ -165,10 +165,12 @@ export async function serve() {
         action: z.enum(["apply", "discard"]).describe("apply: land the job's changes; discard: delete its worktree"),
       },
     },
-    supported(async (input) => {
-      if (!detectProvider()) return safeText(NO_PROVIDER);
+    supported(async (input, extra) => {
+      const provider = detectProvider();
+      if (!provider) return safeText(NO_PROVIDER);
       try {
-        return safeText(await landJobs(input));
+        // landing a batch's last group runs its integration check, which may start a fix job
+        return safeText(await landJobs(input, { provider, opencode: (route) => ensureOpencode(provider, process.cwd(), route), progress: progressTo(extra) }));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }

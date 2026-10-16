@@ -130,8 +130,8 @@ const lockTimeoutMs = () => Number(process.env.CHEAPAG_LOCK_TIMEOUT_MS) || 10 * 
 /** What `.cheapag/land.lock` holds. `token` tells one holder's lock from the next one's (absent in older locks). */
 type Holder = { pid: number; at: string; token?: string };
 
-/** Serialises landing across Cheap Agent processes on one project: `.cheapag/land.lock` holds pid + timestamp + token. */
-async function withLock<T>(root: string, fn: () => T): Promise<T> {
+/** Serialises landing and integration checks across Cheap Agent processes on one project: `.cheapag/land.lock` holds pid + timestamp + token. */
+export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promise<T> {
   const lock = join(root, ".cheapag", "land.lock");
   const token = randomBytes(8).toString("hex");
   // unique per call: parallel groups in one process wait on the lock at once, and must not delete each other's file
@@ -161,7 +161,7 @@ async function withLock<T>(root: string, fn: () => T): Promise<T> {
     rmSync(mine, { force: true });
   }
   try {
-    return fn();
+    return await fn();
   } finally {
     // only our own: never a lock someone else holds now
     if (readHolder(lock)?.token === token) rmSync(lock, { force: true });

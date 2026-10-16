@@ -351,6 +351,46 @@ describe("D6 batch blocks", () => {
     expect(lines.filter((l) => /^[A-Z]+ j\d /.test(l)).map((l) => l.split(" ")[1])).toEqual(["j5", "j4", "j3", "j6", "j7", "j2", "j1"]);
     expect(text).not.toContain("next:");
   });
+
+  test("a failing integration check: error: after the header, then the fix job's block, then the groups; its cost counts", () => {
+    const ok = (id: string, steps: string) => job({ job: id, status: "OK", landed: true, steps, tests: "none", usage: { turns: 2, costUsd: 0.001 } });
+    const fix = job({
+      job: "j9f00", status: "FAIL", steps: "1,2", tests: "fail", usage: { turns: 6, costUsd: 0.002 }, worktree: ".cheapag/worktrees/j9f00",
+      error: ["`npm test`", "  ✗ login uses renamed helper"], tried: ["fix 1: renamed call → same failure"],
+    });
+    expect(renderBatch(batch({ groups: ["1", "2"], integration: "fail", integrationError: ["`npm test`", "  ✗ login uses renamed helper"], fix: "j9f00" }), [ok("j1", "1"), ok("j2", "2")], fix)).toBe(block(
+      "BATCH b4k1x groups=2 OK=2 landed=2 integration=fail cost=$0.004",
+      "error: `npm test`",
+      "  ✗ login uses renamed helper",
+      "FAIL j9f00 step=1,2 files=0 +0/-0 tests=fail turns=6 cost=$0.002",
+      "error: `npm test`",
+      "  ✗ login uses renamed helper",
+      "tried:",
+      "  - fix 1: renamed call → same failure",
+      "worktree: .cheapag/worktrees/j9f00/",
+      "log: .cheapag/jobs/j9f00/",
+      "",
+      "OK j1 step=1 files=0 +0/-0 tests=none turns=2 cost=$0.001",
+      "log: .cheapag/jobs/j1/",
+      "",
+      "OK j2 step=2 files=0 +0/-0 tests=none turns=2 cost=$0.001",
+      "log: .cheapag/jobs/j2/",
+    ));
+  });
+
+  test("integration states: running while the check or fix job runs (the fix job as one RUNNING line), none without a command", () => {
+    const ok = job({ job: "j1", status: "OK", landed: true, steps: "1" });
+    expect(renderBatch(batch({ groups: ["1"], integration: "running", fix: "j9f00" }), [ok], job({ job: "j9f00", status: "RUNNING", steps: "1", usage: { turns: 3, costUsd: 0 } })))
+      .toBe(block(
+        "BATCH b4k1x groups=1 OK=1 landed=1 integration=running cost=$0.000",
+        "RUNNING j9f00 step=1 turns=3",
+        "",
+        "OK j1 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "log: .cheapag/jobs/j1/",
+        'next: jobs(action="wait", job="b4k1x")',
+      ));
+    expect(renderBatch(batch({ groups: ["1"], integration: "none" }), [ok]).split("\n")[0]).toBe("BATCH b4k1x groups=1 OK=1 landed=1 integration=none cost=$0.000");
+  });
 });
 
 describe("D9 budget and truncation", () => {

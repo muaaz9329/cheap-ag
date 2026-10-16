@@ -5,7 +5,7 @@ import type { ModelsConfig } from "./routing.js";
 
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
 export type Config = {
-  test_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
+  test_cmd?: string; integration_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
   models: ModelsConfig; escalation_skip_at: number;
 };
 /** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits); `max_parallel` bounds a batch's concurrent groups; `max_blocked_minutes` bounds a wait for `reply`. */
@@ -50,7 +50,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at } = value as Record<string, unknown>;
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet
@@ -85,6 +85,8 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
   }
   if (test_cmd !== undefined && (typeof test_cmd !== "string" || !test_cmd.trim())) throw new Error(`${file}: test_cmd must be a non-empty string`);
+  // null is E4's written default: test_cmd
+  if (integration_cmd != null && (typeof integration_cmd !== "string" || !integration_cmd.trim())) throw new Error(`${file}: integration_cmd must be a non-empty string`);
   let dirs: string[] | undefined;
   if (link_dirs !== undefined) {
     if (!Array.isArray(link_dirs) || link_dirs.some((d) => typeof d !== "string" || !d.trim())) throw new Error(`${file}: link_dirs must be a list of directory paths`);
@@ -97,6 +99,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   }
   return {
     ...(test_cmd !== undefined && { test_cmd }),
+    ...(integration_cmd != null && { integration_cmd }),
     ...(dirs && { link_dirs: dirs }),
     ...(allow_commands !== undefined && { allow_commands: (allow_commands as string[]).map((c) => c.trim()) }),
     limits: caps,

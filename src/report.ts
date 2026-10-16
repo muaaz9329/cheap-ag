@@ -73,10 +73,13 @@ export type BatchRecord = {
   /** Each group's steps, e.g. `1-2`. */
   groups: string[];
   notes: string[];
-  integration: "pass" | "fail" | "pending" | "running";
+  /** none: there is no integration_cmd or test_cmd to run. */
+  integration: "pass" | "fail" | "pending" | "running" | "none";
   /** The de-noised tail of a failing integration check, command first. */
   integrationError?: string[];
   jobs: string[];
+  /** The integration fix job, once a failing check started one. */
+  fix?: string;
 };
 
 export type ConsentRecord = { repo: string; send: string; retention: string; approve: string };
@@ -186,20 +189,23 @@ export function renderResearch(r: ResearchRecord) {
   return lines.map(fit).join("\n");
 }
 
-/** D6: header, notes, integration error, then job blocks by urgency (RUNNING ones as adjacent single lines), then `next:`. */
-export function renderBatch(b: BatchRecord, jobs: JobRecord[]) {
+/**
+ * D6: header, notes, integration error, the integration fix job's block, then job blocks by urgency (RUNNING ones as
+ * adjacent single lines), then `next:`. The fix job is not a group: it counts in the cost only.
+ */
+export function renderBatch(b: BatchRecord, jobs: JobRecord[], fix?: JobRecord) {
   const sorted = [...jobs].sort((x, y) => rank(x.status) - rank(y.status));
   const counts = URGENCY.map((s) => [s, sorted.filter((j) => j.status === s).length] as const).filter(([, n]) => n);
   const head = [
     [
       `BATCH ${b.batch} groups=${b.groups.length}`, ...counts.map(([s, n]) => `${s}=${n}`),
       `landed=${jobs.filter((j) => j.landed).length}`, `integration=${b.integration}`,
-      `cost=$${jobs.reduce((n, j) => n + j.usage.costUsd, 0).toFixed(3)}`,
+      `cost=$${[...jobs, ...(fix ? [fix] : [])].reduce((n, j) => n + j.usage.costUsd, 0).toFixed(3)}`,
     ].join(" "),
   ];
   if (b.notes.length) head.push(`note: ${b.notes.join("; ")}`);
   if (b.integrationError?.length) head.push(`error: ${b.integrationError[0]}`, ...b.integrationError.slice(1));
-  const chunks: string[] = [];
+  const chunks = fix ? [renderJob(fix)] : [];
   sorted.forEach((j, i) => {
     if (j.status === "RUNNING" && sorted[i - 1]?.status === "RUNNING") chunks[chunks.length - 1] += `\n${renderJob(j)}`;
     else chunks.push(renderJob(j));
@@ -207,7 +213,7 @@ export function renderBatch(b: BatchRecord, jobs: JobRecord[]) {
   const blocked = sorted.find((j) => j.status === "BLOCKED");
   const next = [
     blocked && `reply(job="${blocked.job}", ...)`,
-    sorted.some((j) => j.status === "BLOCKED" || j.status === "RUNNING") && `jobs(action="wait", job="${b.batch}")`,
+    (b.integration === "running" || sorted.some((j) => j.status === "BLOCKED" || j.status === "RUNNING")) && `jobs(action="wait", job="${b.batch}")`,
   ].filter(Boolean).join(" then ");
   return [head.map(fit).join("\n"), chunks.join("\n\n"), next && fit(`next: ${next}`)].filter(Boolean).join("\n");
 }

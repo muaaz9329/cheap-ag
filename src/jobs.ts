@@ -12,7 +12,7 @@ import { chain, escalationSkip, modelName, recordSpend, runRouted, usedBalance, 
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
-  conflictPaths, createWorktree, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, worktreeDiff,
+  conflictPaths, createWorktree, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
@@ -33,10 +33,10 @@ const MAX_QUIET_REJECTIONS = 5;
 
 export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean };
 
-export async function delegate(
-  input: DelegateInput,
-  ctx: { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
-): Promise<string> {
+/** What a tool call that may start workers gets from the server. */
+export type WorkerContext = { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: Progress };
+
+export async function delegate(input: DelegateInput, ctx: WorkerContext): Promise<string> {
   const root = projectRoot(process.cwd());
   // first: an unapproved repo gets CONSENT before any job, worktree, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
@@ -97,6 +97,8 @@ type GroupRun = Shared & {
   beforeLand?: () => Promise<unknown>;
   /** Waits for a worker slot again before a redo's worker runs (batches: its slot was given back before landing). */
   beforeRedo?: () => Promise<unknown>;
+  /** An integration fix job: the batch's landed steps fail `cmd` together, with this error tail; it verifies `cmd` only. */
+  fix?: { cmd: string; error: string[] };
 };
 
 /**
@@ -107,7 +109,7 @@ type GroupRun = Shared & {
 function runGroup(g: GroupRun) {
   const { root, input, plan, config, route, opencode } = g;
   const steps = g.group.steps;
-  const cmds = verifyCommands(steps.map((s) => s.fields["done-when"]), config.test_cmd);
+  const cmds = g.fix ? [g.fix.cmd] : verifyCommands(steps.map((s) => s.fields["done-when"]), config.test_cmd);
   const { job, dir } = newJob(root);
   const write = (name: string, value: unknown) => writeWhole(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
   const stepIds = g.group.label;
@@ -218,7 +220,7 @@ function runGroup(g: GroupRun) {
       ...report.risks,
     ];
     const record = {
-      format: "cheapag/1" as const, job, batch: g.batch, kind: "implement", status, landed,
+      format: "cheapag/1" as const, job, batch: g.batch, kind: g.fix ? "fix" : "implement", status, landed,
       plan: input.plan, steps: stepIds, provider: g.provider.provider,
       // the server process running the job: a restart finds RUNNING/BLOCKED records whose pid is gone
       pid: process.pid,
@@ -338,7 +340,8 @@ function runGroup(g: GroupRun) {
         directory: worktree.path,
         model,
         permission: rulesetFor(worktree, cmds, config),
-        onQuestion,
+        // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
+        onQuestion: g.fix ? undefined : onQuestion,
         signal: halt.signal,
         onEvent: (event, turns) => {
           appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
@@ -408,7 +411,7 @@ function runGroup(g: GroupRun) {
         if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
         return result;
       };
-      const result = await work(contextPack(plan, steps, input.note));
+      const result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note));
       write("finish.json", report);
       const diff = worktreeDiff(worktree);
       changed = diff.changed;
@@ -502,8 +505,10 @@ function runBatch(groups: Group[], shared: Shared) {
   }));
   const ids: string[] = []; // by group
   const finals: (JobRecord | undefined)[] = [];
-  // integration stays pending until the integration check exists (ticket 17)
-  const record = (): BatchRecord => ({ format: "cheapag/1", batch, groups: groups.map((g) => g.label), notes, integration: "pending", jobs: ids.filter(Boolean) });
+  const cmd = config.integration_cmd ?? config.test_cmd;
+  const state: Integration = { integration: cmd ? "pending" : "none", verify: [] };
+  let fix: ReturnType<typeof runGroup> | undefined;
+  const record = (): BatchRecord => ({ format: "cheapag/1", batch, groups: groups.map((g) => g.label), notes, ...state, jobs: ids.filter(Boolean) });
   const write = () => {
     const ended = finals.filter((r) => r !== undefined);
     const landed = ended.filter((r) => r.landed).map((r) => r.job); // in landing order: groups land in step order
@@ -562,9 +567,13 @@ function runBatch(groups: Group[], shared: Shared) {
     return run;
   });
   write();
-  const all = Promise.all(settled);
+  // a group left unlanded runs the check later, from `land`, once nothing is left to land
+  const all = Promise.all(settled).then(async (ended) => {
+    if (cmd && allLanded(ended)) await integrate(root, cmd, batch, state, ended.map((r) => r.landed), write, async () => ({ ...shared, progress: forward }), (run) => (fix = run));
+    return ended;
+  });
   // jobs in group order (renderBatch sorts by urgency)
-  const render = () => renderBatch(record(), runs.map((r) => r.record()));
+  const render = () => renderBatch(record(), runs.map((r) => r.record()), fix?.record());
   const live = () => runs.filter((r) => running.has(r.job) && !blocked.has(r.job));
   // nothing can move without a reply: every group still live is parked (waiting to land behind a BLOCKED one)
   const stuck = () => anyBlocked() && live().every((r) => running.get(r.job)?.parked());
@@ -591,6 +600,50 @@ function runBatch(groups: Group[], shared: Shared) {
   batches.set(batch, entry);
   void all.catch(() => {}).then(() => batches.delete(batch)); // a rejection reaches whoever looks
   return { all, ...entry };
+}
+
+/** A batch record's integration check fields; `verify` holds each check's run (its output is not kept). */
+type Integration = Pick<BatchRecord, "integration" | "integrationError" | "fix"> & { verify: Omit<VerifyRun, "output">[] };
+
+/** Every group has ended with nothing left to land (each landed, was discarded or never got a worktree), and something did land. */
+const allLanded = (jobs: Pick<JobRecord, "landed" | "worktree" | "status">[]) =>
+  jobs.every((j) => j.status !== "RUNNING" && j.status !== "BLOCKED" && (j.landed || !j.worktree)) && jobs.some((j) => j.landed);
+
+/**
+ * The integration check (spec: Job lifecycle, A3 item 3): `cmd` on the combined working tree, under the land lock. A
+ * failure starts one fix job on a fresh worktree of the combined state, on the normal path (self-fixes, escalation,
+ * landing): integration passes when it lands OK, else fails with the check's error. `save` records each state change;
+ * `fixer` gives what the fix job needs, only once one is needed (it may boot OpenCode).
+ */
+async function integrate(
+  root: string, cmd: string, batch: string, state: Integration, landed: boolean[], save: () => void, fixer: () => Promise<Shared>, started: (fix: ReturnType<typeof runGroup>) => void,
+) {
+  try {
+    state.integration = "running";
+    save();
+    // shortcut: the lock is held for the whole check, so a check longer than the lock timeout (10 min) makes other landings FAIL; split the lock if suites get that long
+    const [run] = await withLock(root, () => runVerify(root, [cmd], () => {}));
+    state.verify.push({ cmd: run.cmd, ok: run.ok, ms: run.ms });
+    if (run.ok) {
+      state.integration = "pass";
+      return;
+    }
+    const error = errorTail(run, root);
+    const shared = await fixer();
+    const groups = selectGroups(shared.plan, shared.input.steps).filter((_, i) => landed[i]); // discarded groups are not in this code
+    const fix = runGroup({ ...shared, group: { label: groups.map((g) => g.label).join(","), steps: groups.flatMap((g) => g.steps) }, batch, fix: { cmd, error } });
+    state.fix = fix.job;
+    started(fix);
+    save();
+    await fix.done;
+    // shortcut: a fix that landed OK passes without checking the tree again (its own verify ran cmd on the combined state); re-check if the tree can drift meanwhile
+    if (fix.record().status === "OK") state.integration = "pass";
+    else Object.assign(state, { integration: "fail", integrationError: error });
+  } catch (err) {
+    Object.assign(state, { integration: "fail", integrationError: [`integration check: ${(err as Error).message}`] });
+  } finally {
+    save();
+  }
 }
 
 /** Batches with a group still live in this server process, by id: how `jobs wait` and `reply` attach to them. */
@@ -656,7 +709,7 @@ function waitBatch(root: string, batch: string, progress: Progress): Promise<str
   // shortcut: a batch another live session runs is shown as its records stand, not waited on; wait from that session
   const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
   if (jobRecords.some((r) => !r)) return failBlock(`batch ${batch}: a job record is missing (cleaned up?)`);
-  return renderBatch(record, jobRecords as JobRecord[]);
+  return renderBatch(record, jobRecords as JobRecord[], record.fix ? readRecord(join(root, ".cheapag", "jobs", record.fix)) : undefined);
 }
 
 const LIST_MAX = 20;
@@ -722,7 +775,7 @@ export type LandInput = { job: string; action: "apply" | "discard" };
  * tree under the lock, in the order given, stopping at the first that fails; `discard` deletes their worktrees. One line
  * per job. Records are updated (`landed`, `worktree`, `discarded`) so research's unlanded note and cleanup stay truthful.
  */
-export async function landJobs(input: LandInput): Promise<string> {
+export async function landJobs(input: LandInput, ctx: WorkerContext): Promise<string> {
   const root = projectRoot(process.cwd());
   const ids = input.job.split(",").map((s) => s.trim()).filter(Boolean);
   if (!ids.length) return failBlock('land needs a job id, or several in landing order, e.g. "j7f3a,j7f3b"');
@@ -746,7 +799,52 @@ export async function landJobs(input: LandInput): Promise<string> {
       failed = id;
     }
   }
+  // the last of a batch's groups landed or discarded: its integration check runs now
+  const touched = new Set(ids.filter((id) => /^j[0-9a-z]{4}$/.test(id)).map((id) => readRecord(join(root, ".cheapag", "jobs", id))?.batch));
+  for (const batch of touched) {
+    const block = batch && (await integrateLater(root, config, batch, ctx));
+    if (block) lines.push("", block);
+  }
   return lines.join("\n");
+}
+
+/** A settled batch, still pending, with nothing left to land: runs its integration check and returns the batch block. */
+async function integrateLater(root: string, config: Config, batch: string, ctx: WorkerContext) {
+  const file = join(root, ".cheapag", "batches", `${batch}.json`);
+  let record: BatchRecord & Integration & { plan: string; steps: string };
+  try {
+    record = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return undefined; // cleaned up
+  }
+  const cmd = config.integration_cmd ?? config.test_cmd;
+  const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
+  if (batches.has(batch) || !cmd || !jobRecords.every((r) => r) || !allLanded(jobRecords as JobRecord[])) return undefined;
+  // claimed under the lock: two sessions landing a batch's last groups at once must not both run its check
+  const claimed = await withLock(root, () => {
+    const now = JSON.parse(readFileSync(file, "utf8")) as typeof record;
+    if (now.integration !== "pending") return false;
+    writeWhole(file, redact(JSON.stringify({ ...now, integration: "running" }, null, 2) + "\n"));
+    return true;
+  });
+  if (!claimed) return undefined;
+  record.verify ??= []; // a record from before integration checks
+  let release: (() => void) | undefined;
+  let fix: ReturnType<typeof runGroup> | undefined;
+  const fixer = async (): Promise<Shared> => {
+    const gate = consentGate(root, ctx.provider.provider);
+    if ("block" in gate) throw new Error(`no consent for a fix job: ${gate.block.split("\n")[0]}`);
+    const plan = parsePlan(readFileSync(join(root, record.plan), "utf8"));
+    const opencode = await ctx.opencode(gate.route);
+    release = holdOpencode();
+    return { root, input: { plan: record.plan, steps: record.steps }, plan, config, route: gate.route, opencode, provider: ctx.provider, progress: ctx.progress };
+  };
+  try {
+    await integrate(root, cmd, batch, record, jobRecords.map((r) => r!.landed), () => writeWhole(file, redact(JSON.stringify(record, null, 2) + "\n")), fixer, (run) => (fix = run));
+  } finally {
+    release?.();
+  }
+  return renderBatch(record, jobRecords as JobRecord[], fix?.record());
 }
 
 /** Applies or discards one finished, unlanded job; returns its OK line, or throws why not. */
@@ -866,12 +964,25 @@ const newId = (prefix: string) => `${prefix}${randomBytes(4).readUInt32BE().toSt
  * shortcut: no repo map or CLAUDE.md/AGENTS.md excerpt yet; add them when worker quality needs the context.
  */
 function contextPack(plan: Plan, steps: PlanStep[], note?: string) {
-  const whole = [`# ${plan.title}`, plan.context, ...plan.steps.map((s) => s.text)].filter(Boolean).join("\n\n");
   return [
-    whole,
+    planText(plan),
     `>>> CURRENT STEP(S): ${steps.map((s) => s.id).join(", ")}\n\n${steps.map((s) => s.text).join("\n\n")}`,
     note && `Note: ${note}`,
   ].filter(Boolean).join("\n\n");
+}
+
+const planText = (plan: Plan) => [`# ${plan.title}`, plan.context, ...plan.steps.map((s) => s.text)].filter(Boolean).join("\n\n");
+
+/** The integration fix job's prompt: the whole plan, then which landed steps fail the check together, and its error tail. */
+function fixPrompt(plan: Plan, steps: PlanStep[], fix: { cmd: string; error: string[] }) {
+  const ids = steps.map((s) => s.id).join(", ");
+  return [
+    planText(plan),
+    `>>> INTEGRATION FIX: ${ids}`,
+    `Steps ${ids} were done by separate jobs and have all landed in this code, but together they fail \`${fix.cmd}\`. ` +
+      "Fix the cause so it passes, keeping every step's intent, then call finish.",
+    fix.error.join("\n"),
+  ].join("\n\n");
 }
 
 /** A redo diff longer than this is cut in its prompt. */
