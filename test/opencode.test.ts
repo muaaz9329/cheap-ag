@@ -91,7 +91,11 @@ test("an OpenRouter key never reaches output or config; the config denies data c
     small_model: "openrouter/deepseek/deepseek-v4.1-flash",
     provider: {
       openrouter: {
-        models: { "deepseek/deepseek-v4.1-flash": { options: { provider: { data_collection: "deny" } } } },
+        // the implement and the escalation model both deny data collection
+        models: {
+          "deepseek/deepseek-v4.1-flash": { options: { provider: { data_collection: "deny" } } },
+          "deepseek/deepseek-v4-pro": { options: { provider: { data_collection: "deny" } } },
+        },
       },
     },
   });

@@ -5,8 +5,10 @@ import { redact, type Provider } from "./credentials.js";
 import type { Opencode } from "./opencode.js";
 import { parsePlan, PLAN_FORMAT, selectSteps, type Plan, type PlanStep } from "./plan.js";
 import { failBlock, renderJob, type JobRecord } from "./report.js";
-import { IMPLEMENT_MODEL, modelName } from "./routing.js";
-import { finishReport, runSession, type FinishReport, type SessionResult } from "./worker.js";
+import { loadConfig } from "./config.js";
+import { ESCALATION_MODEL, IMPLEMENT_MODEL, modelName } from "./routing.js";
+import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
+import { finishReport, openSession, type FinishReport, type Session } from "./worker.js";
 import { createWorktree, land, projectRoot, removeWorktree, worktreeDiff, type Changed } from "./workspace.js";
 
 /** Jobs: runs one group of plan steps as one job, start to landing. */
@@ -34,6 +36,13 @@ export async function delegate(
     return failBlock(`plan ${input.plan}: ${(err as Error).message}`);
   }
 
+  let cmds: string[];
+  try {
+    cmds = verifyCommands(steps.map((s) => s.fields["done-when"]), loadConfig(root).test_cmd);
+  } catch (err) {
+    return failBlock((err as Error).message);
+  }
+
   const opencode = await ctx.opencode();
   const { job, dir } = newJob(root);
   const write = (name: string, value: unknown) => writeFileSync(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
@@ -43,19 +52,35 @@ export async function delegate(
   const startedAt = new Date();
   write("request.json", { ...input, steps: stepIds, model: requested, startedAt });
 
+  const escalation = ESCALATION_MODEL[ctx.provider.provider];
   let worktree: { head: string; path: string } | undefined;
-  let session: SessionResult | undefined;
+  let session: Session | undefined;
   let report: FinishReport = finishReport({ text: "" });
   let changed: Changed[] = [];
   let reason: string | undefined;
+  const verified: VerifyRun[] = [];
+  const tried: string[] = [];
+  let selfFix = 0;
+  let escalated = false;
+  let failing: { run: VerifyRun; tail: string[] } | undefined;
+
+  /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
+  const verify = async () => {
+    const runs = await runVerify(worktree!.path, cmds, (cmd) => ctx.progress(session!.totals().turns, `verify: ${cmd}`));
+    verified.push(...runs);
+    // the full output stays on disk; Claude only ever sees the tail
+    for (const r of runs) appendFileSync(join(dir, "verify.log"), redact(`$ ${r.cmd}\n${r.output}\n(exit ${r.ok ? "ok" : "failed"}, ${r.ms} ms)\n\n`));
+    const run = runs.find((r) => !r.ok);
+    return run && { run, tail: errorTail(run, worktree!.path) };
+  };
+
   try {
     // shortcut: no carry-over of uncommitted state or dependency links yet (ADR-0003); ticket 06 adds them
     worktree = createWorktree(root, job);
-    session = await runSession({
+    session = await openSession({
       opencode,
       directory: worktree.path,
-      model: { providerID: model.providerID, id: model.id }, // options live in the generated config, not the session
-      prompt: contextPack(plan, steps, input.note),
+      model,
       onEvent: (event, turns) => {
         appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
         // one progress notification per worker turn; finer events (deltas, usage) would only be noise in /tasks
@@ -65,14 +90,37 @@ export async function delegate(
         }
       },
     });
-    report = finishReport(session);
+    let result = await session.run(contextPack(plan, steps, input.note));
+    report = finishReport(result);
+    if (!result.error && cmds.length) {
+      failing = await verify();
+      // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
+      for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
+        if (!failing) break;
+        const esc = attempt === "esc";
+        if (esc) escalated = true;
+        else selfFix++;
+        const before = failing.tail;
+        result = await session.run(`Verification failed. Fix the cause, then call finish again.\n\n${before.join("\n")}`, esc ? escalation : undefined);
+        // an attempt that reports nothing keeps the last real report rather than a placeholder
+        const fresh = result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
+        if (fresh) report = fresh;
+        const label = `${esc ? "esc" : attempt}: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
+        if (result.error) {
+          tried.push(`${label} → worker error`);
+          break;
+        }
+        failing = await verify();
+        tried.push(`${label} → ${!failing ? "passed" : sameFailure(before, failing.tail) ? "same failure" : "different failure"}`);
+      }
+    }
     write("finish.json", report);
     const diff = worktreeDiff(worktree.path, worktree.head);
     changed = diff.changed;
     write("diff.patch", diff.patch); // the log copy is redacted; landing applies the in-memory patch
-    if (session.error) {
-      reason = `worker error: ${session.error}`;
-    } else {
+    if (result.error) {
+      reason = `worker error: ${result.error}`;
+    } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
       const conflict = await land(root, job, diff.patch);
       if (conflict) reason = `landing conflict, working tree untouched: ${conflict.split("\n")[0]}`;
       else removeWorktree(root, worktree.path);
@@ -81,20 +129,24 @@ export async function delegate(
     reason = (err as Error).message;
   }
 
-  const landed = reason === undefined;
+  const landed = reason === undefined && !failing;
   const record = {
     format: "cheapag/1" as const, job, batch: null, kind: "implement", status: (landed ? "OK" : "FAIL") as JobRecord["status"], landed,
     plan: input.plan, steps: stepIds, provider: ctx.provider.provider,
-    models: { requested, final: requested, fallbacks: [], escalated: false },
+    models: { requested, final: escalated ? modelName(escalation) : requested, fallbacks: [], escalated },
     baseline: { head: worktree?.head ?? null, stash: null },
     worktree: !landed && worktree ? relative(root, worktree.path) : null,
     sessionID: session?.sessionID ?? null,
+    // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
+    tests: (!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"],
+    error: failing?.tail,
+    tried,
     summary: report.summary, changed, risks: report.risks,
     // a landed job's files are in the working tree; an unlanded one's only in its worktree
     review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
     missing: report.missing, reason,
-    verify: [], selfFix: 0, redo: 0, question: null, autoRejected: 0,
-    usage: { turns: session?.turns ?? 0, ...(session?.usage ?? { costUsd: 0 }) },
+    verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: 0, question: null, autoRejected: 0,
+    usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
     timing: { startedAt, endedAt: new Date(), ms: Date.now() - startedAt.getTime() },
   };
   const text = renderJob(record);

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { arch, platform } from "node:os";
 import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
-import { IMPLEMENT_MODEL, modelName } from "./routing.js";
+import { IMPLEMENT_MODEL, modelName, workerModels } from "./routing.js";
 
 const require = createRequire(import.meta.url);
 export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: string }).version;
@@ -68,7 +68,8 @@ function writeConfigDir(dir: string, provider: Provider) {
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
   const model = IMPLEMENT_MODEL[provider.provider];
   // the key itself stays in OpenCode's own credential store; the config never names one
-  const providerConfig = model.options ? { models: { [model.id]: { options: model.options } } } : {};
+  const models = Object.fromEntries(workerModels(provider.provider).filter((m) => m.options).map((m) => [m.id, { options: m.options }]));
+  const providerConfig = Object.keys(models).length ? { models } : {};
   const config = {
     $schema: "https://opencode.ai/config.json",
     // OpenCode otherwise sends title generation to its own default small model, i.e. another provider the user never chose

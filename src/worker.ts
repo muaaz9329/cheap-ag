@@ -1,5 +1,6 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import type { Opencode } from "./opencode.js";
+import type { WorkerModel } from "./routing.js";
 
 /** Worker: one OpenCode session for one job, reduced to what the job layer needs. */
 
@@ -7,82 +8,107 @@ export const WORKER_AGENT = "cheapag-worker";
 
 export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[] };
 export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
-export type SessionResult = { sessionID: string; turns: number; usage: Usage; finish?: FinishReport; text: string; error?: string };
+/** What one prompt of a session produced. */
+export type RunResult = { finish?: FinishReport; text: string; error?: string };
+/** Session totals so far: turns and usage accumulate across every prompt of the session. */
+export type SessionTotals = { sessionID: string; turns: number; usage: Usage };
+export type SessionResult = SessionTotals & RunResult;
 
-export async function runSession(opts: {
+/**
+ * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
+ * session goes idle; self-fixes and escalation are further `run`s of the same session.
+ */
+export async function openSession(opts: {
   opencode: Opencode;
   directory: string;
-  model: { providerID: string; id: string };
-  prompt: string;
+  model: WorkerModel;
   /** Called with every event of this session, in order (for the job log and progress). */
   onEvent: (event: Event, turns: number) => void;
-}): Promise<SessionResult> {
+}) {
   const { opencode, directory } = opts;
   const client = createOpencodeClient({
     baseUrl: opencode.url,
     directory,
     headers: { authorization: `Basic ${Buffer.from(`opencode:${opencode.password}`).toString("base64")}` },
   });
-  const abort = new AbortController();
-  // the SDK's stream only connects when first read: wait for server.connected before prompting, or early events are lost
-  const { stream } = await client.event.subscribe({ directory }, { signal: abort.signal });
-  await stream.next();
+  const created = await client.session.create({ directory, agent: WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id } });
+  if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
+  const sessionID = created.data.id;
+  const calls = new Set<string>();
+  const messages = new Map<string, Usage>(); // assistant message id → its latest running totals
 
-  try {
-    const created = await client.session.create({ directory, agent: WORKER_AGENT, model: opts.model });
-    if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
-    const sessionID = created.data.id;
+  async function run(prompt: string, model?: WorkerModel): Promise<RunResult> {
+    const abort = new AbortController();
+    // the SDK's stream only connects when first read: wait for server.connected before prompting, or early events are lost
+    const { stream } = await client.event.subscribe({ directory }, { signal: abort.signal });
+    await stream.next();
+    try {
+      const texts = new Map<string, { messageID: string; text: string }>(); // text part id → latest text
+      let idle = false;
+      let finish: FinishReport | undefined;
+      let error: string | undefined;
 
-    const calls = new Set<string>();
-    const messages = new Map<string, Usage>(); // assistant message id → its latest running totals
-    const texts = new Map<string, { messageID: string; text: string }>(); // text part id → latest text
-    let idle = false;
-    let finish: FinishReport | undefined;
-    let error: string | undefined;
+      const prompted = await client.session.promptAsync({
+        sessionID, directory, parts: [{ type: "text", text: prompt }],
+        ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
+      });
+      if (prompted.error) throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
 
-    const prompted = await client.session.promptAsync({ sessionID, directory, parts: [{ type: "text", text: opts.prompt }] });
-    if (prompted.error) throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+      for await (const raw of stream) {
+        const event = raw as Event;
+        const props = event.properties as { sessionID?: string };
+        if (props.sessionID !== sessionID) continue;
 
-    for await (const raw of stream) {
-      const event = raw as Event;
-      const props = event.properties as { sessionID?: string };
-      if (props.sessionID !== sessionID) continue;
-
-      if (event.type === "message.part.updated") {
-        const part = event.properties.part;
-        if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
-          calls.add(part.callID);
-          if (part.tool === "finish" && part.state.status === "completed") finish = asReport(part.state.input);
+        if (event.type === "message.part.updated") {
+          const part = event.properties.part;
+          if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
+            calls.add(part.callID);
+            if (part.tool === "finish" && part.state.status === "completed") finish = asReport(part.state.input);
+          }
+          if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
+        } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
+          const { id, cost, tokens, error: failed } = event.properties.info;
+          // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
+          if (failed) error ??= describe(failed);
+          messages.set(id, {
+            inputTokens: tokens.input, outputTokens: tokens.output, reasoningTokens: tokens.reasoning,
+            cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
+          });
+        } else if (event.type === "session.error") {
+          error = describe(event.properties.error);
         }
-        if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
-      } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
-        const { id, cost, tokens, error: failed } = event.properties.info;
-        // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
-        if (failed) error ??= describe(failed);
-        messages.set(id, {
-          inputTokens: tokens.input, outputTokens: tokens.output, reasoningTokens: tokens.reasoning,
-          cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
-        });
-      } else if (event.type === "session.error") {
-        error = describe(event.properties.error);
+        opts.onEvent(event, calls.size);
+        if (event.type === "session.idle") {
+          idle = true;
+          break;
+        }
       }
-      opts.onEvent(event, calls.size);
-      if (event.type === "session.idle") {
-        idle = true;
-        break;
-      }
+      if (!idle) error ??= "worker event stream ended before the session went idle";
+      // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
+      const last = [...texts.values()].at(-1)?.messageID;
+      const text = [...texts.values()].filter((t) => t.messageID === last).map((t) => t.text).join("\n");
+      return { finish, text, error };
+    } finally {
+      abort.abort();
     }
-    if (!idle) error ??= "worker event stream ended before the session went idle";
+  }
 
+  function totals(): SessionTotals {
     const usage: Usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
     for (const m of messages.values()) for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
-    // the fallback block is read from the last message only, so a stale one from earlier cannot win
-    const last = [...texts.values()].at(-1)?.messageID;
-    const text = [...texts.values()].filter((t) => t.messageID === last).map((t) => t.text).join("\n");
-    return { sessionID, turns: calls.size, usage, finish, text, error };
-  } finally {
-    abort.abort();
+    return { sessionID, turns: calls.size, usage };
   }
+
+  return { sessionID, run, totals };
+}
+
+export type Session = Awaited<ReturnType<typeof openSession>>;
+
+/** One prompt in a fresh session (the login live check). */
+export async function runSession(opts: Parameters<typeof openSession>[0] & { prompt: string }): Promise<SessionResult> {
+  const session = await openSession(opts);
+  const result = await session.run(opts.prompt);
+  return { ...session.totals(), ...result };
 }
 
 /** OpenCode validates the tool's args, but the record must not trust a malformed one either. */

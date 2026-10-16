@@ -16,6 +16,12 @@ export type JobRecord = {
   reason?: string;
   worktree: string | null;
   usage: { turns: number; costUsd: number };
+  tests: "pass" | "fail" | "none";
+  selfFix: number;
+  models: { final: string; escalated: boolean };
+  /** The de-noised tail of the last failing verify command: the command first, then indented lines. */
+  error?: string[];
+  tried: string[];
 };
 
 const CHANGED_MAX = 15;
@@ -27,7 +33,9 @@ export function renderJob(r: JobRecord) {
   const add = r.changed.reduce((n, c) => n + c.add, 0);
   const del = r.changed.reduce((n, c) => n + c.del, 0);
   const lines = [
-    `${r.status} ${r.job} step=${r.steps} files=${r.changed.length} +${add}/-${del} tests=none turns=${r.usage.turns} cost=$${r.usage.costUsd.toFixed(3)}`,
+    `${r.status} ${r.job} step=${r.steps} files=${r.changed.length} +${add}/-${del} tests=${r.tests} turns=${r.usage.turns} cost=$${r.usage.costUsd.toFixed(3)}` +
+      (r.selfFix ? ` fix=${r.selfFix}` : "") +
+      (r.models.escalated ? ` esc=1 model=${r.models.final}` : ""),
     `summary: ${r.summary.slice(0, 160)}`,
   ];
   if (r.changed.length) {
@@ -39,6 +47,8 @@ export function renderJob(r: JobRecord) {
   }
   if (r.risks.length) lines.push("risks:", ...r.risks.slice(0, 5).map((risk) => `  - ${risk.slice(0, 120)}`));
   if (r.review.length) lines.push(`review: ${r.review.map((v) => `${v.path}:${v.start}-${v.end}`).join(", ")}`);
+  if (r.error?.length) lines.push(`error: ${r.error[0]}`, ...r.error.slice(1));
+  if (r.tried.length) lines.push("tried:", ...r.tried.map((t) => `  - ${t}`));
   if (r.reason) lines.push(`reason: ${r.reason}`);
   if (r.worktree) lines.push(`worktree: ${r.worktree}/`);
   lines.push(`log: .cheapag/jobs/${r.job}/`);

@@ -24,7 +24,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
     "## 1 greeting file",
     "files: hello.txt",
     "do: create hello.txt containing exactly the line: hello from cheapag",
-    "done-when: hello.txt exists with that line",
+    "done-when: `grep -qx \"hello from cheapag\" hello.txt` succeeds",
     "",
   ].join("\n"));
   const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! } });
@@ -37,7 +37,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
   });
   const text = (result.content as { text: string }[])[0].text;
   console.log(`LIVE delegate block:\n${text}\nprogress: ${JSON.stringify(progress)}`);
-  expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 /);
+  expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 .* tests=pass /);
   expect(readFileSync(join(repo.dir, "hello.txt"), "utf8").trim()).toBe("hello from cheapag");
   expect(repo.git("log", "--oneline").trim().split("\n")).toHaveLength(1);
   expect(repo.git("status", "--porcelain", "--", "hello.txt")).toBe("?? hello.txt\n");
