@@ -1,0 +1,8 @@
+{
+  "name": "shopkeep",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A tiny inventory and receipt library with a CLI. Benchmark fixture for Cheap Agent.",
+  "scripts": { "test": "node --test" },
+  "license": "MIT"
+}

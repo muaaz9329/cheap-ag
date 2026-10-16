@@ -1,0 +1,59 @@
+[
+  {
+    "id": "t1-feature",
+    "kind": "feature",
+    "title": "removeItem with tests",
+    "prompt": "Add a `removeItem(inv, sku)` function to src/inventory.js: it removes the item and returns it, and throws an Error matching /not found/ when the SKU does not exist. Export it, add tests for it in test/inventory.test.js, and make sure `npm test` passes. Do not commit."
+  },
+  {
+    "id": "t2-refactor",
+    "kind": "refactor",
+    "title": "rename qty to quantity across 5 files",
+    "prompt": "Rename the item field `qty` to `quantity` everywhere in this repo (src/ and test/), and rename `updateQty` to `updateQuantity`. The CLI `add` command's positional arguments stay in the same order. No occurrence of the word `qty` may remain under src/ or test/. Make sure `npm test` passes. Do not commit."
+  },
+  {
+    "id": "t3-bugfix",
+    "kind": "bugfix",
+    "title": "total() ignores discount",
+    "prompt": "Bug: `total(inv, { taxRate, discount })` in src/pricing.js ignores `discount`. A fractional discount (e.g. 0.1 for 10%) must reduce the subtotal before tax is applied, rounding the discounted subtotal to the nearest cent. Fix it and add a regression test in test/pricing.test.js. Make sure `npm test` passes. Do not commit."
+  },
+  {
+    "id": "t4-tests",
+    "kind": "tests",
+    "title": "tests for formatReceipt",
+    "prompt": "src/receipt.js has no tests. Write test/receipt.test.js with at least 4 tests for `formatReceipt` covering: one item line per item in SKU order, the subtotal/tax/total lines, right-aligned money columns at the given width, and an empty inventory. Make sure `npm test` passes. Do not commit."
+  },
+  {
+    "id": "t5-migration",
+    "kind": "migration",
+    "title": "InventoryError across modules",
+    "prompt": "Introduce `export class InventoryError extends Error` in a new src/errors.js with a `code` property. Replace every `throw new Error(...)` under src/ with `throw new InventoryError(message, code)`, using codes NOT_FOUND, DUPLICATE_SKU, INVALID_QTY, INVALID_RATE, USAGE and UNKNOWN_COMMAND as appropriate. Keep the existing messages so the current tests still pass. Make sure `npm test` passes. Do not commit."
+  },
+  {
+    "id": "t6-docs",
+    "kind": "docs",
+    "title": "document the CLI",
+    "prompt": "Document the command-line interface in README.md under a `## CLI` heading: one subsection or table row per command (`add`, `list`, `total`, `receipt`) with its arguments and an example invocation of `node src/cli.js`. Keep the existing content. Do not change any code. Do not commit.",
+    "grade": {
+      "onlyFiles": [
+        "README.md"
+      ]
+    }
+  },
+  {
+    "id": "t7-research",
+    "kind": "research",
+    "title": "where is tax computed",
+    "prompt": "Research question, no code changes: where is sales tax computed in this repo, how is rounding handled, and which callers depend on it? Answer in under 120 words with file:line references.",
+    "grade": {
+      "answer": "pricing\\.js[\\s\\S]*(round|cent)",
+      "unchanged": true
+    }
+  },
+  {
+    "id": "t8-ambiguous",
+    "kind": "ambiguous",
+    "title": "make lookups faster",
+    "prompt": "Make inventory lookups faster. Make sure `npm test` passes. Do not commit."
+  }
+]
