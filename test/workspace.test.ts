@@ -21,7 +21,7 @@ async function scenario(opts: { prepare?: (dir: string, git: (...a: string[]) =>
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   fake.script(...(opts.actions?.(repo.dir) ?? [{ edit: "src/out.txt", content: "out\n" }, { tool: "write" }, { finish: REPORT }]));
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" } });
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: [] });
   onTestFinished(server.close);
   const text = await callText(server.client, "delegate", { plan: ".plan/p.md", steps: "1" });
   return { repo, fake, text, worktree: fake.recorded.sessions[0]?.directory };

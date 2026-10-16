@@ -43,7 +43,7 @@ async function scenario(scripts: Action[][], doneWhen = "`node check.mjs` passes
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   for (const s of scripts) fake.script(...s);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" } });
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: [] });
   onTestFinished(server.close);
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(join(path.startsWith("~/") ? server.home : repo.dir, path.replace(/^~\//, ""), ".."), { recursive: true });

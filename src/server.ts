@@ -55,7 +55,7 @@ export async function serve() {
         return safeText(
           await delegate(input, {
             provider,
-            opencode: () => ensureOpencode(provider),
+            opencode: (route) => ensureOpencode(provider, process.cwd(), route),
             progress: (progress, message) => {
               if (progressToken !== undefined) {
                 void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress, message } });

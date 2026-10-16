@@ -26,7 +26,7 @@ async function scenario(actions: Action[] | null, plan = PLAN, logins: Logins = 
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   if (actions) fake.script(...actions);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins });
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins, allow: [] });
   onTestFinished(server.close);
   const progress: string[] = [];
   const delegate = async (steps: string, note?: string, planPath = ".plan/hello.md") => {

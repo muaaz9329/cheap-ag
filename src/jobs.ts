@@ -7,7 +7,8 @@ import { parsePlan, PLAN_FORMAT, selectSteps, type Plan, type PlanStep } from ".
 import { failBlock, renderJob, type JobRecord } from "./report.js";
 import { loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
-import { ESCALATION_MODEL, IMPLEMENT_MODEL, modelName } from "./routing.js";
+import { consentGate } from "./consent.js";
+import { modelName, type Route } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Session } from "./worker.js";
 import { createWorktree, land, operationInProgress, projectRoot, removeWorktree, worktreeDiff, type Changed, type Worktree } from "./workspace.js";
@@ -31,9 +32,13 @@ export type DelegateInput = { plan: string; steps: string; note?: string };
 
 export async function delegate(
   input: DelegateInput,
-  ctx: { provider: Provider; opencode: () => Promise<Opencode>; progress: (turns: number, message: string) => void },
+  ctx: { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
 ): Promise<string> {
   const root = projectRoot(process.cwd());
+  // first: an unapproved repo gets CONSENT before any job, worktree, OpenCode boot or provider call
+  const gate = consentGate(root, ctx.provider.provider);
+  if ("block" in gate) return gate.block;
+  const { route } = gate;
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
   if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
@@ -60,16 +65,16 @@ export async function delegate(
   const busy = operationInProgress(root);
   if (busy) return failBlock(`${busy} in the working tree; finish or abort it, then delegate again`);
 
-  const opencode = await ctx.opencode();
+  const opencode = await ctx.opencode(route);
   const { job, dir } = newJob(root);
   const write = (name: string, value: unknown) => writeFileSync(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
   const stepIds = steps.map((s) => s.id).join(",");
-  const model = IMPLEMENT_MODEL[ctx.provider.provider];
+  const model = route.implement;
   const requested = modelName(model);
   const startedAt = new Date();
   write("request.json", { ...input, steps: stepIds, model: requested, startedAt });
 
-  const escalation = ESCALATION_MODEL[ctx.provider.provider];
+  const escalation = route.escalation;
   let worktree: Worktree | undefined;
   let session: Session | undefined;
   let report: FinishReport = finishReport({ text: "" });
@@ -115,6 +120,10 @@ export async function delegate(
       for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
         if (!failing) break;
         const esc = attempt === "esc";
+        if (esc && !escalation) {
+          tried.push("esc: skipped, the escalation model is not allowed by this repo's consent");
+          break;
+        }
         if (esc) escalated = true;
         else selfFix++;
         const before = failing.tail;
@@ -155,7 +164,7 @@ export async function delegate(
   const record = {
     format: "cheapag/1" as const, job, batch: null, kind: "implement", status: (landed ? "OK" : "FAIL") as JobRecord["status"], landed,
     plan: input.plan, steps: stepIds, provider: ctx.provider.provider,
-    models: { requested, final: escalated ? modelName(escalation) : requested, fallbacks: [], escalated },
+    models: { requested, final: escalated ? modelName(escalation!) : requested, fallbacks: [], escalated },
     baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null },
     worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
     sessionID: session?.sessionID ?? null,

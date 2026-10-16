@@ -9,7 +9,7 @@ export type WorkerModel = { providerID: string; id: string; options?: Record<str
 // collect data are never used. Every OpenRouter model carries it.
 const OPENROUTER_PRIVATE = { provider: { data_collection: "deny" } };
 
-// shortcut: one fixed implement model per provider; roles, fallbacks and the allowlist arrive with tickets 09/12
+// shortcut: one fixed implement model per provider; roles and fallbacks arrive with ticket 12
 export const IMPLEMENT_MODEL: Record<Provider["provider"], WorkerModel> = {
   "opencode-go": { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
   openrouter: { providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash", options: OPENROUTER_PRIVATE }, // on openrouter.ai/api/v1/models, 2026-10-15
@@ -24,7 +24,10 @@ export const ESCALATION_MODEL: Record<Provider["provider"], WorkerModel> = {
   deepseek: { providerID: "deepseek", id: "deepseek-v4-pro" },
 };
 
-/** Every model a provider's worker may run, so the generated config carries each one's options. */
-export const workerModels = (provider: Provider["provider"]) => [IMPLEMENT_MODEL[provider], ESCALATION_MODEL[provider]];
+/** The models one job may run: the implement model and, unless the allowlist drops it, the escalation model (src/consent.ts). */
+export type Route = { implement: WorkerModel; escalation?: WorkerModel };
+
+/** Every model a provider's worker may run, before the repo's allowlist filters them. */
+export const fullRoute = (provider: Provider["provider"]): Route => ({ implement: IMPLEMENT_MODEL[provider], escalation: ESCALATION_MODEL[provider] });
 
 export const modelName = (m: WorkerModel) => `${m.providerID}/${m.id}`;

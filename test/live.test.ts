@@ -27,7 +27,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
     "done-when: `grep -qx \"hello from cheapag\" hello.txt` succeeds",
     "",
   ].join("\n"));
-  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! } });
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! }, allow: [] });
   onTestFinished(server.close);
 
   const progress: string[] = [];
@@ -62,7 +62,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
 live("abort on a real session: observed event sequence", async () => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
-  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! } });
+  const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! }, allow: [] });
   onTestFinished(server.close);
   expect(await callText(server.client, "ping")).toMatch(/^OK .* provider=openrouter via=login$/);
 

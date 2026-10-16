@@ -32,12 +32,19 @@ export function hermeticHome(logins: Logins = {}) {
   return { home, env };
 }
 
+/** Runs the real `cheapag allow <args>` in `cwd`, the way the developer opts a repo in; returns its output. */
+export function allowRepo(cwd: string, env: Record<string, string>, args: string[] = []) {
+  return execFileSync(process.execPath, [serverEntry, "allow", ...args], { cwd, env, stdio: "pipe" }).toString();
+}
+
 /**
  * Spawns the built server over stdio, exactly as Claude Code would, and connects a client.
  * Hermetic (see `hermeticHome`); `cwd` defaults to that home, so `.cheapag/` never lands in this repo.
+ * `allow` first opts the cwd's repo in through the real CLI (`[]` = all models), as the developer would.
  */
-export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[] } = {}) {
+export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[]; allow?: string[] } = {}) {
   const { home, env } = hermeticHome(opts.logins);
+  if (opts.allow) allowRepo(opts.cwd ?? home, { ...env, ...opts.env }, opts.allow);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [...(opts.nodeArgs ?? []), serverEntry],

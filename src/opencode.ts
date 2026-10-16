@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { killProcessGroup, opencodePlatform } from "./platform.js";
-import { IMPLEMENT_MODEL, modelName, workerModels } from "./routing.js";
+import { fullRoute, modelName, type Route } from "./routing.js";
 
 const require = createRequire(import.meta.url);
 export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: string }).version;
@@ -63,35 +63,48 @@ export default tool({
 `;
 
 /** Cheap Agent's own OpenCode config dir: worker agent, finish tool, model pins and options. */
-function writeConfigDir(dir: string, provider: Provider) {
+function writeConfigDir(dir: string, config: string) {
   mkdirSync(join(dir, "agents"), { recursive: true });
   mkdirSync(join(dir, "tools"), { recursive: true });
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
-  const model = IMPLEMENT_MODEL[provider.provider];
+  writeFileSync(join(dir, "opencode.json"), config);
+}
+
+/** The generated opencode.json for the route's models: their options (e.g. OpenRouter routing) and the small model. */
+function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
-  const models = Object.fromEntries(workerModels(provider.provider).filter((m) => m.options).map((m) => [m.id, { options: m.options }]));
+  const models = Object.fromEntries([route.implement, route.escalation].filter((m) => m?.options).map((m) => [m!.id, { options: m!.options }]));
   const providerConfig = Object.keys(models).length ? { models } : {};
   const config = {
     $schema: "https://opencode.ai/config.json",
-    // OpenCode otherwise sends title generation to its own default small model, i.e. another provider the user never chose
-    small_model: modelName(model),
+    // OpenCode otherwise sends title generation to its own default small model, i.e. another provider the user never chose;
+    // the route's implement model is always an allowlisted one
+    small_model: modelName(route.implement),
     provider: Object.keys(providerConfig).length ? { [provider.provider]: providerConfig } : {},
   };
-  writeFileSync(join(dir, "opencode.json"), JSON.stringify(config, null, 2) + "\n");
+  return JSON.stringify(config, null, 2) + "\n";
 }
 
 export type Opencode = { url: string; password: string; version: string };
 
 let started: Promise<Opencode> | undefined;
 let child: ChildProcess | undefined;
+/** The config the running server was booted with. */
+let booted: string | undefined;
 
 /**
  * Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
  * Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
+ * `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
+ * Without one (ping, login) any running server will do.
  */
-export function ensureOpencode(provider: Provider, projectDir = process.cwd()): Promise<Opencode> {
-  started ??= boot(provider, projectDir).catch((err) => {
+export function ensureOpencode(provider: Provider, projectDir = process.cwd(), route?: Route): Promise<Opencode> {
+  const config = opencodeConfig(provider, route ?? fullRoute(provider.provider));
+  // shortcut: a consent change mid-session (e.g. to zero-retention only) restarts OpenCode under any running job; keep one server per config once jobs overlap (ticket 14)
+  if (started && route && booted !== config) stopOpencode();
+  if (!started) booted = config;
+  started ??= boot(projectDir, config).catch((err) => {
     stopOpencode();
     started = undefined;
     throw err;
@@ -99,9 +112,9 @@ export function ensureOpencode(provider: Provider, projectDir = process.cwd()): 
   return started;
 }
 
-async function boot(provider: Provider, projectDir: string): Promise<Opencode> {
+async function boot(projectDir: string, config: string): Promise<Opencode> {
   const configDir = join(projectDir, ".cheapag", "opencode");
-  writeConfigDir(configDir, provider);
+  writeConfigDir(configDir, config);
   const external = process.env.CHEAPAG_OPENCODE_URL;
   const password = (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
   const url = external || (await spawnServer(configDir, password));
