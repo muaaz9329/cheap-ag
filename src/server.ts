@@ -4,7 +4,7 @@ import { z } from "zod";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
-import { delegate, reply } from "./jobs.js";
+import { delegate, jobs, recoverJobs, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
 import { PLAN_FORMAT } from "./plan.js";
 import { isSupported, UNSUPPORTED } from "./platform.js";
@@ -85,6 +85,27 @@ export async function serve() {
     }),
   );
 
+  server.registerTool(
+    "jobs",
+    {
+      description: "List jobs, show a job's last result block again, or cancel a running job (keeps its worktree).",
+      inputSchema: {
+        action: z.enum(["list", "show", "cancel"]).describe("list: one line per job; show: a job's last block; cancel: stop a running job"),
+        job: z.string().optional().describe("Job id, e.g. j7f3a (show and cancel)"),
+      },
+    },
+    supported(async (input) => {
+      if (!detectProvider()) return safeText(NO_PROVIDER);
+      try {
+        return safeText(await jobs(input));
+      } catch (err) {
+        return safeText(failBlock((err as Error).message));
+      }
+    }),
+  );
+
+  // jobs a previous server left running or blocked can never finish now
+  recoverJobs(process.cwd());
   process.on("exit", stopOpencode);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit());
   // Claude Code closing our stdin is the normal shutdown

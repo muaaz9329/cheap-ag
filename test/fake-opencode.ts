@@ -37,6 +37,8 @@ export type Action =
   | { retry: { reason: "account_rate_limit" | "free_tier_limit"; message: string } }
   /** Calls the custom `finish` tool with this report (as a completed `finish` tool part). */
   | { finish: FinishReport }
+  /** A long model step: pauses this many ms, or until the session is aborted. */
+  | { wait: number }
   /** Runs a test callback at this point of the run, e.g. to change the main checkout while the job is in flight. */
   | { hook: () => void }
   /** Fails the run, then goes idle: via `session.error`, or (`on: "message"`) only on the assistant message, as abort does live. */
@@ -144,6 +146,11 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
       if (run.aborted) return;
       if ("hook" in action) {
         action.hook();
+      } else if ("wait" in action) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, action.wait);
+          run.resume = () => (clearTimeout(timer), resolve());
+        });
       } else if ("edit" in action) {
         const file = join(dir, action.edit);
         mkdirSync(dirname(file), { recursive: true });

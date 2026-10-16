@@ -5,7 +5,7 @@ import { killProcessGroup } from "./platform.js";
 
 export type VerifyRun = { cmd: string; ok: boolean; ms: number; output: string };
 
-// shortcut: a fixed per-command limit; the per-job minute cap (ticket 11) will bound the whole job
+// a backstop per command; the job's minute cap (its `signal`) bounds the whole job
 const COMMAND_TIMEOUT_MS = 5 * 60_000;
 const OUTPUT_LIMIT = 1024 * 1024;
 
@@ -15,19 +15,23 @@ export function verifyCommands(doneWhen: string[], testCmd?: string) {
   return backticked.length ? backticked : testCmd ? [testCmd] : [];
 }
 
-/** Runs the commands in order in `cwd`, stopping at the first failure; `onStart` hears each command as it begins. */
-export async function runVerify(cwd: string, cmds: string[], onStart: (cmd: string) => void): Promise<VerifyRun[]> {
+/**
+ * Runs the commands in order in `cwd`, stopping at the first failure; `onStart` hears each command as it begins.
+ * Aborting `signal` kills the running command's process group (cap or cancel) and fails it.
+ */
+export async function runVerify(cwd: string, cmds: string[], onStart: (cmd: string) => void, signal?: AbortSignal): Promise<VerifyRun[]> {
   const runs: VerifyRun[] = [];
   for (const cmd of cmds) {
+    if (signal?.aborted) break;
     onStart(cmd);
-    const run = await runOne(cwd, cmd);
+    const run = await runOne(cwd, cmd, signal);
     runs.push(run);
     if (!run.ok) break;
   }
   return runs;
 }
 
-function runOne(cwd: string, cmd: string): Promise<VerifyRun> {
+function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyRun> {
   const started = Date.now();
   return new Promise((resolve) => {
     // its own process group, so everything it spawned can be stopped with it
@@ -43,6 +47,11 @@ function runOne(cwd: string, cmd: string): Promise<VerifyRun> {
       output += `\n(cheapag: stopped after ${COMMAND_TIMEOUT_MS / 60_000} min)`;
       killGroup();
     }, COMMAND_TIMEOUT_MS);
+    const halt = () => {
+      output += "\n(cheapag: stopped, job cap or cancel)";
+      killGroup();
+    };
+    signal?.addEventListener("abort", halt, { once: true });
     // a backgrounded child (`server &`) would hold the pipes open: when the shell exits, stop its whole group
     child.on("exit", (exitCode) => {
       code = exitCode;
@@ -50,10 +59,12 @@ function runOne(cwd: string, cmd: string): Promise<VerifyRun> {
     });
     child.on("close", () => {
       clearTimeout(timer);
-      resolve({ cmd, ok: code === 0, ms: Date.now() - started, output });
+      signal?.removeEventListener("abort", halt);
+      resolve({ cmd, ok: code === 0 && !signal?.aborted, ms: Date.now() - started, output });
     });
     child.on("error", (err) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", halt);
       resolve({ cmd, ok: false, ms: Date.now() - started, output: err.message });
     });
   });

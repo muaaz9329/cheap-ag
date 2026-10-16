@@ -3,18 +3,25 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
-export type Config = { test_cmd?: string; link_dirs: string[]; allow_commands: string[] };
+export type Config = { test_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits };
+/** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits). */
+export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number };
 
-const DEFAULTS: Config = { link_dirs: ["node_modules", ".venv", "venv", "vendor"], allow_commands: ["npx tsc --noEmit"] };
+const DEFAULTS: Config = {
+  link_dirs: ["node_modules", ".venv", "venv", "vendor"], allow_commands: ["npx tsc --noEmit"],
+  limits: { max_turns: 40, max_minutes: 20, max_cost_usd: 0.5 },
+};
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 
 export function loadConfig(root: string): Config {
   const user = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
-  return { ...DEFAULTS, ...read(user), ...read(join(root, "cheapag.json")) };
+  const [mine, repo] = [read(user), read(join(root, "cheapag.json"))];
+  // caps merge key by key, so a repo can set one and keep the user's others
+  return { ...DEFAULTS, ...mine, ...repo, limits: { ...DEFAULTS.limits, ...mine.limits, ...repo.limits } };
 }
 
-function read(file: string): Partial<Config> {
+function read(file: string): Partial<Omit<Config, "limits">> & { limits?: Partial<Limits> } {
   if (!existsSync(file)) return {};
   let raw: string;
   try {
@@ -29,7 +36,19 @@ function read(file: string): Partial<Config> {
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, link_dirs, allow_commands } = value as Record<string, unknown>;
+  const { test_cmd, link_dirs, allow_commands, limits } = value as Record<string, unknown>;
+  if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
+  const caps: Partial<Limits> = {};
+  // E4's other limits keys (self_fix_attempts, max_parallel) are not read yet
+  for (const key of ["max_turns", "max_minutes", "max_cost_usd"] as const) {
+    const v = (limits as Record<string, unknown> | undefined)?.[key];
+    if (v === undefined) continue;
+    const whole = key === "max_turns";
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || (whole && !Number.isInteger(v))) {
+      throw new Error(`${file}: limits.${key} must be a positive ${whole ? "whole number" : "number"}`);
+    }
+    caps[key] = v;
+  }
   if (allow_commands !== undefined && (!Array.isArray(allow_commands) || allow_commands.some((c) => typeof c !== "string" || !c.trim()))) {
     throw new Error(`${file}: allow_commands must be a list of commands`);
   }
@@ -48,5 +67,6 @@ function read(file: string): Partial<Config> {
     ...(test_cmd !== undefined && { test_cmd }),
     ...(dirs && { link_dirs: dirs }),
     ...(allow_commands !== undefined && { allow_commands: (allow_commands as string[]).map((c) => c.trim()) }),
+    limits: caps,
   };
 }

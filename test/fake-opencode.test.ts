@@ -183,3 +183,23 @@ test("a scripted error ends the run with session.error, then idle; unscripted pr
   expect((await until("message.updated")).properties.info.error).toEqual({ name: "APIError", data: { message: "402 credits" } });
   await until("session.idle");
 });
+
+test("a wait pauses the run, then it carries on; an abort cuts it short and nothing after it runs", async () => {
+  const { fake, client, session, events, until, prompt } = await setup();
+  fake.script({ wait: 30 }, { tool: "read" });
+  fake.script({ wait: 60_000 }, { tool: "write" });
+  const started = Date.now();
+  await prompt();
+  await until("session.idle");
+  expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+  expect(events.filter((e) => e.type === "message.part.updated")).toHaveLength(1);
+
+  await prompt();
+  await until("session.status"); // busy
+  await until("message.updated"); // the step opening
+  await client.session.abort({ sessionID: session.id });
+  expect((await until("message.updated")).properties.info.error.name).toBe("MessageAbortedError");
+  await until("session.idle");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(events.filter((e) => e.type === "message.part.updated")).toHaveLength(1); // the write never happened
+});

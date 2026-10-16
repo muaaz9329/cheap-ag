@@ -35,7 +35,12 @@ async function scenario(...scripts: Action[][]) {
   const call = async (name: string, args: Record<string, string>) =>
     ((await server.client.callTool({ name, arguments: args })).content as { text: string }[])[0].text;
   const record = (job: string) => JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"));
-  return { repo, fake, record, delegate: () => call("delegate", { plan: ".plan/p.md", steps: "1" }), reply: (job: string, answer: string) => call("reply", { job, answer }) };
+  return {
+    repo, fake, record,
+    delegate: () => call("delegate", { plan: ".plan/p.md", steps: "1" }),
+    reply: (job: string, answer: string) => call("reply", { job, answer }),
+    jobs: (action: string, job: string) => call("jobs", { action, job }),
+  };
 }
 
 const jobOf = (text: string) => text.match(/^\w+ (j[0-9a-z]{4}) /)![1];
@@ -126,4 +131,26 @@ test("a denied install becomes the dependency question, rendered in the document
   expect(blocked.split("\n").slice(1, 4)).toEqual([`question: ${dep}`, "options:", "  a) installed"]);
   expect((await reply(job, "installed")).split("\n")[0]).toMatch(/^OK /);
   expect(fake.recorded.questionReplies[0].answers).toEqual([["installed"]]);
+});
+
+test("jobs cancel ends a BLOCKED job: the question is rejected, the session aborted, and reply then refuses", async () => {
+  const { repo, fake, record, delegate, reply, jobs } = await scenario([ASK, ...edit(2, "never reached")]);
+  const job = jobOf(await delegate());
+  const cancelled = await jobs("cancel", job);
+  expect(cancelled.split("\n")[0]).toMatch(new RegExp(`^CANCELLED ${job} step=1 `));
+  expect(cancelled).toContain("\nreason: cancelled on request\n");
+  expect(fake.recorded.questionReplies).toEqual([expect.objectContaining({ rejected: true })]);
+  expect(fake.recorded.aborts).toHaveLength(1);
+  expect(record(job)).toMatchObject({ status: "CANCELLED", landed: false });
+  expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job))).toBe(true);
+  expect(await reply(job, "a")).toBe(`FAIL reason: job ${job} is CANCELLED, not BLOCKED; only a BLOCKED job takes a reply`);
+});
+
+test("time spent BLOCKED does not count toward the minute cap", async () => {
+  const { repo, delegate, reply } = await scenario([ASK, ...edit(2, "answered after a long wait")]);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_minutes: 0.01 } })); // 600 ms of working time
+  const job = jobOf(await delegate());
+  await new Promise((r) => setTimeout(r, 1000)); // the developer takes a while to answer
+  const done = await reply(job, "b");
+  expect(done.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `));
 });

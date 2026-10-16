@@ -6,6 +6,8 @@ import type { WorkerModel } from "./routing.js";
 /** Worker: one OpenCode session for one job, reduced to what the job layer needs. */
 
 export const WORKER_AGENT = "cheapag-worker";
+/** How long an aborted prompt may take to go idle before its run is ended anyway. */
+const ABORT_GRACE_MS = 10_000;
 
 export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[] };
 export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
@@ -33,6 +35,8 @@ export async function openSession(opts: {
   onEvent: (event: Event, turns: number) => void;
   /** Called when the worker asks a question; the session stays paused until it resolves with the answer. Without it, questions are rejected. */
   onQuestion?: (question: Question) => Promise<string>;
+  /** Aborting it aborts the session's current prompt (OpenCode abort) and refuses later ones: caps and cancel. */
+  signal?: AbortSignal;
 }) {
   const { opencode, directory } = opts;
   const client = createOpencodeClient({
@@ -50,7 +54,15 @@ export async function openSession(opts: {
   const rejections: Rejection[] = [];
 
   async function run(prompt: string, model?: WorkerModel): Promise<RunResult> {
+    const { signal } = opts;
+    if (signal?.aborted) return { text: "", error: "aborted" };
     const abort = new AbortController();
+    let backstop: NodeJS.Timeout | undefined;
+    const stop = () => {
+      void client.session.abort({ sessionID, directory }).catch(() => {});
+      // live, an abort ends in session.idle; if it never comes, drop the stream so the run cannot hang
+      backstop = setTimeout(() => abort.abort(), ABORT_GRACE_MS);
+    };
     // the SDK's stream only connects when first read: wait for server.connected before prompting, or early events are lost
     const { stream } = await client.event.subscribe({ directory }, { signal: abort.signal });
     await stream.next();
@@ -65,6 +77,9 @@ export async function openSession(opts: {
         ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
       });
       if (prompted.error) throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+      // after the prompt, so an abort can never race ahead of it
+      signal?.addEventListener("abort", stop, { once: true });
+      if (signal?.aborted) stop();
 
       for await (const raw of stream) {
         const event = raw as Event;
@@ -107,7 +122,9 @@ export async function openSession(opts: {
           const [first, ...rest] = event.properties.questions;
           const requestID = event.properties.id;
           // shortcut: only the first question of a multi-question ask is shown, the rest get empty answers; show all if workers batch questions
-          const answer = opts.onQuestion && first ? await opts.onQuestion({ question: first.question, options: first.options.map((o) => o.label) }) : undefined;
+          // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
+          const stopped = new Promise<undefined>((resolve) => (signal?.aborted ? resolve(undefined) : signal?.addEventListener("abort", () => resolve(undefined), { once: true })));
+          const answer = opts.onQuestion && first ? await Promise.race([opts.onQuestion({ question: first.question, options: first.options.map((o) => o.label) }), stopped]) : undefined;
           const replied = await (answer === undefined
             ? client.question.reject({ requestID, directory })
             : client.question.reply({ requestID, directory, answers: [[answer], ...rest.map(() => [])] })
@@ -133,6 +150,8 @@ export async function openSession(opts: {
       const text = [...texts.values()].filter((t) => t.messageID === last).map((t) => t.text).join("\n");
       return { finish, text, error };
     } finally {
+      opts.signal?.removeEventListener("abort", stop);
+      clearTimeout(backstop);
       abort.abort();
     }
   }
