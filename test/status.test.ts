@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { expect, onTestFinished, test } from "vitest";
@@ -69,4 +69,18 @@ test("cheapag status with no login, no jobs and no spend; outside a repository; 
   expect(status(outside)).toContain("repo: not a git repository (no jobs or consent here)\nspend: none");
   const r = spawnSync(process.execPath, [serverEntry, "status", "--x"], { cwd: repo.dir, env, encoding: "utf8" });
   expect([r.status, r.stdout]).toEqual([1, "✗ usage: cheapag status\n"]);
+});
+
+test("cheapag status shows the prefix of this repo's last Claude Code session, from its transcript", () => {
+  const { repo, env } = setup();
+  const config = join(repo.dir, ".claude-config"); // a stand-in CLAUDE_CONFIG_DIR
+  const projects = join(config, "projects", repo.dir.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(projects, { recursive: true });
+  const turn = (read: number, write: number) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: write } } });
+  writeFileSync(join(projects, "old.jsonl"), [turn(1, 1)].join("\n"));
+  utimesSync(join(projects, "old.jsonl"), new Date(2020, 0, 1), new Date(2020, 0, 1));
+  writeFileSync(join(projects, "new.jsonl"), [JSON.stringify({ type: "user" }), turn(15_000, 3_396), turn(40_000, 900)].join("\n"));
+  const run = (extra: Record<string, string>) => execFileSync(process.execPath, [serverEntry, "status"], { cwd: repo.dir, env: { ...env, ...extra }, stdio: "pipe" }).toString();
+  expect(run({ CLAUDE_CONFIG_DIR: config })).toMatch(/\nclaude prefix: 18\.4k tokens on the first turn of the last session here \(\d{4}-\d\d-\d\d\);/);
+  expect(run({ CLAUDE_CONFIG_DIR: join(config, "none") })).not.toContain("claude prefix"); // no transcript: nothing printed
 });

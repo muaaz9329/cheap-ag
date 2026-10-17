@@ -1,4 +1,7 @@
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, readConsent } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
 import { blockedFor, records } from "./jobs.js";
@@ -49,6 +52,8 @@ export function status(args: string[]): number {
     out(rest.length ? "recent:" : "recent: none");
     rest.slice(0, RECENT).forEach((r) => out(headline(r)));
     if (rest.length > RECENT) out(`  … +${rest.length - RECENT} older (jobs list)`);
+    const prefix = lastPrefix(root);
+    if (prefix) out(`claude prefix: ${(prefix.tokens / 1000).toFixed(1)}k tokens on the first turn of the last session here (${prefix.at.slice(0, 10)}); see "What it costs to keep in context" in the plugin README`);
   }
 
   const spend = spendWindows();
@@ -57,4 +62,24 @@ export function status(args: string[]): number {
     out(`  ${model}  ${windows.map((w) => `${w.window} $${w.spent.toFixed(2)}${w.capUsd ? `/$${w.capUsd.toFixed(2)} (${Math.round((w.spent / w.capUsd) * 100)}%)` : ""}`).join("  ")}`);
   }
   return 0;
+}
+
+/**
+ * The context Claude Code sent on the first turn of this repo's most recent session (its fixed prefix: system prompt,
+ * tools, skills, CLAUDE.md), read from the session transcript. Undefined when no transcript is readable.
+ */
+export function lastPrefix(root: string): { tokens: number; at: string } | undefined {
+  try {
+    const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", root.replace(/[^a-zA-Z0-9]/g, "-"));
+    if (!existsSync(dir)) return undefined;
+    const newest = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+    if (!newest) return undefined;
+    for (const line of readFileSync(newest, "utf8").split("\n")) {
+      const usage = (JSON.parse(line || "{}") as { message?: { usage?: Record<string, number> } }).message?.usage;
+      if (usage) return { tokens: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0), at: statSync(newest).mtime.toISOString() };
+    }
+  } catch {
+    // an unreadable or half-written transcript: say nothing rather than guess
+  }
+  return undefined;
 }

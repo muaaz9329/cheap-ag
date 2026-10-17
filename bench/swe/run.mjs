@@ -19,6 +19,10 @@ const arms = (opts.arms ?? "baseline,cheapag").split(",");
 const timeoutMs = Number(opts.timeout ?? 60) * 60_000;
 // spend guards (ticket 21.1): stop once the running totals pass 80% of either budget
 const CLAUDE_BUDGET = Number(opts.budget ?? 100), WORKER_BUDGET = Number(opts["worker-budget"] ?? 5);
+// S1 (ticket 23.1), on by default since: no user plugins/skills/settings, per-machine prompt sections moved out of the
+// cached prefix, no git-instructions boilerplate; the baseline also drops skills (cheapag needs its plugin's). --no-lean: as runs 1-2
+const LEAN = !opts["no-lean"];
+const CLAUDE_VERSION = spawnSync("claude", ["--version"], { encoding: "utf8" }).stdout.trim().split(" ")[0];
 const PROMPT_TAIL = "Fix this in the repository at the current directory. Run the relevant tests with `./swebench-test.sh <test args>` (it runs them in the project's own environment). Do not commit.";
 const HELPERS = ["swebench-test.sh", "cheapag.json"]; // ours, never part of the patch
 const dataset = new Map(readFileSync(join(deps, "verified.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((r) => [r.instance_id, r]));
@@ -171,7 +175,8 @@ async function session(inst, arm, dir, [prompt], resume) {
   const args = [
     "-p", prompt, "--output-format", "json", "--model", MODEL, "--dangerously-skip-permissions",
     "--strict-mcp-config", "--mcp-config", mcp, "--max-turns", "80", "--max-budget-usd", "6",
-    ...(cheap ? ["--plugin-dir", pluginDir] : []), ...(resume ? ["--resume", resume] : []),
+    ...(LEAN ? ["--setting-sources", "project", "--exclude-dynamic-system-prompt-sections", "--settings", JSON.stringify({ includeGitInstructions: false })] : []),
+    ...(cheap ? ["--plugin-dir", pluginDir] : LEAN ? ["--disable-slash-commands"] : []), ...(resume ? ["--resume", resume] : []),
   ];
   if (opts.dry) {
     console.log(`[dry] cd ${dir} && claude ${args.map((a) => (/[\s'"`]/.test(a) ? JSON.stringify(a.slice(0, 80) + "…") : a)).join(" ")}`);
@@ -189,7 +194,7 @@ async function session(inst, arm, dir, [prompt], resume) {
   const worker = jobMetrics(dir, jobsBefore);
   return {
     suite: SUITE, task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
-    repo: inst.repo, arm, model: MODEL, dir, session_id: out.session_id ?? null, timed_out: timedOut,
+    repo: inst.repo, arm, model: MODEL, claude_version: CLAUDE_VERSION, lean: LEAN, dir, session_id: out.session_id ?? null, timed_out: timedOut,
     subtype: out.subtype ?? null, budget_hit: out.subtype === "error_max_budget_usd", turns_hit: out.subtype === "error_max_turns",
     input_tokens: usage.input_tokens ?? 0, cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
