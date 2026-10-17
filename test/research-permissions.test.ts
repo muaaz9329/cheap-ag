@@ -101,15 +101,15 @@ test("reads the main checkout, uncommitted edits included, and searches it", asy
   // 1.19 has no separate list tool (`list` stays allowed for the rule's sake): read lists a directory
   expect(await outcome("read", { filePath: join(repo.dir, "config") })).toBe("allowed");
   // exactly the read-only tools are offered to the model
-  expect(llm.requests.filter((r) => r.tools).at(-1).tools.map((t: { function: { name: string } }) => t.function.name).sort()).toEqual(["glob", "grep", "read"]);
+  expect(llm.requests.filter((r) => r.tools).at(-1).tools.map((t: { function: { name: string } }) => t.function.name).sort()).toEqual(["bash", "glob", "grep", "read"]);
 }, 60_000);
 
-test("cannot edit, run commands, ask questions, or read secrets and outside paths", async () => {
+test("can run the allowed test commands (to reproduce), but cannot edit, run anything else, ask questions, or read secrets and outside paths", async () => {
+  expect(await outcome("bash", { command: "git status", description: "t" })).toBe("allowed");
   for (const [tool, args] of [
     ["write", { filePath: join(repo.dir, "src/new.ts"), content: "x\n" }],
     ["edit", { filePath: join(repo.dir, "README.md"), oldString: "fixture", newString: "changed" }],
     ["bash", { command: "ls", description: "t" }],
-    ["bash", { command: "git status", description: "t" }],
     ["bash", { command: "touch made.txt", description: "t" }],
     ["question", { questions: [{ question: "a or b?", header: "Q", options: [{ label: "a", description: "a" }, { label: "b", description: "b" }] }] }],
     ["read", { filePath: join(repo.dir, ".env") }],

@@ -241,8 +241,9 @@ describe("D7 research block", () => {
       refs: [{ path: "src/middleware/auth.ts", start: 18, end: 42 }, { path: "src/app.ts", start: 31, end: 31 }, { path: "src/middleware/errors.ts", start: 12, end: 12 }],
     })).toBe(block(
       "ANSWER r5k2q files_read=9 turns=11 cost=$0.003",
+      "files: src/middleware/auth.ts:18-42, src/app.ts:31, src/middleware/errors.ts:12",
+      "notes:",
       ...answer,
-      "refs: src/middleware/auth.ts:18-42, src/app.ts:31, src/middleware/errors.ts:12",
       "confidence: high",
       "note: 2 jobs not yet landed (j6a91, j6a92); their changes are not visible to research",
       "log: .cheapag/jobs/r5k2q/",
@@ -254,9 +255,26 @@ describe("D7 research block", () => {
       models: { requested: "a/flash", final: "a/flash2" }, answer: "No refresh endpoint found.", refs: [], confidence: "low", unlanded: [],
     })).toBe(block(
       "UNSURE r1 files_read=3 turns=4 cost=$0.001 model=a/flash2",
+      "notes:",
       "No refresh endpoint found.",
       "confidence: low",
       "log: .cheapag/jobs/r1/",
+    ));
+  });
+  test("a scout brief with a reproduction and dead ends (ticket 23.4)", () => {
+    expect(renderResearch({
+      format: "cheapag/1", job: "r3", status: "ANSWER", filesRead: 2, usage: { turns: 5, costUsd: 0.002 }, answer: "Expiry is checked after decoding.",
+      refs: [{ path: "src/auth.ts", start: 18, end: 42 }], repro: "`pytest tests/test_auth.py -k expiry` → 1 failed", deadEnds: "middleware order is fine",
+      confidence: "high", unlanded: [],
+    })).toBe(block(
+      "ANSWER r3 files_read=2 turns=5 cost=$0.002",
+      "files: src/auth.ts:18-42",
+      "repro: `pytest tests/test_auth.py -k expiry` → 1 failed",
+      "dead ends: middleware order is fine",
+      "notes:",
+      "Expiry is checked after decoding.",
+      "confidence: high",
+      "log: .cheapag/jobs/r3/",
     ));
   });
   test("FAIL with a reason", () => {

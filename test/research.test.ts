@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { researchRuleset } from "../src/permissions.js";
+import { BRIEF_FORMAT, REPRO_RULE } from "../src/research.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, startServer, tempRepo, type Logins } from "./harness.js";
 
@@ -25,8 +25,8 @@ async function scenario(opts: { allow?: string[] | null; logins?: Logins } = {})
 }
 
 const block = (fields: string) => ({ text: `Found it.\n\`\`\`cheapag-research\n${fields}\n\`\`\`` });
-/** The answer-format line every research prompt ends with (src/research.ts). */
-const FORMAT = "End your reply with exactly one fenced ```cheapag-research block: status (answer or unsure), confidence (high, medium or low), refs (path:line, comma-separated), then answer: and your prose.";
+/** The repro rule, then the word cap, then the brief format: every research prompt (src/research.ts). */
+const prompt = (head: string, words = 200) => `${head}\n${REPRO_RULE}\nAnswer in at most ${words} words.\n${BRIEF_FORMAT}`;
 
 const idOf = (text: string) => text.match(/^\w+ (r[0-9a-z]{4}) /)![1];
 
@@ -64,19 +64,21 @@ test("answers from the main checkout, uncommitted work included, with validated 
   const id = idOf(text);
   expect(text).toBe([
     `ANSWER ${id} files_read=2 turns=4 cost=$0.003`,
+    "files: src/auth.ts:18-22, src/app.ts:1",
+    "notes:",
     "JWT is validated in src/auth.ts:18-22,",
     "called from src/app.ts:1.",
-    "refs: src/auth.ts:18-22, src/app.ts:1",
     "confidence: high",
     `log: .cheapag/jobs/${id}/`,
   ].join("\n"));
 
-  // its own read-only agent and ruleset, in the main checkout itself (no worktree), on the research model
+  // its own agent and ruleset (read, search, test commands; never edit), in a throwaway worktree, on the research model
   const [session] = fake.recorded.sessions;
-  expect(session).toMatchObject({ directory: repo.dir, agent: "cheapag-research", model: { providerID: "opencode-go", id: "qwen3.8-flash" } });
-  expect(session.permission).toEqual(researchRuleset());
-  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: "Question: where is JWT validated?\nAnswer in at most 200 words.\n" + FORMAT }]);
-  expect(existsSync(join(repo.dir, ".cheapag", "worktrees"))).toBe(false);
+  expect(session).toMatchObject({ directory: join(repo.dir, ".cheapag", "worktrees", id), agent: "cheapag-research", model: { providerID: "opencode-go", id: "qwen3.8-flash" } });
+  expect(session.permission).toContainEqual({ permission: "edit", pattern: "*", action: "deny" });
+  expect(session.permission).toContainEqual({ permission: "bash", pattern: "pytest *", action: "allow" });
+  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: prompt("Question: where is JWT validated?") }]);
+  expect(existsSync(join(repo.dir, ".cheapag", "worktrees", id))).toBe(false); // removed once answered
   expect(tree()).toBe(before);
 
   // the record and the block are logged; `jobs list` does not mistake research for a job
@@ -91,13 +93,13 @@ test("max_words caps the answer (default 200, at most 600) and long prose is wra
   const long = Array.from({ length: 700 }, (_, i) => `w${i}`).join(" ");
   fake.script(block(`status: answer\nconfidence: medium\nanswer: ${long}`));
   const capped = await research({ question: "q", max_words: 5 });
-  expect(capped.split("\n")[1]).toBe("w0 w1 w2 w3 w4 …");
-  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: "Question: q\nAnswer in at most 5 words.\n" + FORMAT }]);
+  expect(capped.split("\n").slice(1, 3)).toEqual(["notes:", "w0 w1 w2 w3 w4 …"]);
+  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: prompt("Question: q", 5) }]);
 
   fake.script(block(`status: answer\nconfidence: medium\nanswer: ${long}`));
   const most = await research({ question: "q", max_words: 5000 });
-  expect(fake.recorded.prompts[1].parts).toEqual([{ type: "text", text: "Question: q\nAnswer in at most 600 words.\n" + FORMAT }]);
-  const prose = most.split("\n").slice(1, -2).join(" ");
+  expect(fake.recorded.prompts[1].parts).toEqual([{ type: "text", text: prompt("Question: q", 600) }]);
+  const prose = most.split("\n").slice(2, -2).join(" ");
   expect(prose).toBe(`${long.split(" ").slice(0, 600).join(" ")} …`);
   for (const line of most.split("\n")) expect(line.length).toBeLessThanOrEqual(200);
 });
@@ -106,8 +108,8 @@ test("paths scope the search: the prompt names them, refs outside are dropped, a
   const { fake, research } = await scenario();
   fake.script(block("status: answer\nconfidence: high\nrefs: src/auth.ts:1, README.md:1\nanswer: see auth"));
   const text = await research({ question: "q", paths: " src , src/app.ts" });
-  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: "Question: q\nScope: look only under src, src/app.ts; cite only files there.\nAnswer in at most 200 words.\n" + FORMAT }]);
-  expect(text).toContain("\nrefs: src/auth.ts:1\n");
+  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: prompt("Question: q\nScope: look only under src, src/app.ts; cite only files there.") }]);
+  expect(text).toContain("\nfiles: src/auth.ts:1\n");
 
   expect(await research({ question: "q", paths: "../elsewhere" })).toBe("FAIL reason: path ../elsewhere must be inside the repository, relative to its root");
   expect(await research({ question: "q", paths: "/etc" })).toBe("FAIL reason: path /etc must be inside the repository, relative to its root");
@@ -118,9 +120,9 @@ test("paths scope the search: the prompt names them, refs outside are dropped, a
 test("UNSURE: when the worker says so, and (low confidence) when it answers without the block; FAIL when it says nothing", async () => {
   const { fake, research } = await scenario();
   fake.script(block("status: unsure\nconfidence: low\nanswer: no refresh endpoint found"));
-  expect(await research({ question: "q" })).toMatch(/^UNSURE r\w{4} .*\nno refresh endpoint found\nconfidence: low\n/);
+  expect(await research({ question: "q" })).toMatch(/^UNSURE r\w{4} .*\nnotes:\nno refresh endpoint found\nconfidence: low\n/);
   fake.script({ text: "It is in src/auth.ts:3 I think." });
-  expect(await research({ question: "q" })).toMatch(/^UNSURE r\w{4} .*\nIt is in src\/auth.ts:3 I think.\nrefs: src\/auth.ts:3\nconfidence: low\n/);
+  expect(await research({ question: "q" })).toMatch(/^UNSURE r\w{4} .*\nfiles: src\/auth.ts:3\nnotes:\nIt is in src\/auth.ts:3 I think.\nconfidence: low\n/);
   fake.script();
   expect(await research({ question: "q" })).toMatch(/^FAIL r\w{4} files_read=0 turns=0 cost=\$0.000\nreason: the research worker gave no answer\nlog: /);
   fake.script({ error: { name: "ProviderAuthError", message: "bad key" } });
@@ -132,7 +134,7 @@ test("a Go limit on the research model falls back to DeepSeek Flash in the same 
   fake.script({ usage: { cost: 0.001 } }, { retry: { reason: "account_rate_limit", message: "Resets in 2h" } });
   fake.script(block("status: answer\nconfidence: high\nanswer: ok"));
   const text = await research({ question: "q" });
-  expect(text).toMatch(/^ANSWER r\w{4} files_read=0 turns=0 cost=\$0.001 model=opencode-go\/deepseek-v4.1-flash\nok\n/);
+  expect(text).toMatch(/^ANSWER r\w{4} files_read=0 turns=0 cost=\$0.001 model=opencode-go\/deepseek-v4.1-flash\nnotes:\nok\n/);
   // the shared routing machinery: one session, the fallback named on the continued prompt (src/routing.ts)
   expect(fake.recorded.sessions.map((s) => s.model?.id)).toEqual(["qwen3.8-flash"]);
   expect(fake.recorded.prompts.map((p) => p.model?.modelID)).toEqual([undefined, "deepseek-v4.1-flash"]);
@@ -148,7 +150,7 @@ test("a Go limit on the research model falls back to DeepSeek Flash in the same 
 test("the allowlist applies: without the research model, research runs on the allowed implement model", async () => {
   const { fake, research } = await scenario({ allow: ["--models", "opencode-go/deepseek-v4.1-flash"] });
   fake.script(block("status: answer\nconfidence: high\nanswer: ok"));
-  expect(await research({ question: "q" })).toMatch(/^ANSWER r\w{4} files_read=0 turns=0 cost=\$0.000\nok\n/);
+  expect(await research({ question: "q" })).toMatch(/^ANSWER r\w{4} files_read=0 turns=0 cost=\$0.000\nnotes:\nok\n/);
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" });
 });
 
@@ -181,3 +183,35 @@ test("runs while a delegate job is running, and notes that job as not yet landed
   expect(await callText(server.client, "jobs", { action: "cancel", job })).toMatch(/^CANCELLED /);
   expect(await delegated).toMatch(/^CANCELLED /);
 }, 30_000);
+
+test("a scout brief: ranked files, a reproduction the worker ran, dead ends, notes", async () => {
+  const { fake, research } = await scenario();
+  fake.script(
+    { tool: "bash", input: { command: "pytest tests/test_auth.py -k expiry", description: "repro" }, output: "1 failed" },
+    block([
+      "status: answer", "confidence: high", "files: src/auth.ts:18-22, src/app.ts:1",
+      "repro: `pytest tests/test_auth.py -k expiry` → 1 failed: TokenExpiredError not caught",
+      "dead ends: the middleware order is fine", "notes: the expiry check runs after decoding",
+    ].join("\n")),
+  );
+  const text = await research({ question: "why does the expiry test fail?" });
+  expect(text.split("\n").slice(1, 6)).toEqual([
+    "files: src/auth.ts:18-22, src/app.ts:1",
+    "repro: `pytest tests/test_auth.py -k expiry` → 1 failed: TokenExpiredError not caught",
+    "dead ends: the middleware order is fine",
+    "notes:",
+    "the expiry check runs after decoding",
+  ]);
+  expect(text).toContain("\nconfidence: high\n");
+});
+
+test("a claimed reproduction the worker never ran is marked unverified and drops confidence to low", async () => {
+  const { fake, research } = await scenario();
+  fake.script(block("status: answer\nconfidence: high\nrepro: `pytest tests/test_auth.py` → 1 failed\ndead ends: none\nnotes: it fails"));
+  const text = await research({ question: "why does it fail?" });
+  expect(text).toContain("\nrepro: unverified (not run): `pytest tests/test_auth.py` → 1 failed\n");
+  expect(text).not.toContain("dead ends:"); // "none" is not shown
+  expect(text).toContain("\nconfidence: low\n");
+  fake.script(block("status: answer\nconfidence: medium\nrepro: not attempted\nnotes: read only"));
+  expect(await research({ question: "where is it?" })).toMatch(/\nrepro: not attempted\n[\s\S]*\nconfidence: medium\n/);
+});

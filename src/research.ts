@@ -1,22 +1,24 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { loadConfig, type Limits } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
 import { redact, type Provider } from "./credentials.js";
 import { records } from "./jobs.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
-import { researchRuleset } from "./permissions.js";
+import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openSession, type Session } from "./worker.js";
-import { projectRoot } from "./workspace.js";
+import { createWorktree, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
 
 /**
- * Research: one question about the codebase, answered by a strictly read-only worker (agent `cheapag-research`, ruleset
- * `researchRuleset`) in the main checkout itself, uncommitted work included; no worktree, nothing written outside
- * `.cheapag/`. It runs alongside jobs. The worker reports in a fenced `cheapag-research` block in its final text.
+ * Research: one question about the codebase, answered by a worker that reads, searches and runs test commands but
+ * never edits (agent `cheapag-research`, ruleset `researchRuleset`), in a throwaway worktree of the developer's current
+ * state (uncommitted work included) so a command can't touch their tree. It runs alongside jobs. The worker reports a
+ * scout brief (ticket 23.4) in a fenced `cheapag-research` block in its final text; a claimed reproduction is checked
+ * against the commands it actually ran.
  */
 
 export const RESEARCH_AGENT = "cheapag-research";
@@ -26,7 +28,7 @@ const DEFAULT_WORDS = 200;
 const MAX_REFS = 5;
 
 export type ResearchInput = { question: string; paths?: string; max_words?: number };
-type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence">;
+type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence" | "repro" | "deadEnds">;
 
 export async function research(
   input: ResearchInput,
@@ -43,12 +45,13 @@ export async function research(
     if (!existsSync(join(root, path))) return failBlock(`path ${path} not found`);
     if (rel) scope.push(normalisePath(rel)); // "." is the whole repo: no scope
   }
-  let limits: Limits;
+  let config: Config;
   try {
-    limits = loadConfig(root).limits;
+    config = loadConfig(root);
   } catch (err) {
     return failBlock((err as Error).message);
   }
+  const { limits } = config;
   const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
 
   const opencode = await ctx.opencode(gate.route);
@@ -63,18 +66,24 @@ export async function research(
   const prompt = [
     `Question: ${input.question}`,
     scope.length && `Scope: look only under ${scope.join(", ")}; cite only files there.`,
+    REPRO_RULE,
     `Answer in at most ${maxWords} words.`,
     // repeated here because real models skipped the agent prompt's format (seen live): without it a right answer is UNSURE
-    "End your reply with exactly one fenced ```cheapag-research block: status (answer or unsure), confidence (high, medium or low), refs (path:line, comma-separated), then answer: and your prose.",
+    BRIEF_FORMAT,
   ].filter(Boolean).join("\n");
   const files = new Set<string>();
+  const ran: string[] = []; // the commands the worker actually ran: a claimed reproduction must be one of them
   const spent = { turns: 0, costUsd: 0 };
   let text = "";
   let error: string | undefined;
   let budget: string | undefined;
   // set from event callbacks: keep TS from narrowing it to undefined
   let stopped = undefined as { status: "FAIL" | "BUDGET"; reason: string } | undefined;
+  let worktree: Worktree | undefined;
   try {
+    worktree = createWorktree(root, id, config.link_dirs);
+    const { scripts, exact } = projectScripts(worktree.path);
+    const permission = researchRuleset({ scripts, exact: [...exact, ...(config.test_cmd ? [config.test_cmd] : [])], allowCommands: config.allow_commands });
     const halt = new AbortController();
     const stop = (why: NonNullable<typeof stopped>) => {
       stopped ??= why;
@@ -82,12 +91,13 @@ export async function research(
     };
     const timer = setTimeout(() => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }), limits.max_minutes * 60_000);
     const session: Session = await openSession({
-      opencode, directory: root, model: models.first, agent: RESEARCH_AGENT, permission: researchRuleset(), signal: halt.signal,
+      opencode, directory: worktree.path, model: models.first, agent: RESEARCH_AGENT, permission, signal: halt.signal,
       onEvent: (event, turns) => {
         appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
         if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
           const { tool, state } = event.properties.part;
           if (state.status === "completed" && tool === "read") files.add(String(state.input.filePath));
+          if (state.status === "completed" && tool === "bash") ran.push(String(state.input.command ?? ""));
           if (state.status === "completed" || state.status === "error") {
             ctx.progress(turns, `turn ${turns}: ${tool}`);
             if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached` });
@@ -116,12 +126,13 @@ export async function research(
     error = (err as Error).message;
   } finally {
     release(); // the session is done: a config change may reboot OpenCode now
+    if (worktree) removeWorktree(root, worktree);
   }
 
   const answer: Answer = stopped ? { status: stopped.status, answer: "", refs: [] }
     : budget ? { status: "BUDGET", answer: "", refs: [] }
     : error ? { status: "FAIL", answer: "", refs: [] }
-    : parseAnswer(text, root, scope, maxWords) ?? { status: "FAIL", answer: "", refs: [] };
+    : verifyRepro(parseAnswer(text, root, scope, maxWords), ran) ?? { status: "FAIL", answer: "", refs: [] };
   const reason = stopped?.reason
     ?? budget
     ?? (error ? `worker error: ${error}` : answer.status === "FAIL" ? "the research worker gave no answer" : undefined);
@@ -138,6 +149,23 @@ export async function research(
   write("research.json", record);
   write("result.txt", block + "\n");
   return block;
+}
+
+/** Research verifies before it claims (ticket 23.4: unverified handoffs inject false confidence). */
+export const REPRO_RULE = "If the question is about a failure or wrong behaviour, reproduce it: run the relevant test or command and report exactly what it showed. Never claim a reproduction you did not run.";
+export const BRIEF_FORMAT = "End your reply with exactly one fenced ```cheapag-research block: status (answer or unsure), confidence (high, medium or low), files (path:start-end, most relevant first, comma-separated), repro (`command` → what it showed, or not attempted), dead ends (what you ruled out, or none), then notes: and your prose.";
+
+/**
+ * A claimed reproduction stands only if its `command` is one the worker ran; otherwise it is marked unverified and the
+ * confidence drops to low, so Claude doesn't build on a guess.
+ */
+export function verifyRepro(answer: Answer | undefined, ran: string[]): Answer | undefined {
+  const repro = answer?.repro?.trim();
+  if (!answer || !repro || /^not attempted|^none$/i.test(repro)) return answer && { ...answer, repro: repro || undefined };
+  const norm = (c: string) => c.replace(/\s+/g, " ").trim();
+  const claimed = norm(repro.match(/`([^`]+)`/)?.[1] ?? "");
+  const verified = !!claimed && ran.some((c) => norm(c).includes(claimed) || claimed.includes(norm(c)));
+  return verified ? { ...answer, repro } : { ...answer, repro: `unverified (not run): ${repro}`, confidence: "low" };
 }
 
 /**
@@ -163,8 +191,9 @@ export function parseAnswer(text: string, root: string, scope: string[], maxWord
   const fields: Record<string, string> = {};
   let key: string | undefined;
   for (const line of block.split("\n")) {
-    const kv = line.match(/^\s*(status|confidence|refs|answer):\s*(.*)$/i);
-    if (kv) fields[(key = kv[1].toLowerCase())] = kv[2];
+    const kv = line.match(/^\s*(status|confidence|refs|files|repro|dead[ _]ends|answer|notes):\s*(.*)$/i);
+    // files/notes are the brief's names (ticket 23.4); refs/answer still read
+    if (kv) fields[(key = ({ files: "refs", notes: "answer", "dead ends": "deadEnds", dead_ends: "deadEnds" } as Record<string, string>)[kv[1].toLowerCase()] ?? kv[1].toLowerCase())] = kv[2];
     else if (key === "answer") fields.answer += `\n${line}`; // the answer is prose: it may span lines
   }
   const answer = (fields.answer ?? "").trim();
@@ -177,6 +206,8 @@ export function parseAnswer(text: string, root: string, scope: string[], maxWord
     // refs from the refs line; failing that, any cited in the prose
     refs: listed.length ? listed : refs(answer, root, scope),
     confidence: confidence ?? "low",
+    repro: fields.repro?.trim() || undefined,
+    deadEnds: fields.deadEnds?.trim() && !/^none\.?$/i.test(fields.deadEnds.trim()) ? fields.deadEnds.trim() : undefined,
   };
 }
 

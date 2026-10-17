@@ -11,7 +11,7 @@ import { PLAN_FORMAT } from "./plan.js";
 import { isSupported, UNSUPPORTED } from "./platform.js";
 import { failBlock } from "./report.js";
 import { MAX_WORDS, research } from "./research.js";
-import { VERIFY_RULE } from "./rules.js";
+import { SCOUT_RULE, VERIFY_RULE } from "./rules.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -20,12 +20,12 @@ const { version } = createRequire(import.meta.url)("../package.json") as { versi
  * so the usage rules travel with the server and nobody edits CLAUDE.md. Claude Code cuts them at 4,096 characters.
  */
 const INSTRUCTIONS = `Cheap Agent: a cheap worker model writes the code; you plan and review. The user pays for your tokens, not the worker's.
-Send every code change to delegate, including small, mechanical, "quick" or multi-file ones: those are exactly what the worker is for. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only when the user asks you to, or to fix one line after a worker result. Writing files through Bash (heredocs, redirects, sed -i) is editing yourself.
+Send every code change to delegate, including small, mechanical, "quick" or multi-file ones. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only if the user asks, or to fix one line after a worker result. Bash file writes (heredocs, redirects, sed -i) are editing too.
 Trust OK: it passed its checks; don't re-run tests or re-read the diff unless risks: or the user asks.
 ${VERIFY_RULE}
-research: questions that need reading several files; verify low-confidence answers.
+${SCOUT_RULE} Verify low-confidence briefs.
 cheapag results: the first word decides.
-OK: landed (uncommitted). Read risks; open review ranges only if non-trivial.
+OK: landed (uncommitted). Read risks.
 PARTIAL: read missing; re-delegate same step or land apply. FAIL: read error+tried; fix the plan step, re-delegate; after 2 FAILs on a step, do it yourself.
 BLOCKED: reply(job, letter). RUNNING: jobs(wait, batch). CONFLICT: land discard, fix plan overlap, re-delegate.
 TIMEOUT: split the step. BUDGET: tell the user incl. reset time; don't retry. CONSENT: ask the user to run /cheapag:allow; never approve yourself (never run cheapag allow).
@@ -85,6 +85,7 @@ export async function serve() {
         plan: z.string().optional().describe("Instead of task: plan file path, relative to the repository root"),
         steps: z.string().optional().describe('With plan: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them'),
         note: z.string().max(300).optional().describe("Extra guidance for this run, at most 300 characters"),
+        brief: z.string().max(6000).optional().describe("A research result to start from: its id (e.g. r5k2q) or its text. The worker gets it instead of re-exploring"),
         wait: z.boolean().optional().describe('Default true: return when every group settles or one is BLOCKED. false: return RUNNING at once; then jobs(action="wait")'),
       },
       _meta: ALWAYS_LOAD,

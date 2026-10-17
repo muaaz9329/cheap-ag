@@ -83,15 +83,20 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
 }
 
 /**
- * The research worker's ruleset (spec E1, research): read-only search and nothing else, every key explicit. It runs in
- * the main checkout itself, so env files (secrets) are unreadable too; outside the repo is denied as for the worker.
+ * The research worker's ruleset (spec E1, research; ticket 23.4): read, search, and run the same test commands as the
+ * implementation worker (to reproduce a failure it is asked about), never edit. It runs in a throwaway worktree (src/research.ts),
+ * so a command that writes files cannot touch the developer's tree. Env files are unreadable; outside the repo is denied.
  */
-export function researchRuleset(): Rule[] {
+export function researchRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[] } = {}): Rule[] {
   return [
     deny("*"),
     ...["read", "glob", "grep", "list"].map((p) => allow(p)),
     ...ENV_READS,
-    ...["edit", "bash", "question", "lsp", "todowrite", "finish", "external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
+    ...["edit", "question", "lsp", "todowrite", "finish", "external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
+    deny("bash"),
+    ...[...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])].flatMap(command),
+    ...(opts.exact ?? []).map((c) => allow("bash", c)),
+    ...HARD_DENY.map((p) => deny("bash", p)),
   ];
 }
 

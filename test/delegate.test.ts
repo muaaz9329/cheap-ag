@@ -58,6 +58,23 @@ test("an inline task runs as a one-step job without a plan file, and lands OK", 
   expect(await call({ task: "  " })).toBe("FAIL reason: task is empty: say what to change, in which files, and how to check it");
 });
 
+test("brief: a research id or text reaches the worker's prompt; an unknown id FAILs before any job", async () => {
+  const done: Action[] = [{ edit: "src/inline.ts", content: "export const inline = 1;\n" }, { finish: { summary: "added", risks: [], review: [], missing: [] } }];
+  const { repo, fake, server } = await scenarioWithServer(done);
+  fake.script(...done);
+  const call = async (args: Record<string, unknown>) => ((await server.client.callTool({ name: "delegate", arguments: args })).content as { text: string }[])[0].text;
+  // a research log, as research leaves it
+  mkdirSync(join(repo.dir, ".cheapag", "jobs", "r5k2q"), { recursive: true });
+  writeFileSync(join(repo.dir, ".cheapag", "jobs", "r5k2q", "result.txt"), "ANSWER r5k2q files_read=2 turns=3 cost=$0.001\nfiles: src/auth.ts:18-22\nrepro: `pytest -k expiry` → 1 failed\n");
+  expect(await call({ task: "Fix expiry", brief: "r5k2q" })).toMatch(/^OK /);
+  const prompt = JSON.stringify(fake.recorded.prompts[0].parts);
+  expect(prompt).toContain("Scout brief (from research; start here, and check anything marked unverified):");
+  expect(prompt).toContain("files: src/auth.ts:18-22");
+  expect(await call({ task: "Fix expiry again", plan: undefined, brief: "auth lives in src/auth.ts" })).toMatch(/^OK /);
+  expect(JSON.stringify(fake.recorded.prompts[1].parts)).toContain("auth lives in src/auth.ts");
+  expect(await call({ task: "x", brief: "rzzzz" })).toBe("FAIL reason: brief rzzzz: no research with that id (cleaned up?); pass the brief's text instead");
+});
+
 /** scenario() plus the raw server, for calls with arbitrary arguments. */
 async function scenarioWithServer(actions: Action[]) {
   const repo = tempRepo();

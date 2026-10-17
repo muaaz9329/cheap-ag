@@ -58,9 +58,13 @@ export type ResearchRecord = {
   filesRead: number;
   usage: { turns: number; costUsd: number };
   models?: { requested: string; final: string };
-  /** Prose, may span lines. */
+  /** Prose, may span lines (the brief's `notes:`). */
   answer: string;
+  /** The brief's `files:`, ranked most relevant first. */
   refs: Range[];
+  /** The reproduction: the command run and what it showed, `unverified: …` when no such command ran, or "not attempted". */
+  repro?: string;
+  deadEnds?: string;
   confidence?: "high" | "medium" | "low";
   reason?: string;
   /** Jobs not yet landed, whose changes research could not see. */
@@ -178,9 +182,12 @@ export function renderResearch(r: ResearchRecord) {
       r.models && r.models.final !== r.models.requested && `model=${r.models.final}`,
     ].filter(Boolean).join(" "),
   ];
+  // a scout brief (ticket 23.4): ranked files, the reproduction, dead ends, then the prose
+  if (r.refs.length) lines.push(`files: ${r.refs.map((v) => `${v.path}:${v.start}${v.end !== v.start ? `-${v.end}` : ""}`).join(", ")}`);
+  if (r.repro) lines.push(`repro: ${oneLine(r.repro)}`);
+  if (r.deadEnds) lines.push(`dead ends: ${oneLine(r.deadEnds)}`);
   // prose is word-wrapped, not elided like other long lines
-  if (r.answer.trim()) lines.push(...r.answer.trim().split("\n").flatMap((l) => wrap(l.trimEnd())));
-  if (r.refs.length) lines.push(`refs: ${r.refs.map((v) => `${v.path}:${v.start}${v.end !== v.start ? `-${v.end}` : ""}`).join(", ")}`);
+  if (r.answer.trim()) lines.push("notes:", ...r.answer.trim().split("\n").flatMap((l) => wrap(l.trimEnd())));
   if (r.confidence) lines.push(`confidence: ${r.confidence}`);
   if (r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   const n = r.unlanded.length;

@@ -36,7 +36,7 @@ export function workerMetrics(dir) {
 
 /** Tool-use counts from the Claude Code transcript: did Claude delegate, and did it edit code itself (incl. after a delegation)? */
 export function transcriptMetrics(sessionId) {
-  const empty = { test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
+  const empty = { tool_calls_before_first_delegate: 0, test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
   if (!sessionId) return empty;
   const projects = join(homedir(), ".claude", "projects");
   const file = existsSync(projects) ? readdirSync(projects).map((p) => join(projects, p, `${sessionId}.jsonl`)).find(existsSync) : undefined;
@@ -71,7 +71,10 @@ export function transcriptMetrics(sessionId) {
   const lastCheapag = names.map(isCheapag).lastIndexOf(true);
   const lastDelegate = names.map((n) => /__(delegate|reply)$/.test(n) && isCheapag(n)).lastIndexOf(true);
   const lastDelegateTurn = turns.map((t) => t.delegated).lastIndexOf(true);
+  const firstDelegate = names.findIndex((n) => isCheapag(n) && /__delegate$/.test(n));
   return {
+    // what Claude read, searched or ran before handing off (ticket 23.4); the whole session when it never delegated
+    tool_calls_before_first_delegate: firstDelegate < 0 ? names.length : firstDelegate,
     test_runs: testRuns,
     turns_after_last_delegate: lastDelegateTurn < 0 ? 0 : turns.length - lastDelegateTurn - 1,
     prefix_tokens: first ? (first.input_tokens ?? 0) + (first.cache_read_input_tokens ?? 0) + (first.cache_creation_input_tokens ?? 0) : 0,

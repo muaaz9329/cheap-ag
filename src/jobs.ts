@@ -31,9 +31,23 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 /** More rejections than this in one job earn a risk line. */
 const MAX_QUIET_REJECTIONS = 5;
 
-export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean };
+/** `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation. */
+export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string };
 /** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
 export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
+
+/** A brief longer than this is cut in the worker's prompt. */
+const MAX_BRIEF = 6_000;
+
+/** `brief=`: a research id (its block from the log) or the brief's text itself. */
+function resolveBrief(root: string, brief: string | undefined): { text?: string } | { fail: string } {
+  const value = brief?.trim();
+  if (!value) return {};
+  if (!/^r[0-9a-z]{4}$/.test(value)) return { text: value.slice(0, MAX_BRIEF) };
+  const file = join(root, ".cheapag", "jobs", value, "result.txt");
+  if (!existsSync(file)) return { fail: `brief ${value}: no research with that id (cleaned up?); pass the brief's text instead` };
+  return { text: readFileSync(file, "utf8").trim().slice(0, MAX_BRIEF) };
+}
 
 /**
  * An inline task becomes a one-step plan under .cheapag/plans/ so everything downstream (records, integration checks,
@@ -64,11 +78,13 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   if ("block" in gate) return gate.block;
   const { route } = gate;
   let input: DelegateInput;
+  const brief = resolveBrief(root, req.brief);
+  if ("fail" in brief) return failBlock(brief.fail);
   if (req.task !== undefined) {
     const made = inlinePlan(root, req);
     if ("fail" in made) return failBlock(made.fail);
-    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait };
-  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait };
+    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text };
+  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text };
   else return failBlock("give task (what to change, files, how to check), or plan and steps");
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
@@ -439,7 +455,7 @@ function runGroup(g: GroupRun) {
         if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
         return result;
       };
-      const result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note));
+      const result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note, input.brief));
       write("finish.json", report);
       const diff = worktreeDiff(worktree);
       changed = diff.changed;
@@ -991,11 +1007,13 @@ const newId = (prefix: string) => `${prefix}${randomBytes(4).readUInt32BE().toSt
  * The prompt after the agent's own rules (spec E2): the whole plan, then the current step(s), then the note.
  * shortcut: no repo map or CLAUDE.md/AGENTS.md excerpt yet; add them when worker quality needs the context.
  */
-function contextPack(plan: Plan, steps: PlanStep[], note?: string) {
+function contextPack(plan: Plan, steps: PlanStep[], note?: string, brief?: string) {
   return [
     planText(plan),
     `>>> CURRENT STEP(S): ${steps.map((s) => s.id).join(", ")}\n\n${steps.map((s) => s.text).join("\n\n")}`,
     note && `Note: ${note}`,
+    // start from what the scout found instead of re-exploring; an "unverified" repro is a lead, not a fact
+    brief && `Scout brief (from research; start here, and check anything marked unverified):\n${brief}`,
   ].filter(Boolean).join("\n\n");
 }
 

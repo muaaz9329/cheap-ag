@@ -32,6 +32,7 @@ deps: <package@range>                       ← the step needs a new package
 
 - **Size:** one step ≈ under an hour of junior-developer work. Split anything bigger.
 - **Checks:** give every step an executable `done-when` (a test command, a type check), not only prose. Name the one test file or test id the step concerns, never the whole suite.
+- **Delegate before reading:** write steps from the issue and what you already know; don't open source files to plan, the worker explores. If you need the code's shape first, call `research` and pass its id as `delegate(brief=…)`.
 - **Trust OK:** an `OK` result already passed its `done-when`; don't re-run its tests or re-read its diff unless `risks:` says so or the user asks.
 - **Scope:** `files:` lists every file or directory the step may touch, accurately. It also decides which steps can run in parallel.
 - **Constraints:** add `dont:` for the mistakes you expect (new dependencies, touching auth, changing public APIs).

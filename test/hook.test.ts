@@ -113,4 +113,5 @@ test("context: the SessionStart hook prints the delegation rule as additionalCon
   expect(out.hookSpecificOutput.additionalContext).toContain('task: "<what to change, which files, how to check>"');
   expect(out.hookSpecificOutput.additionalContext).toContain("don't re-run tests or re-read the diff unless risks: says so"); // trust OK
   expect(out.hookSpecificOutput.additionalContext).toContain("Tests: run only the test file or id the task concerns"); // the verification budget
+  expect(out.hookSpecificOutput.additionalContext).toContain("Don't open source files before delegating"); // delegate before reading
 });

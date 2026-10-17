@@ -4,3 +4,9 @@
  * baseline arm so both arms get the same rule.
  */
 export const VERIFY_RULE = "Tests: run only the test file or id the task concerns, once before if it names a failure and once after; never the whole suite; chain commands with &&.";
+
+/**
+ * Delegate before reading (ticket 23.4): Claude read ~2 files before each delegation, so the code entered its context
+ * anyway and the worker only typed. Shared like VERIFY_RULE.
+ */
+export const SCOUT_RULE = "Don't open source files before delegating; the worker explores. To learn the code first, call research and pass its id as delegate brief:, not Read/Bash.";

@@ -54,7 +54,7 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
   };
 
   let removedTree = false;
-  for (const id of entries(treesDir)) {
+  for (const id of entries(treesDir, LOG_ID)) { // r…: a research worktree left by a crash
     const path = join(treesDir, id);
     const j = job(id);
     if (j.live) out.kept.push(`worktree ${id}: ${j.status} job in flight`);
