@@ -13,3 +13,14 @@ Everything Claude Code loads at session start is sent again on every turn: the s
 - **For scripted runs** (`claude -p`): `--setting-sources project` skips user plugins and settings, and `--exclude-dynamic-system-prompt-sections` keeps per-machine details (cwd, git status) out of the cached prefix. The `includeGitInstructions: false` setting drops the commit/PR boilerplate when the agent never commits.
 
 `cheapag status` prints the prefix size of this repo's most recent Claude Code session, when its transcript is readable (`claude prefix: 18.4k tokens on the first turn …`). Under ~20k is lean; 40k+ usually means plugins or skills the work doesn't use.
+
+## Sessions, `/clear` and the cache TTL
+
+Claude Code caches the session prefix. Every turn that starts within the cache's lifetime reads it at a tenth of the input price, instead of writing it again at more than the input price. How you split work into sessions decides how often you pay the full write.
+
+- **One session per block of work.** Starting a fresh `claude` for every small task writes the whole prefix each time. Inside a session it is written once and then read.
+- **`/clear` between unrelated tasks.** It's free: the prefix stays cached, and only the conversation is dropped. It also keeps old, unrelated context from distracting Claude on the next task.
+- **Pick the TTL for how you work.** The default 1-hour cache suits all-day work with pauses. For short bursts of back-to-back tasks, `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` makes cache writes cheaper ($5 instead of $8 per million tokens on Opus), as long as you never idle more than five minutes. After a longer pause, the next turn rewrites the prefix.
+- `cheapag status` shows the last session's cache use: `claude cache: 14 requests, 91% of input from cache, 1h TTL`. A low percentage on a long session means the prefix kept changing (plugins toggled, an update, idle gaps past the TTL).
+
+On a Pro or Max plan these are dollar estimates at API prices. Anthropic says cached tokens count less toward plan limits, but publishes no ratio.

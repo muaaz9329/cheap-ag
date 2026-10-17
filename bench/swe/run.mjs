@@ -22,6 +22,9 @@ const CLAUDE_BUDGET = Number(opts.budget ?? 100), WORKER_BUDGET = Number(opts["w
 // S1 (ticket 23.1), on by default since: no user plugins/skills/settings, per-machine prompt sections moved out of the
 // cached prefix, no git-instructions boilerplate; the baseline also drops skills (cheapag needs its plugin's). --no-lean: as runs 1-2
 const LEAN = !opts["no-lean"];
+// S2 (ticket 23.2), on by default since: an arm's sessions back to back on the 5-minute cache TTL (writes $5/M instead of
+// $8/M; no gap between sessions comes near 5 minutes). --no-warm: interleaved arms, Claude Code's default 1h TTL
+const WARM = !opts["no-warm"];
 const CLAUDE_VERSION = spawnSync("claude", ["--version"], { encoding: "utf8" }).stdout.trim().split(" ")[0];
 const PROMPT_TAIL = "Fix this in the repository at the current directory. Run the relevant tests with `./swebench-test.sh <test args>` (it runs them in the project's own environment). Do not commit.";
 const HELPERS = ["swebench-test.sh", "cheapag.json"]; // ours, never part of the patch
@@ -53,10 +56,14 @@ async function singles() {
   const strata = Map.groupBy(chosen, (i) => i.difficulty);
   const order = [];
   for (let k = 0; order.length < chosen.length; k++) for (const list of strata.values()) if (list[k]) order.push(list[k]);
-  for (const inst of order) {
-    for (const arm of arms) {
+  // S2 (ticket 23.2): every checkout first, then each arm's sessions back to back, so the cached prefix stays warm
+  const dirs = new Map();
+  if (WARM && !opts.dry) for (const arm of arms) for (const inst of order) dirs.set(`${inst.instance_id} ${arm}`, checkout(inst, `${inst.instance_id}_${arm}_${opts.quick ? "quick" : n}`, arm));
+  const plan = WARM ? arms.flatMap((arm) => order.map((inst) => [inst, arm])) : order.flatMap((inst) => arms.map((arm) => [inst, arm]));
+  for (const [inst, arm] of plan) {
+    {
       overBudget();
-      const dir = checkout(inst, `${inst.instance_id}_${arm}_${opts.quick ? "quick" : n}`, arm);
+      const dir = dirs.get(`${inst.instance_id} ${arm}`) ?? checkout(inst, `${inst.instance_id}_${arm}_${opts.quick ? "quick" : n}`, arm);
       const row = await session(inst, arm, dir, [problem(inst)]);
       // a quick run grades everything at the end, in parallel: one at a time would add ~45 s per session
       if (opts.quick) pending.push({ arm, row: { ...row, run: n }, pred: opts.dry ? null : predict(inst, arm, tag, dir) });
@@ -184,7 +191,7 @@ async function session(inst, arm, dir, [prompt], resume) {
   }
   const jobsBefore = jobIds(dir);
   const started = Date.now();
-  const { stdout, stderr, timedOut } = await claude(args, dir, timeoutMs);
+  const { stdout, stderr, timedOut } = await claude(args, dir, timeoutMs, WARM ? { CLAUDE_CODE_PROMPT_CACHE_TTL: "5m" } : {});
   const tag = `${inst.instance_id}`;
   writeFileSync(join(dir, `.bench-stdout-${tag}.json`), stdout);
   if (stderr) writeFileSync(join(dir, `.bench-stderr-${tag}.txt`), stderr);
@@ -194,10 +201,11 @@ async function session(inst, arm, dir, [prompt], resume) {
   const worker = jobMetrics(dir, jobsBefore);
   return {
     suite: SUITE, task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
-    repo: inst.repo, arm, model: MODEL, claude_version: CLAUDE_VERSION, lean: LEAN, dir, session_id: out.session_id ?? null, timed_out: timedOut,
+    repo: inst.repo, arm, model: MODEL, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, dir, session_id: out.session_id ?? null, timed_out: timedOut,
     subtype: out.subtype ?? null, budget_hit: out.subtype === "error_max_budget_usd", turns_hit: out.subtype === "error_max_turns",
     input_tokens: usage.input_tokens ?? 0, cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
+    cache_write_tokens: usage.cache_creation_input_tokens ?? 0, ...cacheTtl(usage.cache_creation),
     claude_tokens: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.output_tokens ?? 0),
     claude_cost_usd: out.total_cost_usd ?? null, duration_ms: out.duration_ms ?? Date.now() - started, num_turns: out.num_turns ?? null,
     ...worker, ...transcriptMetrics(out.session_id), result_tail: String(out.result ?? "").slice(-600),
@@ -282,4 +290,10 @@ function overBudget() {
   if (claudeUsd > 0.8 * CLAUDE_BUDGET || workerUsd > 0.8 * WORKER_BUDGET) {
     fail(`budget stop: Claude $${claudeUsd.toFixed(2)} of $${CLAUDE_BUDGET}, worker $${workerUsd.toFixed(2)} of $${WORKER_BUDGET} (80% guard)`);
   }
+}
+
+/** Which TTL the session's cache writes used (usage.cache_creation): "5m", "1h", "mixed" or null when nothing was written. */
+function cacheTtl(c = {}) {
+  const m5 = c.ephemeral_5m_input_tokens ?? 0, h1 = c.ephemeral_1h_input_tokens ?? 0;
+  return { cache_write_5m: m5, cache_write_1h: h1, cache_ttl: m5 && h1 ? "mixed" : m5 ? "5m" : h1 ? "1h" : null };
 }

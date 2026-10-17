@@ -76,11 +76,13 @@ test("cheapag status shows the prefix of this repo's last Claude Code session, f
   const config = join(repo.dir, ".claude-config"); // a stand-in CLAUDE_CONFIG_DIR
   const projects = join(config, "projects", repo.dir.replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(projects, { recursive: true });
-  const turn = (read: number, write: number) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: write } } });
+  let id = 0;
+  const turn = (read: number, write: number) => JSON.stringify({ type: "assistant", message: { id: `m${id++}`, usage: { input_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: write, cache_creation: { ephemeral_1h_input_tokens: write, ephemeral_5m_input_tokens: 0 } } } });
   writeFileSync(join(projects, "old.jsonl"), [turn(1, 1)].join("\n"));
   utimesSync(join(projects, "old.jsonl"), new Date(2020, 0, 1), new Date(2020, 0, 1));
-  writeFileSync(join(projects, "new.jsonl"), [JSON.stringify({ type: "user" }), turn(15_000, 3_396), turn(40_000, 900)].join("\n"));
+  const last = turn(40_000, 900);
+  writeFileSync(join(projects, "new.jsonl"), [JSON.stringify({ type: "user" }), turn(15_000, 3_396), last, last].join("\n")); // a streamed response repeats its line
   const run = (extra: Record<string, string>) => execFileSync(process.execPath, [serverEntry, "status"], { cwd: repo.dir, env: { ...env, ...extra }, stdio: "pipe" }).toString();
-  expect(run({ CLAUDE_CONFIG_DIR: config })).toMatch(/\nclaude prefix: 18\.4k tokens on the first turn of the last session here \(\d{4}-\d\d-\d\d\);/);
+  expect(run({ CLAUDE_CONFIG_DIR: config })).toMatch(/\nclaude prefix: 18\.4k tokens on the first turn of the last session here \(\d{4}-\d\d-\d\d\);.*\nclaude cache: 2 requests, 93% of input from cache, 1h TTL\n/);
   expect(run({ CLAUDE_CONFIG_DIR: join(config, "none") })).not.toContain("claude prefix"); // no transcript: nothing printed
 });

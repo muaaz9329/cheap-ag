@@ -8,9 +8,9 @@ import { dirname, join } from "node:path";
 const root = dirname(dirname(new URL(import.meta.url).pathname));
 export const dist = join(root, "dist", "index.js");
 
-export function claude(args, cwd, timeoutMs) {
+export function claude(args, cwd, timeoutMs, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn("claude", args, { cwd, env: { ...process.env, CHEAPAG_BENCH: "1", DISABLE_AUTOUPDATER: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("claude", args, { cwd, env: { ...process.env, CHEAPAG_BENCH: "1", DISABLE_AUTOUPDATER: "1", ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", timedOut = false;
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));

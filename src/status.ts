@@ -52,8 +52,11 @@ export function status(args: string[]): number {
     out(rest.length ? "recent:" : "recent: none");
     rest.slice(0, RECENT).forEach((r) => out(headline(r)));
     if (rest.length > RECENT) out(`  … +${rest.length - RECENT} older (jobs list)`);
-    const prefix = lastPrefix(root);
-    if (prefix) out(`claude prefix: ${(prefix.tokens / 1000).toFixed(1)}k tokens on the first turn of the last session here (${prefix.at.slice(0, 10)}); see "What it costs to keep in context" in the plugin README`);
+    const last = lastSession(root);
+    if (last) {
+      out(`claude prefix: ${(last.prefix / 1000).toFixed(1)}k tokens on the first turn of the last session here (${last.at.slice(0, 10)}); see "What it costs to keep in context" in the plugin README`);
+      out(`claude cache: ${last.requests} requests, ${Math.round(last.hitRate * 100)}% of input from cache${last.ttl ? `, ${last.ttl} TTL` : ""}`);
+    }
   }
 
   const spend = spendWindows();
@@ -65,19 +68,34 @@ export function status(args: string[]): number {
 }
 
 /**
- * The context Claude Code sent on the first turn of this repo's most recent session (its fixed prefix: system prompt,
- * tools, skills, CLAUDE.md), read from the session transcript. Undefined when no transcript is readable.
+ * This repo's most recent Claude Code session, from its transcript: the context sent on the first turn (its fixed prefix:
+ * system prompt, tools, skills, CLAUDE.md), how much of all input came from the prompt cache, and the cache TTL used.
+ * Undefined when no transcript is readable.
  */
-export function lastPrefix(root: string): { tokens: number; at: string } | undefined {
+export function lastSession(root: string): { prefix: number; at: string; requests: number; hitRate: number; ttl?: "5m" | "1h" | "5m+1h" } | undefined {
+  type Usage = { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } };
   try {
     const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", root.replace(/[^a-zA-Z0-9]/g, "-"));
     if (!existsSync(dir)) return undefined;
     const newest = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
     if (!newest) return undefined;
+    // one entry per API response: a streamed response is written as several lines sharing its message id
+    const byMessage = new Map<string, Usage>();
     for (const line of readFileSync(newest, "utf8").split("\n")) {
-      const usage = (JSON.parse(line || "{}") as { message?: { usage?: Record<string, number> } }).message?.usage;
-      if (usage) return { tokens: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0), at: statSync(newest).mtime.toISOString() };
+      if (!line) continue;
+      const message = (JSON.parse(line) as { message?: { id?: string; usage?: Usage } }).message;
+      if (message?.usage) byMessage.set(message.id ?? String(byMessage.size), message.usage);
     }
+    const usages = [...byMessage.values()];
+    if (!usages.length) return undefined;
+    const input = (u: Usage) => (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+    const total = usages.reduce((n, u) => n + input(u), 0);
+    const m5 = usages.some((u) => u.cache_creation?.ephemeral_5m_input_tokens), h1 = usages.some((u) => u.cache_creation?.ephemeral_1h_input_tokens);
+    return {
+      prefix: input(usages[0]), at: statSync(newest).mtime.toISOString(), requests: usages.length,
+      hitRate: total ? usages.reduce((n, u) => n + (u.cache_read_input_tokens ?? 0), 0) / total : 0,
+      ttl: m5 && h1 ? "5m+1h" : m5 ? "5m" : h1 ? "1h" : undefined,
+    };
   } catch {
     // an unreadable or half-written transcript: say nothing rather than guess
   }
