@@ -25,6 +25,10 @@ const LEAN = !opts["no-lean"];
 // S2 (ticket 23.2), on by default since: an arm's sessions back to back on the 5-minute cache TTL (writes $5/M instead of
 // $8/M; no gap between sessions comes near 5 minutes). --no-warm: interleaved arms, Claude Code's default 1h TTL
 const WARM = !opts["no-warm"];
+// S3 (ticket 23.3), on by default since: 50 turns at most, and the baseline gets cheapag's verification rule verbatim (cheapag
+// carries it in its instructions), so only delegation differs between the arms. --no-verify-rule: 80 turns, no rule
+const VERIFY = !opts["no-verify-rule"];
+const { VERIFY_RULE } = await import(join(dirname(dist), "rules.js"));
 const CLAUDE_VERSION = spawnSync("claude", ["--version"], { encoding: "utf8" }).stdout.trim().split(" ")[0];
 const PROMPT_TAIL = "Fix this in the repository at the current directory. Run the relevant tests with `./swebench-test.sh <test args>` (it runs them in the project's own environment). Do not commit.";
 const HELPERS = ["swebench-test.sh", "cheapag.json"]; // ours, never part of the patch
@@ -181,7 +185,8 @@ async function session(inst, arm, dir, [prompt], resume) {
   writeFileSync(mcp, JSON.stringify({ mcpServers: cheap ? { cheapag: { command: process.execPath, args: [dist] } } : {} }));
   const args = [
     "-p", prompt, "--output-format", "json", "--model", MODEL, "--dangerously-skip-permissions",
-    "--strict-mcp-config", "--mcp-config", mcp, "--max-turns", "80", "--max-budget-usd", "6",
+    "--strict-mcp-config", "--mcp-config", mcp, "--max-turns", VERIFY ? "50" : "80", "--max-budget-usd", "6",
+    ...(VERIFY && !cheap ? ["--append-system-prompt", VERIFY_RULE] : []),
     ...(LEAN ? ["--setting-sources", "project", "--exclude-dynamic-system-prompt-sections", "--settings", JSON.stringify({ includeGitInstructions: false })] : []),
     ...(cheap ? ["--plugin-dir", pluginDir] : LEAN ? ["--disable-slash-commands"] : []), ...(resume ? ["--resume", resume] : []),
   ];
@@ -201,7 +206,7 @@ async function session(inst, arm, dir, [prompt], resume) {
   const worker = jobMetrics(dir, jobsBefore);
   return {
     suite: SUITE, task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
-    repo: inst.repo, arm, model: MODEL, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, dir, session_id: out.session_id ?? null, timed_out: timedOut,
+    repo: inst.repo, arm, model: MODEL, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, verify_rule: VERIFY, dir, session_id: out.session_id ?? null, timed_out: timedOut,
     subtype: out.subtype ?? null, budget_hit: out.subtype === "error_max_budget_usd", turns_hit: out.subtype === "error_max_turns",
     input_tokens: usage.input_tokens ?? 0, cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,

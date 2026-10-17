@@ -36,7 +36,7 @@ export function workerMetrics(dir) {
 
 /** Tool-use counts from the Claude Code transcript: did Claude delegate, and did it edit code itself (incl. after a delegation)? */
 export function transcriptMetrics(sessionId) {
-  const empty = { prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
+  const empty = { test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
   if (!sessionId) return empty;
   const projects = join(homedir(), ".claude", "projects");
   const file = existsSync(projects) ? readdirSync(projects).map((p) => join(projects, p, `${sessionId}.jsonl`)).find(existsSync) : undefined;
@@ -44,6 +44,8 @@ export function transcriptMetrics(sessionId) {
   const names = [];
   let bashWrites = 0;
   let maxContext = 0;
+  let testRuns = 0;
+  const turns = []; // per assistant message: did it call delegate (or reply)?
   let first; // the first turn's usage: what the session's fixed prefix cost (ticket 23.1) // the largest context Claude was sent on one turn: input + cache reads + cache writes
 
   for (const line of readFileSync(file, "utf8").split("\n")) {
@@ -52,8 +54,12 @@ export function transcriptMetrics(sessionId) {
     const u = e?.message?.usage;
     if (u) first ??= u;
     if (u) maxContext = Math.max(maxContext, (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0));
+    if (e?.message?.role === "assistant" && e.message.id && turns.at(-1)?.id !== e.message.id) turns.push({ id: e.message.id, delegated: false });
     for (const c of e?.message?.content ?? []) {
       if (c.type !== "tool_use") continue;
+      if (/^mcp__.*cheapag.*__(delegate|reply)$/.test(c.name) && turns.length) turns.at(-1).delegated = true;
+      // a test command: the benches' test scripts and the usual runners
+      if (c.name === "Bash" && /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\bnpm (run )?test\b|node --test|\btox\b/.test(String(c.input?.command ?? ""))) testRuns++;
       names.push(c.name);
       // a Bash command that writes files (heredoc, redirect, sed -i, python/node one-liners) edits code without the Edit tools or the hook
       const cmd = String(c.input?.command ?? "").replace(/\d?>>?\s*\/dev\/null|\d?>&\d/g, "");
@@ -64,7 +70,10 @@ export function transcriptMetrics(sessionId) {
   const isEdit = (n) => /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(n);
   const lastCheapag = names.map(isCheapag).lastIndexOf(true);
   const lastDelegate = names.map((n) => /__(delegate|reply)$/.test(n) && isCheapag(n)).lastIndexOf(true);
+  const lastDelegateTurn = turns.map((t) => t.delegated).lastIndexOf(true);
   return {
+    test_runs: testRuns,
+    turns_after_last_delegate: lastDelegateTurn < 0 ? 0 : turns.length - lastDelegateTurn - 1,
     prefix_tokens: first ? (first.input_tokens ?? 0) + (first.cache_read_input_tokens ?? 0) + (first.cache_creation_input_tokens ?? 0) : 0,
     cache_write_first_turn: first?.cache_creation_input_tokens ?? 0,
     max_context: maxContext,
