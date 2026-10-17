@@ -17,7 +17,11 @@ node bench/swe/run.mjs --run 1                          # every instance, both a
 node bench/swe/run.mjs --instances <id,…> --run 2       # a second run for chosen instances
 node bench/swe/run.mjs --long --run 1                   # the long-session scenario (4 django tasks, one session per arm)
 node bench/swe/run.mjs --dry                            # checkouts and commands only
+node bench/swe/run.mjs --quick --label "S1 stable prefix"  # the 7-instance quick set (quick.json), ~15 min
+node bench/swe/ladder.mjs                               # the cost ladder → tasks/cost-ladder.md
 ```
+
+A quick run grades all its patches at the end in one parallel harness call per arm (one at a time added ~10 min) and records its rows with `suite: "swebench-quick"`. Back-to-back quick runs are not comparable: the second starts with a warm prompt cache and costs about half (see tasks/cost-ladder.md).
 
 Flags: `--arms baseline,cheapag`, `--timeout <min>` (default 60), `--label`, `--budget` / `--worker-budget` (stops at 80% of either, default $100 / $5).
 

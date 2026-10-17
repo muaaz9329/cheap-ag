@@ -3,7 +3,7 @@
 // The agent runs on the host in a git worktree at the instance's base commit; tests run in the instance's SWE-bench image
 // through ./swebench-test.sh; the patch is graded by the official harness. One JSON line per session goes to
 // bench/results.jsonl (shown by bench/dashboard.mjs). See bench/swe/README.md.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { claude, dist, fail, git, parseArgs, preparePlugin, transcriptMetrics, workerMetrics } from "../lib.mjs";
@@ -28,6 +28,13 @@ if (!existsSync(dist)) fail("build first: npm run build");
 mkdirSync(runsDir, { recursive: true });
 const pluginDir = preparePlugin(runsDir);
 const sweep = { id: new Date().toISOString(), label: opts.label ?? `swebench-verified · ${MODEL}${opts.long ? " · long session" : ""}` };
+// --quick (ticket 23.0): the fixed 7-instance subset in quick.json, one run, its own suite, so each cost lever is checked in ~15 min
+const SUITE = opts.quick ? "swebench-quick" : "swebench-verified";
+if (opts.quick) {
+  if (!opts.label) fail("--quick needs --label, e.g. --label \"S1 stable prefix\" (it names the ladder row)");
+  const quick = JSON.parse(readFileSync(join(here, "quick.json"), "utf8"));
+  opts.instances = quick.join(",");
+}
 
 if (opts.long) await longSessions();
 else await singles();
@@ -35,6 +42,9 @@ else await singles();
 /** One fresh session per instance and arm; the strata are interleaved so a budget stop still leaves every difficulty covered. */
 async function singles() {
   const n = Number(opts.run ?? 1);
+  // a quick run's grading ids are unique per sweep (the harness keeps each run's logs); its checkouts are reused
+  const tag = opts.quick ? `q${sweep.id.replace(/\D/g, "").slice(0, 14)}` : `r${n}`;
+  const pending = [];
   const chosen = all.filter((i) => !opts.instances || opts.instances.split(",").includes(i.instance_id));
   const strata = Map.groupBy(chosen, (i) => i.difficulty);
   const order = [];
@@ -42,11 +52,16 @@ async function singles() {
   for (const inst of order) {
     for (const arm of arms) {
       overBudget();
-      const dir = checkout(inst, `${inst.instance_id}_${arm}_${n}`, arm);
+      const dir = checkout(inst, `${inst.instance_id}_${arm}_${opts.quick ? "quick" : n}`, arm);
       const row = await session(inst, arm, dir, [problem(inst)]);
-      record({ ...row, run: n, ...(await grade(inst, arm, `r${n}`, dir)) });
+      // a quick run grades everything at the end, in parallel: one at a time would add ~45 s per session
+      if (opts.quick) pending.push({ arm, row: { ...row, run: n }, pred: opts.dry ? null : predict(inst, arm, tag, dir) });
+      else record({ ...row, run: n, ...(await grade(inst, arm, tag, dir)) });
     }
   }
+  if (opts.dry || !pending.length) return;
+  const grades = await Promise.all(arms.map((arm) => gradeBatch(arm, `v2-${arm}-${tag}`, pending.filter((p) => p.arm === arm).map((p) => p.pred))));
+  for (const p of pending) record({ ...p.row, ...grades[arms.indexOf(p.arm)][p.row.instance_id] });
 }
 
 /**
@@ -173,7 +188,7 @@ async function session(inst, arm, dir, [prompt], resume) {
   const usage = out.usage ?? {};
   const worker = jobMetrics(dir, jobsBefore);
   return {
-    suite: "swebench-verified", task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
+    suite: SUITE, task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
     repo: inst.repo, arm, model: MODEL, dir, session_id: out.session_id ?? null, timed_out: timedOut,
     subtype: out.subtype ?? null, budget_hit: out.subtype === "error_max_budget_usd", turns_hit: out.subtype === "error_max_turns",
     input_tokens: usage.input_tokens ?? 0, cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
@@ -203,30 +218,53 @@ function jobMetrics(dir, before) {
 /** The checkout's change against the base commit (helpers and Cheap Agent state excluded), graded by the official harness. */
 async function grade(inst, arm, label, dir) {
   if (opts.dry) return {};
+  const pred = predict(inst, arm, label, dir);
+  return (await gradeBatch(arm, `v2-${arm}-${label}-${inst.instance_id}`, [pred]))[inst.instance_id];
+}
+
+/** The prediction for one session: its patch, also appended to the arm's predictions file. */
+function predict(inst, arm, label, dir) {
   git(dir, "add", "-A");
   const patch = git(dir, "diff", "--cached", inst.base_commit, "--", ".", ...HELPERS.map((h) => `:(exclude)${h}`), ":(exclude).cheapag", ":(exclude).plan");
   git(dir, "reset", "-q");
   const pred = { instance_id: inst.instance_id, model_name_or_path: `${arm}/${MODEL}`, model_patch: patch };
   appendFileSync(join(here, `preds-${arm}-${label.replace(/-\d+$/, "")}.jsonl`), JSON.stringify(pred) + "\n");
-  if (!patch.trim()) return { resolved: false, patch_lines: 0, grade_detail: "empty patch" };
-  const runId = `v2-${arm}-${label}-${inst.instance_id}`;
+  return pred;
+}
+
+/** Grades predictions in one harness run (instances in parallel); returns each instance's grade fields. */
+async function gradeBatch(arm, runId, preds) {
+  const out = {};
+  const graded = preds.filter((p) => p.model_patch.trim());
+  for (const p of preds) if (!p.model_patch.trim()) out[p.instance_id] = { resolved: false, pass: false, patch_lines: 0, grade_detail: "empty patch" };
+  if (!graded.length) return out;
   const file = join(runsDir, `${runId}.pred.jsonl`);
-  writeFileSync(file, JSON.stringify(pred) + "\n");
-  const r = spawnSync(join(venvBin, "swebench"), ["eval", "verified", "-p", file, "-i", inst.instance_id, "--run-id", runId, "-j", "1"], { cwd: here, encoding: "utf8", env: { ...process.env, PATH: `${venvBin}:${process.env.PATH}` } });
+  writeFileSync(file, graded.map((p) => JSON.stringify(p)).join("\n") + "\n");
+  const args = ["eval", "verified", "-p", file, ...graded.flatMap((p) => ["-i", p.instance_id]), "--run-id", runId, "-j", String(Math.min(graded.length, 7))];
+  const { stdout, stderr } = await new Promise((resolve) => {
+    const child = spawn(join(venvBin, "swebench"), args, { cwd: here, env: { ...process.env, PATH: `${venvBin}:${process.env.PATH}` } });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", () => resolve({ stdout, stderr }));
+  });
   let results = {};
   try { results = JSON.parse(readFileSync(join(here, "logs", "evaluation", runId, "results.json"), "utf8")); } catch { /* reported below */ }
-  const resolved = (results.resolved_ids ?? []).includes(inst.instance_id);
-  const errored = !results.completed_ids?.includes(inst.instance_id);
-  return {
-    resolved, grade_run_id: runId, patch_lines: patch.split("\n").filter((l) => /^[+-][^+-]/.test(l)).length,
-    grade_detail: errored ? `harness error: ${(r.stdout + r.stderr).split("\n").filter((l) => /Error/.test(l)).slice(0, 3).join(" | ")}` : resolved ? "" : "unresolved",
-    pass: resolved, // the dashboard's pass column
-  };
+  for (const p of graded) {
+    const resolved = (results.resolved_ids ?? []).includes(p.instance_id);
+    const errored = !results.completed_ids?.includes(p.instance_id);
+    out[p.instance_id] = {
+      resolved, grade_run_id: runId, patch_lines: p.model_patch.split("\n").filter((l) => /^[+-][^+-]/.test(l)).length,
+      grade_detail: errored ? `harness error: ${(stdout + stderr).split("\n").filter((l) => /Error/.test(l)).slice(0, 3).join(" | ")}` : resolved ? "" : "unresolved",
+      pass: resolved, // the dashboard's pass column
+    };
+  }
+  return out;
 }
 
 function record(row) {
   if (opts.dry) return;
-  appendFileSync(join(bench, "results.jsonl"), JSON.stringify({ sweep: sweep.id, sweep_label: sweep.label, ...row }) + "\n");
+  appendFileSync(join(bench, "results.jsonl"), JSON.stringify({ sweep: sweep.id, sweep_label: sweep.label, ...row, ended_at: new Date().toISOString() }) + "\n");
   spawnSync(process.execPath, [join(bench, "dashboard.mjs")], { stdio: "ignore" });
   console.log(`${row.instance_id} ${row.arm}${row.long_session ? ` long#${row.long_session}` : ""} r${row.run}: ${row.resolved ? "RESOLVED" : "unresolved"} tokens=${row.claude_tokens} out=${row.output_tokens} cost=$${row.claude_cost_usd?.toFixed(2)} turns=${row.num_turns} max_ctx=${row.max_context} worker=$${row.worker_cost_usd.toFixed(4)} delegate=${row.delegate_calls} ${Math.round(row.duration_ms / 60000)}min ${row.subtype ?? ""}`);
 }
@@ -234,7 +272,7 @@ function record(row) {
 /** Stops the sweep once v2's running spend passes 80% of either budget (all v2 rows so far, every invocation). */
 function overBudget() {
   if (opts.dry || !existsSync(join(bench, "results.jsonl"))) return;
-  const rows = readFileSync(join(bench, "results.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.suite === "swebench-verified");
+  const rows = readFileSync(join(bench, "results.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.suite?.startsWith("swebench")); // the full and quick benches share the budget
   const claudeUsd = rows.reduce((s, r) => s + (r.claude_cost_usd ?? 0), 0), workerUsd = rows.reduce((s, r) => s + (r.worker_cost_usd ?? 0), 0);
   if (claudeUsd > 0.8 * CLAUDE_BUDGET || workerUsd > 0.8 * WORKER_BUDGET) {
     fail(`budget stop: Claude $${claudeUsd.toFixed(2)} of $${CLAUDE_BUDGET}, worker $${workerUsd.toFixed(2)} of $${WORKER_BUDGET} (80% guard)`);
