@@ -9,7 +9,7 @@ const src = join(here, "results.jsonl");
 const rows = existsSync(src) ? readFileSync(src, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.sweep) : [];
 
 // only the fields the page shows; the page renders everything with textContent
-const keep = ["sweep", "sweep_label", "task", "kind", "arm", "run", "model", "pass", "grade_detail", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "claude_tokens", "claude_cost_usd", "num_turns", "tool_uses", "duration_ms", "worker_cost_usd", "delegate_calls"];
+const keep = ["sweep", "sweep_label", "task", "kind", "arm", "run", "model", "pass", "grade_detail", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "claude_tokens", "claude_cost_usd", "num_turns", "tool_uses", "duration_ms", "worker_cost_usd", "delegate_calls", "difficulty", "max_context", "worker_fails", "claude_edits_after_delegate", "long_session"];
 const data = rows.map((r) => Object.fromEntries(keep.map((k) => [k, r[k] ?? null])));
 // "<" escaped so a task name can never close the script tag
 const json = JSON.stringify(data).replace(/</g, "\\u003c");
@@ -112,6 +112,7 @@ const full = (n) => Math.round(n).toLocaleString("en-US");
 const usd = (n) => n == null ? "—" : "$" + n.toFixed(n < 1 ? 3 : 2);
 const secs = (ms) => ms == null ? "—" : Math.round(ms / 1000) + "s";
 const sum = (rows, k) => rows.reduce((a, r) => a + (r[k] || 0), 0);
+const median = (rows, k) => { const v = rows.map((r) => r[k] || 0).sort((a, b) => a - b); return v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : Math.round((v[v.length / 2 - 1] + v[v.length / 2]) / 2)) : 0; };
 const niceMax = (v) => { if (v <= 0) return 1; const p = 10 ** Math.floor(Math.log10(v)); return Math.ceil(v / p / (v / p > 5 ? 2 : 1)) * p * (v / p > 5 ? 2 : 1); };
 
 // tooltip: values lead, labels follow; shared by every chart
@@ -255,11 +256,21 @@ sweeps.slice().reverse().forEach(([id, label], ri) => {
   body.append(el("h3", {}, "Tokens per task"));
   body.append(legend());
   const multiArm = new Set(rs.map((r) => r.arm)).size > 1, multiRun = new Set(rs.map((r) => r.run)).size > 1;
+  // SWE-bench rows (bench/swe): grouped by difficulty, with max context; their "pass" is the harness's resolved
+  const swe = rs.some((r) => r.difficulty);
+  if (swe) {
+    const ORDER = ["<15 min fix", "15 min - 1 hour", "1-4 hours"];
+    rs.sort((a, b) => ORDER.indexOf(a.difficulty) - ORDER.indexOf(b.difficulty) || (a.long_session ?? 0) - (b.long_session ?? 0));
+    body.append(el("h3", {}, "By difficulty"));
+    const groups = [...new Set(rs.map((r) => r.difficulty + "\u0000" + r.arm))].map((k) => k.split("\u0000"));
+    body.append(table(["Difficulty", "Arm", "Runs", "Resolved", "Tokens (median)", "Output (median)", "Cost", "Turns (median)", "Max context (median)", "Delegations", "Worker fails", "Claude edits after delegating"],
+      groups.map(([d, a]) => { const g = rs.filter((r) => r.difficulty === d && r.arm === a); return [d, a, g.length, g.filter((r) => r.pass).length + "/" + g.length, full(median(g, "claude_tokens")), full(median(g, "output_tokens")), usd(sum(g, "claude_cost_usd")), median(g, "num_turns"), full(median(g, "max_context")), sum(g, "delegate_calls"), sum(g, "worker_fails"), sum(g, "claude_edits_after_delegate")]; })));
+  }
   const items = rs.map((r) => ({ label: r.task + (multiArm ? " · " + r.arm : "") + (multiRun ? " #" + r.run : ""), total: r.claude_tokens || 0, values: Object.fromEntries(TYPES.map((t) => [t.key, r[t.key] || 0])) }));
   body.append(stacked(items, "h", tokenTip));
   body.append(el("h3", {}, "All numbers"));
-  body.append(table(["Task", ...(multiArm ? ["Arm"] : []), ...(multiRun ? ["Run"] : []), "Result", "Total", "Cache read", "Cache write", "Output", "Input", "Cost (est.)", "Turns", "Tools", "Time"],
-    rs.map((r) => [r.task, ...(multiArm ? [r.arm] : []), ...(multiRun ? [r.run] : []), { text: r.pass ? "✓ pass" : "✗ fail", cls: r.pass ? "pass" : "fail" }, full(r.claude_tokens || 0), full(r.cache_read_tokens || 0), full(r.cache_creation_tokens || 0), full(r.output_tokens || 0), full(r.input_tokens || 0), usd(r.claude_cost_usd), r.num_turns ?? "—", r.tool_uses ?? "—", secs(r.duration_ms)])));
+  body.append(table(["Task", ...(swe ? ["Difficulty"] : []), ...(multiArm ? ["Arm"] : []), ...(multiRun ? ["Run"] : []), "Result", ...(swe ? ["Max context"] : []), "Total", "Cache read", "Cache write", "Output", "Input", "Cost (est.)", "Turns", "Tools", "Time"],
+    rs.map((r) => [r.task + (r.long_session ? " (long #" + r.long_session + ")" : ""), ...(swe ? [r.difficulty] : []), ...(multiArm ? [r.arm] : []), ...(multiRun ? [r.run] : []), { text: r.pass ? (swe ? "✓ resolved" : "✓ pass") : swe ? "✗ unresolved" : "✗ fail", cls: r.pass ? "pass" : "fail" }, ...(swe ? [full(r.max_context || 0)] : []), full(r.claude_tokens || 0), full(r.cache_read_tokens || 0), full(r.cache_creation_tokens || 0), full(r.output_tokens || 0), full(r.input_tokens || 0), usd(r.claude_cost_usd), r.num_turns ?? "—", r.tool_uses ?? "—", secs(r.duration_ms)])));
   const fails = rs.filter((r) => !r.pass && r.grade_detail);
   if (fails.length) { const d = el("details"); d.append(el("summary", {}, "Why tasks failed")); for (const f of fails) d.append(el("p", { class: "sub" }, f.task + ": " + f.grade_detail)); body.append(d); }
   runs.append(card);

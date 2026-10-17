@@ -1,0 +1,242 @@
+[
+  {
+    "instance_id": "django__django-14787",
+    "repo": "django/django",
+    "difficulty": "<15 min fix",
+    "base_commit": "004b4620f6f4ad87261e149898940f2dcd5757ef",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-14787:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": 1
+  },
+  {
+    "instance_id": "django__django-15572",
+    "repo": "django/django",
+    "difficulty": "<15 min fix",
+    "base_commit": "0b31e024873681e187b574fe1c4afe5e48aeeecf",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-15572:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-13417",
+    "repo": "django/django",
+    "difficulty": "<15 min fix",
+    "base_commit": "71ae1ab0123582cc5bfe0f7d5f4cc19a9412f396",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-13417:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-11066",
+    "repo": "django/django",
+    "difficulty": "<15 min fix",
+    "base_commit": "4b45b6c8e4d7c9701a332e80d3b1c84209dc36e2",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-11066:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "sympy__sympy-16766",
+    "repo": "sympy/sympy",
+    "difficulty": "<15 min fix",
+    "base_commit": "b8fe457a02cc24b3470ff678d0099c350b7fef43",
+    "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-16766:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+    "long_session": null
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8475",
+    "repo": "sphinx-doc/sphinx",
+    "difficulty": "<15 min fix",
+    "base_commit": "3ea1ec84cc610f7a9f4f6b354e264565254923ff",
+    "image": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-8475:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "tox --current-env -epy39 -v --",
+    "long_session": null
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-24149",
+    "repo": "matplotlib/matplotlib",
+    "difficulty": "<15 min fix",
+    "base_commit": "af39f1edffcd828f05cfdd04f2e59506bb4a27bc",
+    "image": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-24149:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "pytest -rA",
+    "long_session": null
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-13142",
+    "repo": "scikit-learn/scikit-learn",
+    "difficulty": "<15 min fix",
+    "base_commit": "1c8668b0a021832386470ddf740d834e02c66f69",
+    "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-13142:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "pytest -rA",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-7530",
+    "repo": "django/django",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "f8fab6f90233c7114d642dfe01a4e6d4cb14ee7d",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-7530:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": 2
+  },
+  {
+    "instance_id": "django__django-16256",
+    "repo": "django/django",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "76e37513e22f4d9a01c7f15eee36fe44388e6670",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-16256:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": 3
+  },
+  {
+    "instance_id": "django__django-15814",
+    "repo": "django/django",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "5eb6a2b33d70b9889e1cafa12594ad6f80773d3a",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-15814:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-11790",
+    "repo": "django/django",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "b1d6b35e146aea83b171c1b921178bbaae2795ed",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-11790:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-14140",
+    "repo": "django/django",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "45814af6197cfd8f4dc72ee43b90ecde305a1d5a",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-14140:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "sympy__sympy-23824",
+    "repo": "sympy/sympy",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "39de9a2698ad4bb90681c0fdb70b30a78233145f",
+    "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-23824:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+    "long_session": null
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-24970",
+    "repo": "matplotlib/matplotlib",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "a3011dfd1aaa2487cce8aa7369475533133ef777",
+    "image": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-24970:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "pytest -rA",
+    "long_session": null
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-15100",
+    "repo": "scikit-learn/scikit-learn",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "af8a6e592a1a15d92d77011856d5aa0ec4db4c6c",
+    "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-15100:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "pytest -rA",
+    "long_session": null
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-11445",
+    "repo": "sphinx-doc/sphinx",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "71db08c05197545944949d5aa76cd340e7143627",
+    "image": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-11445:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "tox --current-env -epy39 -v --",
+    "long_session": null
+  },
+  {
+    "instance_id": "astropy__astropy-14365",
+    "repo": "astropy/astropy",
+    "difficulty": "15 min - 1 hour",
+    "base_commit": "7269fa3e33e8d02485a647da91a5a2a60a06af61",
+    "image": "swebench/sweb.eval.x86_64.astropy_1776_astropy-14365:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "pytest -rA",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-14631",
+    "repo": "django/django",
+    "difficulty": "1-4 hours",
+    "base_commit": "84400d2e9db7c51fee4e9bb04c028f665b8e7624",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-14631:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": 4
+  },
+  {
+    "instance_id": "django__django-13449",
+    "repo": "django/django",
+    "difficulty": "1-4 hours",
+    "base_commit": "2a55431a5678af52f669ffe7dff3dd0bd21727f8",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-13449:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "django__django-13212",
+    "repo": "django/django",
+    "difficulty": "1-4 hours",
+    "base_commit": "f4e93919e4608cfc50849a1f764fd856e0917401",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-13212:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    "long_session": null
+  },
+  {
+    "instance_id": "sympy__sympy-16597",
+    "repo": "sympy/sympy",
+    "difficulty": "1-4 hours",
+    "base_commit": "6fd65310fa3167b9626c38a5487e171ca407d988",
+    "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-16597:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+    "long_session": null
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-9461",
+    "repo": "sphinx-doc/sphinx",
+    "difficulty": "1-4 hours",
+    "base_commit": "939c7bb7ff7c53a4d27df067cea637540f0e1dad",
+    "image": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-9461:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "tox --current-env -epy39 -v --",
+    "long_session": null
+  },
+  {
+    "instance_id": "pytest-dev__pytest-10356",
+    "repo": "pytest-dev/pytest",
+    "difficulty": "1-4 hours",
+    "base_commit": "3c1534944cbd34e8a41bc9e76818018fadefc9a1",
+    "image": "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-10356:latest",
+    "image_source": "x86_64, pulled, run under Rosetta (colima --vz-rosetta)",
+    "test_cmd": "pytest -rA",
+    "long_session": null
+  }
+]
