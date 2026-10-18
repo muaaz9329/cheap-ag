@@ -216,8 +216,13 @@ function runGroup(g: GroupRun) {
   const overCost = () => {
     if (session && session.totals().usage.costUsd >= limits.max_cost_usd) stop({ cap: "cost", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
   };
+  // the turn cap grows by escalation_turns once a run that hit it is handed to the escalation model
+  let turnCap = limits.max_turns;
+  let handover: AbortController | undefined; // set while the first run may still be handed over at the cap
   const overTurns = () => {
-    if (session && session.totals().turns >= limits.max_turns) stop({ cap: "turns", reason: `turn cap (${limits.max_turns}) reached` });
+    if (!session || session.totals().turns < turnCap) return;
+    if (handover && !handover.signal.aborted) return handover.abort(); // end this prompt; work() continues on the escalation model
+    stop({ cap: "turns", reason: `turn cap (${turnCap}) reached` });
   };
   // the minute cap counts working time only: the clock is paused while the job waits BLOCKED on a reply
   let clockLeft = limits.max_minutes * 60_000;
@@ -285,7 +290,7 @@ function runGroup(g: GroupRun) {
       // a landed job's files are in the working tree; an unlanded one's only in its worktree
       review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
       // a worker stopped at the turn cap rarely says what it left undone
-      missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped at the turn cap (${limits.max_turns}); compare the diff with the step`] : report.missing,
+      missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped at the turn cap (${turnCap}); compare the diff with the step`] : report.missing,
       reason, conflict,
       verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
       usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
@@ -405,14 +410,26 @@ function runGroup(g: GroupRun) {
       finalize("RUNNING"); // now with the worktree, so a restart can point at it
       const provider = g.provider.provider;
       // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET
-      const routed = async (text: string, on?: typeof escalation) => {
-        const r = await runRouted(session!, text, models, provider, on);
+      const routed = async (text: string, on?: typeof escalation, interrupt?: AbortSignal) => {
+        const r = await runRouted(session!, text, models, provider, on, interrupt);
         if (r.budget) stopped ??= { cap: "provider", reason: r.budget };
         return r;
       };
       /** One prompt through the normal path: the run, then verify with up to 2 self-fixes and 1 escalation. `tag` prefixes tried: lines. */
       const work = async (prompt: string, tag = "") => {
-        let result = await routed(prompt);
+        // a first run that reaches the turn cap is handed, in the same session, to the escalation model with escalation_turns
+        // more turns (v2 hard tier: the worker hit 40 turns on 4 of 12 runs and escalation never ran, since it only followed a failed check)
+        const canHand = !escalated && !!escalation && !escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
+        handover = canHand ? new AbortController() : undefined;
+        let result = await routed(prompt, undefined, handover?.signal);
+        if (result.interrupted) {
+          handover = undefined;
+          escalated = true;
+          turnCap += limits.escalation_turns;
+          tried.push(`${tag}esc: ${modelName(models.current)} reached ${limits.max_turns} turns; handed to ${modelName(escalation!)} with ${limits.escalation_turns} more`);
+          result = await routed("You are taking over this task from another worker that ran out of turns. Its changes are in the worktree: check them with git diff, finish the task, run the step's checks, then call finish.", escalation);
+        }
+        handover = undefined;
         report = finishReport(result);
         failing = undefined;
         checked = false;
@@ -424,6 +441,7 @@ function runGroup(g: GroupRun) {
             overTurns(); // a fix needs at least one more turn
             if (stopped as Stop | undefined) break; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
             const esc = attempt === "esc";
+            if (esc && escalated) break; // already used for the turn-cap hand-over
             const skip = esc && escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
             if (skip) {
               tried.push(tag + skip);

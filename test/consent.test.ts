@@ -19,7 +19,7 @@ done-when: ${doneWhen}
 `;
 
 /** Every OpenRouter default role and fallback model (src/routing.ts). */
-const OPENROUTER_MODELS = ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-flash", "deepseek/deepseek-v4-pro", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"];
+const OPENROUTER_MODELS = ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-flash", "z-ai/glm-5.3-flash", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"];
 
 const FINISH = { finish: { summary: "wrote hello", risks: [], review: [], missing: [] } };
 
@@ -107,7 +107,7 @@ test("a consent given for one provider asks again after switching to another", a
   onTestFinished(server.close);
   const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1" });
   expect(text).toMatch(/^CONSENT /);
-  expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, qwen/qwen3.8-flash, deepseek/deepseek-v4-pro (+fallbacks qwen/qwen3.7-plus, z-ai/glm-5.3, moonshotai/kimi-k3)\n");
+  expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, qwen/qwen3.8-flash, z-ai/glm-5.3-flash (+fallbacks qwen/qwen3.7-plus, z-ai/glm-5.3, moonshotai/kimi-k3)\n");
   expect(text).toContain(`retention: depends on the upstream provider OpenRouter routes to; "deny data collection" is always on;`);
 });
 

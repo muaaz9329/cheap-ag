@@ -12,7 +12,7 @@ const ABORT_GRACE_MS = 10_000;
 export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[] };
 export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
 /** What one prompt of a session produced; `limit` when it was aborted on a provider limit, `httpStatus` of a provider error. */
-export type RunResult = { finish?: FinishReport; text: string; error?: string; limit?: Limit; httpStatus?: number };
+export type RunResult = { finish?: FinishReport; text: string; error?: string; limit?: Limit; httpStatus?: number; interrupted?: boolean };
 /** Session totals so far: turns and usage accumulate across every prompt of the session; `spend` is cost per model name. */
 export type SessionTotals = { sessionID: string; turns: number; usage: Usage; rejections: Rejection[]; spend: Record<string, number> };
 /** A tool call the ruleset denied outright, or a permission request auto-rejected. */
@@ -55,7 +55,8 @@ export async function openSession(opts: {
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
 
-  async function run(prompt: string, model?: WorkerModel): Promise<RunResult> {
+  /** `interrupt` ends this prompt only (the session stays usable, e.g. to hand it to another model); `opts.signal` ends the session. */
+  async function run(prompt: string, model?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult> {
     const { signal } = opts;
     if (signal?.aborted) return { text: "", error: "aborted" };
     const abort = new AbortController();
@@ -84,6 +85,8 @@ export async function openSession(opts: {
       // after the prompt, so an abort can never race ahead of it
       signal?.addEventListener("abort", stop, { once: true });
       if (signal?.aborted) stop();
+      interrupt?.addEventListener("abort", stop, { once: true });
+      if (interrupt?.aborted) stop();
 
       for await (const raw of stream) {
         const event = raw as Event;
@@ -165,9 +168,12 @@ export async function openSession(opts: {
       // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
       const last = [...texts.values()].at(-1)?.messageID;
       const text = [...texts.values()].filter((t) => t.messageID === last).map((t) => t.text).join("\n");
+      // an interrupted prompt ends on OpenCode's abort error; that is the hand-over, not a worker failure
+      if (interrupt?.aborted && !signal?.aborted) return { finish, text, interrupted: true };
       return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
     } finally {
       opts.signal?.removeEventListener("abort", stop);
+      interrupt?.removeEventListener("abort", stop);
       clearTimeout(backstop);
       abort.abort();
     }

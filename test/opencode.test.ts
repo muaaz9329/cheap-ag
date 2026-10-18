@@ -93,7 +93,7 @@ test("an OpenRouter key never reaches output or config; the config denies data c
       openrouter: {
         // every role and fallback model denies data collection
         models: Object.fromEntries(
-          ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-flash", "deepseek/deepseek-v4-pro", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"]
+          ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-flash", "z-ai/glm-5.3-flash", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"]
             .map((id) => [id, { options: { provider: { data_collection: "deny" } } }]),
         ),
       },

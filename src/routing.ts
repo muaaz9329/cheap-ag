@@ -28,7 +28,8 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
   openrouter: {
     implement: ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.7-plus", "z-ai/glm-5.3", "moonshotai/kimi-k3"],
     research: ["qwen/qwen3.8-flash", "deepseek/deepseek-v4.1-flash"],
-    escalation: "deepseek/deepseek-v4-pro",
+    // GLM-5.3-Flash: 37% on Terminal-Bench 4.0 vs V4 Pro 14% (Vals, 2026-10-16), and cheaper ($0.05 in / $0.20 out)
+    escalation: "z-ai/glm-5.3-flash",
   },
   deepseek: { implement: ["deepseek-flash"], research: ["deepseek-flash"], escalation: "deepseek-v4-pro" },
 };
@@ -85,9 +86,9 @@ const CONTINUE = "The previous model hit a usage limit and was stopped. Continue
  * every allowed model is limited, or (OpenRouter) the credit is gone, which no other model can help with.
  * With `escalation`, the prompt runs on that model alone: a limit there is returned (in `limit`), never fallen back from.
  */
-export async function runRouted(session: Pick<Session, "run">, prompt: string, c: Chain, provider: ProviderId, escalation?: WorkerModel): Promise<RunResult & { budget?: string }> {
+export async function runRouted(session: Pick<Session, "run">, prompt: string, c: Chain, provider: ProviderId, escalation?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult & { budget?: string }> {
   // the first model is the session's own; once moved, every prompt names the fallback explicitly
-  let result = await session.run(prompt, escalation ?? (c.current === c.first ? undefined : c.current));
+  let result = await session.run(prompt, escalation ?? (c.current === c.first ? undefined : c.current), interrupt);
   if (escalation && result.limit) c.limits.push(result.limit);
   while (result.limit && !escalation) {
     c.limits.push(result.limit);
@@ -95,7 +96,7 @@ export async function runRouted(session: Pick<Session, "run">, prompt: string, c
     if (!next) return { ...result, budget: exhausted(provider, c.limits) };
     c.current = next;
     c.used.push(modelName(next));
-    result = await session.run(CONTINUE, next);
+    result = await session.run(CONTINUE, next, interrupt);
   }
   if (provider === "openrouter" && result.httpStatus === 402) return { ...result, budget: "OpenRouter credits exhausted" };
   return result;

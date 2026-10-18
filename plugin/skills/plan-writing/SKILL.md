@@ -33,11 +33,11 @@ deps: <package@range>                       ← the step needs a new package
 - **Size:** one step ≈ under an hour of junior-developer work. Split anything bigger.
 - **Checks:** give every step an executable `done-when` (a test command, a type check), not only prose. Name the one test file or test id the step concerns, never the whole suite.
 - **Delegate before reading:** write steps from the issue and what you already know; don't open source files to plan, the worker explores. If you need the code's shape first, call `research` and pass its id as `delegate(brief=…)`.
-- **Trust OK:** an `OK` result already passed its `done-when`; don't re-run its tests or re-read its diff unless `risks:` says so or the user asks.
+- **Review bigger OKs:** trust a small `OK` (at most 30 changed lines in at most 2 files, empty `risks:`) without re-running its tests or reading its diff; for a bigger one, read the diff once and check it against the step. If it is wrong or incomplete, fix it yourself.
 - **Scope:** `files:` lists every file or directory the step may touch, accurately. It also decides which steps can run in parallel.
 - **Constraints:** add `dont:` for the mistakes you expect (new dependencies, touching auth, changing public APIs).
 - **Grouping:** make independent steps separate comma groups so they run in parallel; use `needs:` when one step must land first.
-- **Fixing:** when a step fails, edit that step in the plan (sharper `do:`, smaller scope, a `dont:`) and delegate again, rather than piling up `note:`s.
+- **Fixing:** when a step FAILs, do it yourself rather than delegating it again (the worker already used its self-fixes and the stronger model).
 - **Packages:** declare a new package with `deps:`; the worker cannot install packages itself.
 - Share context once at the top (conventions, existing helpers to reuse) instead of repeating it per step.
 
