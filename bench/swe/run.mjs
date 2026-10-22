@@ -229,6 +229,8 @@ function jobMetrics(dir, before) {
     ...all,
     worker_cost_usd: fresh.reduce((s, j) => s + (j.usage?.costUsd ?? 0), 0), worker_turns: fresh.reduce((s, j) => s + (j.usage?.turns ?? 0), 0),
     jobs: fresh.length, job_statuses: statuses, worker_fails: fresh.filter((j) => j.status === "FAIL").length,
+    // the server's check of the worker's reproduction test, last job wins (ticket 24.1)
+    repro: fresh.map((j) => j.repro).filter(Boolean).at(-1) ?? null,
     worker_redos: fresh.reduce((s, j) => s + (j.redo ?? 0), 0), escalations: fresh.filter((j) => j.models?.escalated).length,
   };
 }

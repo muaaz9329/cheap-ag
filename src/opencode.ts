@@ -41,7 +41,8 @@ You implement the plan step marked >>> CURRENT STEP(S), in this repository, by e
 - Never install packages or run install commands. If the step needs a package that is not installed, ask with the question tool, worded exactly: step needs package <name>@<range> (not installed). Install it in the main checkout, then reply "installed", or reply "no" to proceed without. Options: installed, no.
 - Never touch .git, .env* files or lockfiles. Never commit.
 - If the step is ambiguous or conflicts with its dont:, ask with the question tool instead of guessing.
-- When done, call the finish tool exactly once, last: summary (at most 160 chars), risks, review (path:start-end, max 5), missing.
+- If the step fixes a bug or a wrong behaviour, prove it: first write a small test that reproduces the problem and run it to see it fail, then fix the code and run it again to see it pass. Keep the test in the change, and run it with the same command the step's checks use (e.g. its test runner plus the test file or id).
+- When done, call the finish tool exactly once, last: summary (at most 160 chars), risks, review (path:start-end, max 5), missing, repro (the command that runs your reproduction test, "none: <why>" if you could not reproduce it, "n/a" if the step is not a fix).
 - If you cannot call finish, end your last message with a fenced cheapag-result block holding the same fields.
 `;
 
@@ -64,7 +65,7 @@ answer:
 `;
 
 // Runs inside OpenCode (Bun). Its input is captured from the event stream, so it only has to exist and validate.
-const FINISH_TOOL = `import { tool } from "@opencode-ai/plugin";
+export const FINISH_TOOL_SOURCE = `import { tool } from "@opencode-ai/plugin";
 
 export default tool({
   description: "Report the step as done. Call exactly once, as your last action.",
@@ -73,6 +74,7 @@ export default tool({
     risks: tool.schema.array(tool.schema.string()).describe("Assumptions, unverified conditions, edits outside files:"),
     review: tool.schema.array(tool.schema.string()).max(5).describe("Ranges worth a human look, as path:start-end"),
     missing: tool.schema.array(tool.schema.string()).describe("Anything the step asked for that you did not do"),
+    repro: tool.schema.string().describe("The exact command that runs your reproduction test (fails on the original code, passes now); 'none: <why>' if you could not reproduce the problem; 'n/a' if the step is not a fix"),
   },
   async execute() {
     return "Reported. Stop now.";
@@ -115,7 +117,7 @@ export function writeConfigDir(dir: string, config: string) {
   mkdirSync(join(dir, "plugins"), { recursive: true });
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "agents", "cheapag-research.md"), RESEARCH_PROMPT);
-  writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL);
+  writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL_SOURCE);
   writeFileSync(join(dir, "plugins", "cheapag-secrets.js"), SECRETS_PLUGIN);
   writeFileSync(join(dir, "opencode.json"), config);
 }

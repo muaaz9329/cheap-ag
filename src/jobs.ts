@@ -12,7 +12,7 @@ import { chain, escalationSkip, modelName, recordSpend, runRouted, usedBalance, 
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
-  conflictPaths, createWorktree, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
+  conflictPaths, createWorktree, git, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
@@ -193,6 +193,8 @@ function runGroup(g: GroupRun) {
   const tried: string[] = [];
   let selfFix = 0;
   let escalated = false;
+  let repro: JobRecord["repro"]; // the server's check of the worker's reproduction test (OK jobs only)
+  let reproRisk: string | undefined;
   let failing: { run: VerifyRun; tail: string[] } | undefined;
   let checked = false; // whether verify has seen the worker's latest changes
   let redone = 0; // 1 once a landing conflict started the redo (spec: Landing and redo)
@@ -265,6 +267,7 @@ function runGroup(g: GroupRun) {
     const rejections = session?.totals().rejections ?? [];
     // server risks go first, so the 5-risk cap never cuts them
     const risks = [
+      ...(reproRisk ? [reproRisk] : []),
       ...(rejections.length > MAX_QUIET_REJECTIONS ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`] : []),
       ...report.risks,
     ];
@@ -292,7 +295,7 @@ function runGroup(g: GroupRun) {
       // a worker stopped at the turn cap rarely says what it left undone
       missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped at the turn cap (${turnCap}); compare the diff with the step`] : report.missing,
       reason, conflict,
-      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
+      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, ...(repro && { repro }), question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
       usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
       timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime(), ...(waiting && { blockedAt }) },
     };
@@ -483,6 +486,7 @@ function runGroup(g: GroupRun) {
       } else if (result.error) {
         reason = `worker error: ${result.error}`;
       } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
+        ({ repro, risk: reproRisk } = await checkRepro(worktree.path, report.repro, [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands], diff.changed.map((c) => c.path), kill.signal));
         // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
         pauseClock();
         parked = true;
@@ -712,6 +716,43 @@ async function integrate(
 const batches = new Map<string, { look: (once: boolean, progress: Progress) => Promise<string>; render: () => string; forward: Progress }>();
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
+/** A test file, by the usual conventions: a tests/ directory, test_x / x_test / x.test / x.spec names, conftest.py. */
+const TEST_FILE = /(^|\/)(tests?|testing|__tests__)\/|(^|\/)(test_[^/]*|[^/]*_tests?\.[a-z]+|[^/]*\.(test|spec)\.[a-z]+|conftest\.py)$/i;
+
+/**
+ * Checks the worker's reproduction test (ticket 24.1): its command must pass on the fixed tree and fail once the non-test
+ * changes are set aside, which proves it tests the problem. The command comes from the worker, so it only runs when it
+ * starts with a command this job may already run (done-when, test_cmd, allow_commands); anything else stays unverified.
+ */
+async function checkRepro(cwd: string, claim: string | undefined, allowed: string[], changed: string[], signal: AbortSignal): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
+  if (!claim || /^n\/?a\b/i.test(claim)) return {};
+  if (/^none\b/i.test(claim)) return { repro: "none", risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}` };
+  const runs = (cmd: string) => runVerify(cwd, [cmd], () => {}, signal).then((r) => r[0]?.ok ?? false);
+  const unverified = (why: string) => ({ repro: "unverified" as const, risk: `reproduction not verified: ${why}` });
+  if (!allowed.some((a) => claim === a || claim.startsWith(a + " "))) return unverified(`\`${claim}\` is not one of this job's check commands`);
+  if (!(await runs(claim))) return unverified(`\`${claim}\` fails on the fixed code`);
+  const fix = changed.filter((p) => !TEST_FILE.test(p));
+  if (!fix.length) return unverified("the change has no code outside tests");
+  // set the fix aside (tests stay), run the reproduction, then restore; landing uses the diff taken before this
+  try {
+    git(cwd, ["stash", "push", "--include-untracked", "--quiet", "--", ...fix]);
+  } catch {
+    return unverified("could not set the fix aside to rerun the reproduction");
+  }
+  let failsWithout = false;
+  try {
+    failsWithout = !(await runs(claim));
+  } finally {
+    // a failed restore only affects the worktree: the landing applies the diff taken before this check
+    try {
+      git(cwd, ["stash", "pop", "--quiet"]);
+    } catch {
+      failsWithout = false;
+    }
+  }
+  return failsWithout ? { repro: "fail→pass" } : unverified(`\`${claim}\` also passes without the fix`);
+}
+
 type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider"; reason: string };
 const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provider: "BUDGET" } as const;
 

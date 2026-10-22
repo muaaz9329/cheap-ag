@@ -10,9 +10,10 @@ export const VERIFY_RULE = "Tests: run only the test file or id the task concern
  * anyway and the worker only typed. Shared like VERIFY_RULE.
  */
 /**
- * Review before accepting (hard tier of 23.4b): the worker's own checks passed but the fix was wrong on 2 of 12 hard runs,
- * and with "trust OK" Claude never looked. Small OKs are still trusted; bigger ones get one diff read. Shared like VERIFY_RULE.
+ * Trusting results (ticket 24.1): reading the diff of every bigger OK cost +28% tokens and caught no wrong fix, so the
+ * worker proves a fix with a reproduction test the server checks (repro= in the headline); Claude reads a diff only when
+ * that proof is missing. Shared like VERIFY_RULE.
  */
-export const REVIEW_RULE = "Trust a small OK (at most 30 changed lines in at most 2 files, empty risks:) without re-running tests or reading the diff; for a bigger OK, read the diff once and check it against the task; if it is wrong or incomplete, fix it yourself. After a FAIL, do the task yourself instead of delegating it again.";
+export const REVIEW_RULE = "Trust an OK: don't re-run its tests or read its diff. Only when its headline says repro=unverified or repro=none, read the diff once and check it against the task; if it is wrong or incomplete, fix it yourself. After a FAIL, do the task yourself instead of delegating it again.";
 
 export const SCOUT_RULE = "Don't open source files before delegating; the worker explores. To learn the code first, call research and pass its id as delegate brief:, not Read/Bash.";

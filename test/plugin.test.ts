@@ -37,7 +37,7 @@ test("skills: plan-writing for Claude; status, and user-only allow, clean and ho
   const plan = skill("plan-writing");
   expect(plan.front["disable-model-invocation"]).toBeUndefined(); // Claude loads it when planning
   expect(plan.front.description).toMatch(/plan/i);
-  for (const rule of ["files:", "done-when:", "dont:", "needs:", "deps:", "## 1 ", "Size", "Grouping", "Fixing", "Packages", "never the whole suite", "Review bigger OKs", "Delegate before reading", "delegate(brief=…)"]) expect(plan.body).toContain(rule);
+  for (const rule of ["files:", "done-when:", "dont:", "needs:", "deps:", "## 1 ", "Size", "Grouping", "Fixing", "Packages", "never the whole suite", "Trust OK", "Delegate before reading", "delegate(brief=…)"]) expect(plan.body).toContain(rule);
 
   const pin = `npx -y cheap-agent@${version}`;
   const status = skill("status");

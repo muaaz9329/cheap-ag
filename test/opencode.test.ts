@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { callText, startServer } from "./harness.js";
@@ -130,3 +131,14 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   await vi.waitFor(() => expect(() => execFileSync("pgrep", ["-g", String(restartedPid)])).toThrow(), { timeout: 5000 });
   await vi.waitFor(() => expect(() => execFileSync("pgrep", ["-g", String(opencodePid)])).toThrow(), { timeout: 5000 });
 }, 30_000);
+
+test("the generated finish tool is valid JavaScript (a syntax error makes OpenCode drop it and the worker do nothing)", async () => {
+  const { FINISH_TOOL_SOURCE } = await import("../src/opencode.js");
+  const dir = mkdtempSync(join(tmpdir(), "cheapag-finish-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "finish.mjs");
+  writeFileSync(file, FINISH_TOOL_SOURCE);
+  const r = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
+  expect(r.stderr).toBe("");
+  expect(r.status).toBe(0);
+});
