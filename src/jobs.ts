@@ -8,7 +8,7 @@ import { failBlock, renderBatch, renderJob, type BatchRecord, type JobRecord } f
 import { loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
-import { chain, escalationSkip, modelName, recordSpend, runRouted, usedBalance, type Route } from "./routing.js";
+import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
@@ -32,7 +32,7 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 const MAX_QUIET_REJECTIONS = 5;
 
 /** `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation. */
-export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string };
+export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; difficulty?: Difficulty };
 /** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
 export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
 
@@ -83,8 +83,8 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   if (req.task !== undefined) {
     const made = inlinePlan(root, req);
     if ("fail" in made) return failBlock(made.fail);
-    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text };
-  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text };
+    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text, difficulty: req.difficulty };
+  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text, difficulty: req.difficulty };
   else return failBlock("give task (what to change, files, how to check), or plan and steps");
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
@@ -157,14 +157,17 @@ function runGroup(g: GroupRun) {
   const { job, dir } = newJob(root);
   const write = (name: string, value: unknown) => writeWhole(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
   const stepIds = g.group.label;
-  const model = route.implement;
-  const requested = modelName(model);
+  // a step's own difficulty: wins over the call's; in a range the hardest step decides (ticket 26)
+  const difficulty = [...DIFFICULTIES].reverse().find((d) => steps.some((s) => s.fields.difficulty === d)) ?? input.difficulty;
+  const model = tierModel(route, difficulty);
+  // against the implement model, so a tier model shows as model= in the headline
+  const requested = modelName(route.implement);
   const startedAt = new Date();
-  write("request.json", { ...input, steps: stepIds, batch: g.batch, model: requested, startedAt });
+  write("request.json", { ...input, steps: stepIds, batch: g.batch, model: modelName(model), difficulty, startedAt });
 
   const escalation = route.escalation;
-  // the implement model, then its allowed fallbacks: a provider limit moves the session on to the next one
-  const models = chain(model, route.fallbacks);
+  // the job's model, then its allowed fallbacks: a provider limit moves the session on to the next one
+  const models = chain(model, route.fallbacks.filter((m) => modelName(m) !== modelName(model)));
   let billing: JobRecord["billing"];
   // whoever is waiting on this job right now: delegate first, then each reply
   let progress = g.progress;
@@ -280,6 +283,7 @@ function runGroup(g: GroupRun) {
         requested, final: modelName(escalated ? escalation! : models.current), escalated,
         fallbacks: models.used,
       },
+      difficulty,
       billing,
       // tree: what the worktree's diff is measured against, so `land apply` can land it later
       baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null, tree: worktree?.base ?? null },

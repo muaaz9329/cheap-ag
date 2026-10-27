@@ -36,7 +36,7 @@ export function workerMetrics(dir) {
 
 /** Tool-use counts from the Claude Code transcript: did Claude delegate, and did it edit code itself (incl. after a delegation)? */
 export function transcriptMetrics(sessionId) {
-  const empty = { tool_calls_before_first_delegate: 0, test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
+  const empty = { tool_calls_before_first_delegate: 0, test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, agent_calls: 0, difficulty_hint: null, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
   if (!sessionId) return empty;
   const projects = join(homedir(), ".claude", "projects");
   const file = existsSync(projects) ? readdirSync(projects).map((p) => join(projects, p, `${sessionId}.jsonl`)).find(existsSync) : undefined;
@@ -45,6 +45,7 @@ export function transcriptMetrics(sessionId) {
   let bashWrites = 0;
   let maxContext = 0;
   let testRuns = 0;
+  let hint = null;
   const turns = []; // per assistant message: did it call delegate (or reply)?
   let first; // the first turn's usage: what the session's fixed prefix cost (ticket 23.1) // the largest context Claude was sent on one turn: input + cache reads + cache writes
 
@@ -58,6 +59,8 @@ export function transcriptMetrics(sessionId) {
     for (const c of e?.message?.content ?? []) {
       if (c.type !== "tool_use") continue;
       if (/^mcp__.*cheapag.*__(delegate|reply)$/.test(c.name) && turns.length) turns.at(-1).delegated = true;
+      // ticket 26: Claude's rating, last delegate call wins, so a mis-rating is visible per row
+      if (/^mcp__.*cheapag.*__delegate$/.test(c.name) && c.input?.difficulty) hint = c.input.difficulty;
       // a test command: the benches' test scripts and the usual runners
       if (c.name === "Bash" && /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\bnpm (run )?test\b|node --test|\btox\b/.test(String(c.input?.command ?? ""))) testRuns++;
       names.push(c.name);
@@ -85,6 +88,9 @@ export function transcriptMetrics(sessionId) {
     bash_writes: bashWrites,
     delegate_calls: names.filter((n) => isCheapag(n) && /__delegate$/.test(n)).length,
     research_calls: names.filter((n) => isCheapag(n) && /__research$/.test(n)).length,
+    // subagents (hard_tasks: sonnet); "Task" is the Agent tool's older name
+    agent_calls: names.filter((n) => n === "Agent" || n === "Task").length,
+    difficulty_hint: hint,
     claude_edits: names.filter(isEdit).length,
     claude_edits_after_delegate: lastDelegate < 0 ? 0 : names.slice(lastDelegate + 1).filter(isEdit).length,
     tool_uses_after_last_cheapag: lastCheapag < 0 ? 0 : names.length - lastCheapag - 1,

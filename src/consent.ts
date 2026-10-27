@@ -84,6 +84,9 @@ export function consentGate(root: string, provider: Provider["provider"]): { blo
       escalation: escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined,
       research: research ?? implement,
       researchFallbacks: research ? researchFallbacks : fallbacks.filter(others),
+      // a disallowed tier model is dropped: that tier then runs on the implement model
+      medium: pick([full.medium])[0],
+      hard: pick([full.hard])[0],
     },
   };
 }

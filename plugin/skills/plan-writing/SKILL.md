@@ -20,6 +20,7 @@ do: <what to build; continuation lines indented 2+ spaces>
 done-when: <condition>; <condition>         ← required; `backticked` = executed
 dont: <constraint>; <constraint>
 needs: <step id>, ...
+difficulty: easy | medium | hard            ← picks the worker model; wins over delegate's
 model: <model>
 deps: <package@range>                       ← the step needs a new package
 ```

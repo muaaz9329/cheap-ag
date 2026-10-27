@@ -44,10 +44,21 @@ export const implementModel = (provider: ProviderId) => model(provider, ROLES[pr
  * The models one job may run. `fallbacks` continue the session, in order, when the current model hits a provider limit;
  * the escalation model has none. Ticket 13's research uses `research` then `researchFallbacks`.
  */
-export type Route = { implement: WorkerModel; fallbacks: WorkerModel[]; escalation?: WorkerModel; research?: WorkerModel; researchFallbacks: WorkerModel[] };
+export type Route = {
+  implement: WorkerModel; fallbacks: WorkerModel[]; escalation?: WorkerModel; research?: WorkerModel; researchFallbacks: WorkerModel[];
+  /** Ticket 26: the implement model for a `medium` or `hard` difficulty hint; absent = `implement`. */
+  medium?: WorkerModel; hard?: WorkerModel;
+};
 
 /** Config (spec E4) `models`: full `provider/model` names; a role set for another provider than the one logged in is ignored. */
-export type ModelsConfig = { implement?: string; research?: string; escalation?: string; fallback?: string[] };
+export type ModelsConfig = { implement?: string; medium?: string; hard?: string; research?: string; escalation?: string; fallback?: string[] };
+
+/** Claude's rating of a task from the issue (ticket 26): easy < 15 min, medium < 1 h, hard > 1 h of an engineer new to the code. */
+export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
+export type Difficulty = (typeof DIFFICULTIES)[number];
+
+/** The model a job implements on: hard takes the hard model, else the medium one; medium the medium one; easy or no hint `implement`. */
+export const tierModel = (r: Route, d?: Difficulty) => (d === "hard" ? r.hard ?? r.medium : d === "medium" ? r.medium : undefined) ?? r.implement;
 
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {
@@ -55,8 +66,11 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
   const own = (name?: string) => (name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined);
   const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
   const [research, ...researchFallbacks] = [own(models.research) ?? roles.research[0], ...roles.research.slice(1)];
+  const tier = (name?: string) => (own(name) ? model(provider, own(name)!) : undefined);
   return {
     implement: model(provider, own(models.implement) ?? roles.implement[0]),
+    medium: tier(models.medium),
+    hard: tier(models.hard),
     fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map((id) => model(provider, id)),
     escalation: model(provider, own(models.escalation) ?? roles.escalation),
     research: model(provider, research),
@@ -65,7 +79,7 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
 }
 
 /** Every distinct model a route may send code to, first to last (for the config, the CONSENT block and `cheapag allow`). */
-export const routeModels = (r: Route) => unique([r.implement, r.research, r.escalation, ...r.fallbacks, ...r.researchFallbacks]);
+export const routeModels = (r: Route) => unique([r.implement, r.medium, r.hard, r.research, r.escalation, ...r.fallbacks, ...r.researchFallbacks]);
 
 const unique = (ms: (WorkerModel | undefined)[]) => ms.filter((m, i): m is WorkerModel => !!m && ms.findIndex((o) => o && modelName(o) === modelName(m)) === i);
 

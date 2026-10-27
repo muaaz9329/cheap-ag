@@ -19,11 +19,14 @@ const arms = (opts.arms ?? "baseline,cheapag").split(",");
 const timeoutMs = Number(opts.timeout ?? 60) * 60_000;
 // spend guards (ticket 21.1): stop once the running totals pass 80% of either budget
 const CLAUDE_BUDGET = Number(opts.budget ?? 100), WORKER_BUDGET = Number(opts["worker-budget"] ?? 5);
-// --worker-model <provider/id> (ticket 25): the cheapag arm's implement model, written to each checkout's cheapag.json
-const WORKER_MODEL = opts["worker-model"] ?? null;
 // S1 (ticket 23.1), on by default since: no user plugins/skills/settings, per-machine prompt sections moved out of the
 // cached prefix, no git-instructions boilerplate; the baseline also drops skills (cheapag needs its plugin's). --no-lean: as runs 1-2
 const LEAN = !opts["no-lean"];
+// --worker-model <provider/id> (ticket 25): the cheapag arm's implement model, written to each checkout's cheapag.json
+const WORKER_MODEL = opts["worker-model"] ?? null;
+// --medium-model, --hard-model <provider/id>, --hard-tasks <delegate|self|sonnet> (ticket 26): the tier models and the hard-task rule, likewise
+const MEDIUM_MODEL = opts["medium-model"] ?? null, HARD_MODEL = opts["hard-model"] ?? null, HARD_TASKS = opts["hard-tasks"] ?? null;
+if (HARD_TASKS && !["delegate", "self", "sonnet"].includes(HARD_TASKS)) fail("--hard-tasks must be delegate, self or sonnet");
 // S2 (ticket 23.2), on by default since: an arm's sessions back to back on the 5-minute cache TTL (writes $5/M instead of
 // $8/M; no gap between sessions comes near 5 minutes). --no-warm: interleaved arms, Claude Code's default 1h TTL
 const WARM = !opts["no-warm"];
@@ -106,7 +109,7 @@ async function longSessions() {
 }
 
 /** A resumed session reports its cost and the transcript's counts for the whole session so far; keep this task's share. */
-const SESSION_TOTALS = ["claude_cost_usd", "tool_uses", "delegate_calls", "research_calls", "claude_edits", "test_runs", "bash_writes"];
+const SESSION_TOTALS = ["claude_cost_usd", "tool_uses", "delegate_calls", "research_calls", "agent_calls", "claude_edits", "test_runs", "bash_writes"];
 function sinceLast(row, before) {
   return before ? Object.fromEntries(SESSION_TOTALS.map((f) => [f, (row[f] ?? 0) - (before[f] ?? 0)])) : {};
 }
@@ -156,7 +159,8 @@ function setup(dir, inst, arm) {
   chmodSync(join(dir, "swebench-test.sh"), 0o755);
   if (!arm.startsWith("cheapag")) return;
   // no test_cmd: with no arguments the script runs the whole suite (an hour+ under Rosetta); plans name their tests
-  writeFileSync(join(dir, "cheapag.json"), JSON.stringify({ allow_commands: ["./swebench-test.sh"], ...(WORKER_MODEL && { models: { implement: WORKER_MODEL } }) }));
+  const models = { ...(WORKER_MODEL && { implement: WORKER_MODEL }), ...(MEDIUM_MODEL && { medium: MEDIUM_MODEL }), ...(HARD_MODEL && { hard: HARD_MODEL }) };
+  writeFileSync(join(dir, "cheapag.json"), JSON.stringify({ allow_commands: ["./swebench-test.sh"], ...(Object.keys(models).length && { models }), ...(HARD_TASKS && { hard_tasks: HARD_TASKS }) }));
   const allow = spawnSync(process.execPath, [dist, "allow"], { cwd: dir, encoding: "utf8" });
   if (allow.status !== 0) fail(`cheapag allow failed in ${dir}:\n${allow.stdout}${allow.stderr}`);
 }
@@ -218,7 +222,8 @@ async function session(inst, arm, dir, [prompt], resume) {
   const worker = jobMetrics(dir, jobsBefore);
   return {
     suite: SUITE, task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
-    repo: inst.repo, arm, model: MODEL, worker_model: cheap ? WORKER_MODEL : null, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, verify_rule: VERIFY, dir, session_id: out.session_id ?? null, timed_out: timedOut,
+    repo: inst.repo, arm, model: MODEL, worker_model: cheap ? WORKER_MODEL : null,
+    medium_model: cheap ? MEDIUM_MODEL : null, hard_model: cheap ? HARD_MODEL : null, hard_tasks: cheap ? HARD_TASKS : null, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, verify_rule: VERIFY, dir, session_id: out.session_id ?? null, timed_out: timedOut,
     subtype: out.subtype ?? null, budget_hit: out.subtype === "error_max_budget_usd", turns_hit: out.subtype === "error_max_turns",
     input_tokens: usage.input_tokens ?? 0, cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,

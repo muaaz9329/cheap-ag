@@ -3,6 +3,10 @@ import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, startServer, tempRepo, type Logins } from "./harness.js";
+import { loadConfig } from "../src/config.js";
+import { parsePlan } from "../src/plan.js";
+import { fullRoute, modelName, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
 
@@ -171,4 +175,97 @@ test("config models: the job runs on the configured implement model; a malformed
 
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { fallback: "opencode-go/kimi-k3" } }));
   expect(await delegate()).toMatch(/^FAIL reason: .*cheapag\.json: models\.fallback must be a list of provider\/model names$/);
+});
+
+// ---- ticket 26: difficulty routing ----
+
+test("tierModel: hard → models.hard ?? models.medium ?? implement; medium → models.medium ?? implement; easy or no hint → implement", () => {
+  const ids = (models: ModelsConfig) => {
+    const r = fullRoute("opencode-go", models);
+    return [undefined, "easy", "medium", "hard"].map((d) => tierModel(r, d as Difficulty | undefined).id);
+  };
+  const flash = "deepseek-v4.1-flash";
+  expect(ids({})).toEqual([flash, flash, flash, flash]); // no default tier model: the GLM-5.3 gain in 25 did not hold on the hard tier
+  expect(ids({ medium: "opencode-go/glm-5.3" })).toEqual([flash, flash, "glm-5.3", "glm-5.3"]);
+  expect(ids({ medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" })).toEqual([flash, flash, "glm-5.3", "kimi-k3"]);
+  expect(ids({ hard: "openrouter/x/y" })).toEqual([flash, flash, flash, flash]); // another provider's: ignored
+  // the tier models are models the route may send code to, so consent (the CONSENT block, cheapag allow) names them
+  expect(routeModels(fullRoute("opencode-go", { hard: "opencode-go/minimax-m3" })).map(modelName)).toContain("opencode-go/minimax-m3");
+});
+
+test("plan steps accept difficulty:; any other value is a plan error", () => {
+  const plan = (d: string) => `# P\n## 1 a\nfiles: a.txt\ndone-when: done\ndifficulty: ${d}\n`;
+  expect(parsePlan(plan("hard")).steps[0].fields.difficulty).toBe("hard");
+  expect(() => parsePlan(plan("tricky"))).toThrow("step 1 (line 2): difficulty: must be easy, medium, hard or left out");
+});
+
+test("config: models.medium and models.hard take provider/model names; hard_tasks is delegate, self or sonnet (default delegate)", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const load = (config: object) => {
+    writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify(config));
+    return loadConfig(repo.dir);
+  };
+  expect(load({}).hard_tasks).toBe("delegate");
+  expect(load({ models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" }, hard_tasks: "sonnet" }))
+    .toMatchObject({ models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" }, hard_tasks: "sonnet" });
+  expect(() => load({ models: { medium: "glm-5.3" } })).toThrow("models.medium must be a provider/model name");
+  expect(() => load({ models: { hard: 3 } })).toThrow("models.hard must be a provider/model name");
+  expect(() => load({ hard_tasks: "opus" })).toThrow("hard_tasks must be one of delegate, self, sonnet");
+});
+
+test("server instructions: one hint sentence, and hard_tasks adds its rule; every variant stays under the 4,096-character cut", () => {
+  const hint = "Pass difficulty, rated from the issue as the time an engineer new to the code needs to fix and test it: easy < 15 min, medium < 1 h, hard > 1 h.";
+  const [delegate, self, sonnet] = (["delegate", "self", "sonnet"] as const).map((h) => instructions(h));
+  for (const text of [delegate, self, sonnet]) {
+    expect(text).toContain(hint);
+    expect(text.length).toBeLessThan(4096);
+  }
+  expect(delegate).toContain(`${hint}\n`);
+  expect(self).toContain(`${hint} For a hard task, do it yourself instead of delegating.\n`);
+  expect(sonnet).toContain(`${hint} For a hard task, use your Agent tool with model: sonnet to implement it instead of delegating.\n`);
+});
+
+test("a difficulty hint routes the job to its tier model: model= in the headline, the hint on the record; a step's own key wins", async () => {
+  const { repo, fake, server, record } = await scenario({ scripts: [[EDIT, FINISH], [EDIT, FINISH], [EDIT, FINISH]] });
+  const { tools } = await server.client.listTools();
+  expect(tools.find((t) => t.name === "delegate")!.inputSchema.properties!.difficulty).toMatchObject({ type: "string", enum: ["easy", "medium", "hard"] });
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { medium: "opencode-go/glm-5.3" } }));
+  const delegate = (args: Record<string, unknown>) => callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...args });
+
+  const medium = await delegate({ difficulty: "medium" });
+  expect(medium.split("\n")[0]).toMatch(/^OK j\w{4} step=1 .* model=opencode-go\/glm-5\.3$/);
+  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
+  expect(record(medium)).toMatchObject({ difficulty: "medium", models: { requested: "opencode-go/deepseek-v4.1-flash", final: "opencode-go/glm-5.3" } });
+
+  const easy = await delegate({ difficulty: "easy" });
+  expect(easy.split("\n")[0]).not.toContain("model=");
+  expect(fake.recorded.sessions[1].model).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" });
+
+  // a plan step rated hard, no models.hard: the medium model, whatever the call said
+  writeFileSync(join(repo.dir, "plan.md"), PLAN().replace("done-when:", "difficulty: hard\ndone-when:"));
+  const hard = await delegate({ difficulty: "easy" });
+  expect(hard.split("\n")[0]).toMatch(/ model=opencode-go\/glm-5\.3$/);
+  expect(record(hard).difficulty).toBe("hard");
+});
+
+test("consent covers the tier models: the CONSENT block names them; one the allowlist leaves out runs its tier on the implement model", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  writeFileSync(join(repo.dir, "plan.md"), PLAN());
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { hard: "opencode-go/kimi-k3" }, hard_tasks: "self" }));
+  const fake = await startFakeOpencode();
+  onTestFinished(fake.close);
+  const unapproved = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" } });
+  onTestFinished(unapproved.close);
+  // the repo's hard_tasks reaches the instructions, read at startup
+  expect(unapproved.client.getInstructions()).toContain("For a hard task, do it yourself instead of delegating.");
+  expect(await callText(unapproved.client, "delegate", { plan: "plan.md", steps: "1", difficulty: "hard" })).toContain("send: code from this repo → OpenCode Go: deepseek-v4.1-flash, kimi-k3, ");
+
+  fake.script(EDIT, FINISH);
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: ["--models", "opencode-go/deepseek-v4.1-flash"] });
+  onTestFinished(server.close);
+  const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1", difficulty: "hard" });
+  expect(text.split("\n")[0]).toMatch(/^OK .* cost=\$0\.000$/);
+  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" });
 });

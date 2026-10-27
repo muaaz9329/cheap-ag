@@ -17,7 +17,7 @@ test("server identifies itself as cheapag", () => {
 test("server instructions carry the usage rules, within Claude Code's 4,096-character cut", () => {
   const instructions = server.client.getInstructions()!;
   expect(instructions.length).toBeLessThanOrEqual(4096);
-  expect(instructions.length / 4).toBeLessThanOrEqual(400); // ≈ tokens
+  expect(instructions.length / 4).toBeLessThanOrEqual(450); // ≈ tokens; ticket 26's difficulty hint and hard_tasks rule included
   for (const rule of [
     "Send every code change to delegate, including small, mechanical", "delegate(task:", "Bash file writes (heredocs, redirects, sed -i) are editing too", "Don't open source files before delegating", "delegate brief:", "Trust an OK: don't re-run its tests or read its diff.", "After a FAIL, do the task yourself", "Tests: run only the test file or id the task concerns", "never the whole suite",
     "cheapag results: the first word decides.", "OK: landed (uncommitted).", "FAIL: read error+tried, then do it yourself.",

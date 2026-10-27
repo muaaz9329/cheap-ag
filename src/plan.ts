@@ -1,3 +1,5 @@
+import { DIFFICULTIES, type Difficulty } from "./routing.js";
+
 /** Plan format contract (spec D2): one H1, optional context, one H2 per step with lowercase `key:` fields. */
 
 export type PlanStep = { id: string; title: string; fields: Record<string, string>; text: string };
@@ -7,7 +9,7 @@ const REQUIRED = ["files", "done-when"];
 
 /** The plan grammar in one line, for Claude: the delegate tool description and every plan-error FAIL carry it. */
 export const PLAN_FORMAT =
-  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>"), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks.';
+  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>", "difficulty: easy|medium|hard"), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks.';
 
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
@@ -55,6 +57,8 @@ export function parsePlan(source: string): Plan {
   for (const step of steps) {
     const missing = REQUIRED.filter((key) => !step.fields[key]);
     if (missing.length) throw new Error(`step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`);
+    const d = step.fields.difficulty;
+    if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty)) throw new Error(`step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`);
   }
   return { title, context: context.join("\n").trim(), steps: steps.map(({ line, ...step }) => ({ ...step, text: step.text.trim() })) };
 }

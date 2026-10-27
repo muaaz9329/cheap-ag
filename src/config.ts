@@ -6,8 +6,11 @@ import type { ModelsConfig } from "./routing.js";
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
 export type Config = {
   test_cmd?: string; integration_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
-  models: ModelsConfig; escalation_skip_at: number; guard_lines: number;
+  models: ModelsConfig; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks;
 };
+/** Who implements a hard task (ticket 26): the worker on `models.hard`, Claude itself, or Claude's own Sonnet subagent. */
+export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
+export type HardTasks = (typeof HARD_TASKS)[number];
 /** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits); `max_parallel` bounds a batch's concurrent groups; `max_blocked_minutes` bounds a wait for `reply`. */
 export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number; max_parallel: number; max_blocked_minutes: number; escalation_turns: number };
 /** How long cleanup keeps an unlanded worktree and a job folder, in days (spec A20). */
@@ -20,6 +23,7 @@ const DEFAULTS: Config = {
   models: {}, // the provider's role defaults (src/routing.ts)
   escalation_skip_at: 0.8,
   guard_lines: 20,
+  hard_tasks: "delegate",
 };
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
@@ -51,7 +55,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks } = value as Record<string, unknown>;
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet
@@ -78,13 +82,14 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   if (models !== undefined && (typeof models !== "object" || models === null || Array.isArray(models))) throw new Error(`${file}: models must be an object`);
   const roles = (models ?? {}) as Record<string, unknown>;
   const name = (v: unknown) => typeof v === "string" && /^[\w.-]+\/\S+$/.test(v);
-  for (const role of ["implement", "research", "escalation"]) {
+  for (const role of ["implement", "medium", "hard", "research", "escalation"]) {
     if (roles[role] !== undefined && !name(roles[role])) throw new Error(`${file}: models.${role} must be a provider/model name, e.g. opencode-go/deepseek-v4.1-flash`);
   }
   if (roles.fallback !== undefined && (!Array.isArray(roles.fallback) || !roles.fallback.every(name))) throw new Error(`${file}: models.fallback must be a list of provider/model names`);
   if (escalation_skip_at !== undefined && (typeof escalation_skip_at !== "number" || !(escalation_skip_at > 0 && escalation_skip_at <= 1))) {
     throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
   }
+  if (hard_tasks !== undefined && !HARD_TASKS.includes(hard_tasks as HardTasks)) throw new Error(`${file}: hard_tasks must be one of ${HARD_TASKS.join(", ")}`);
   if (guard_lines !== undefined && (typeof guard_lines !== "number" || !Number.isInteger(guard_lines) || guard_lines <= 0)) {
     throw new Error(`${file}: guard_lines must be a positive whole number`);
   }
@@ -111,5 +116,6 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     ...(models !== undefined && { models: roles as ModelsConfig }),
     ...(escalation_skip_at !== undefined && { escalation_skip_at }),
     ...(guard_lines !== undefined && { guard_lines }),
+    ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
   };
 }

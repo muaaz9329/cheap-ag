@@ -19,11 +19,12 @@ node bench/swe/run.mjs --long --run 1                   # the long-session scena
 node bench/swe/run.mjs --dry                            # checkouts and commands only
 node bench/swe/run.mjs --quick --label "S1 stable prefix"  # the 7-instance quick set (quick.json), ~15 min
 node bench/swe/ladder.mjs                               # the cost ladder → tasks/cost-ladder.md
+node bench/swe/calibrate.mjs                            # Claude rates each issue easy/medium/hard vs SWE-bench's labels (~$1, no Docker)
 ```
 
 A quick run grades all its patches at the end in one parallel harness call per arm (one at a time added ~10 min) and records its rows with `suite: "swebench-quick"`. Back-to-back quick runs are not comparable: the second starts with a warm prompt cache and costs about half (see tasks/cost-ladder.md).
 
-Flags: `--arms baseline,cheapag`, `--timeout <min>` (default 60), `--label`, `--budget` / `--worker-budget` (stops at 80% of either, default $100 / $5).
+Flags: `--arms baseline,cheapag`, `--timeout <min>` (default 60), `--label`, `--budget` / `--worker-budget` (stops at 80% of either, default $100 / $5). The cheapag arm's `cheapag.json`: `--worker-model`, `--medium-model`, `--hard-model <provider/id>` and `--hard-tasks <delegate|self|sonnet>`; rows record them, plus Claude's `difficulty_hint` and `agent_calls` from the transcript.
 
 ## How a session runs
 
