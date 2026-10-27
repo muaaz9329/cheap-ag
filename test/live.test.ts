@@ -64,7 +64,7 @@ live("abort on a real session: observed event sequence", async () => {
   onTestFinished(repo.cleanup);
   const server = await startServer({ cwd: repo.dir, logins: { openrouter: key! }, allow: [] });
   onTestFinished(server.close);
-  expect(await callText(server.client, "ping")).toMatch(/^OK .* provider=openrouter via=login$/);
+  expect(await callText(server.client, "ping")).toMatch(/^OK .* provider=openrouter via=login preset=\w+$/);
 
   // a second, test-owned OpenCode on the config ping just generated, so the test holds the password
   const opencode = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {

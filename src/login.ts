@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { loadConfig, userConfigFile } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
 import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
-import { implementModel, modelName } from "./routing.js";
+import { fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig } from "./routing.js";
 import { runSession } from "./worker.js";
 
 /**
@@ -19,15 +20,35 @@ import { runSession } from "./worker.js";
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 const CHECK_TIMEOUT_MS = 90_000;
 
-export async function login(): Promise<number> {
+const CHOICES = [...PRESET_NAMES, "custom"] as const;
+type Choice = (typeof CHOICES)[number];
+const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).includes(s);
+
+export async function login(args: string[] = []): Promise<number> {
   const out = (line = "") => process.stdout.write(redact(line) + "\n");
   if (!isSupported()) {
     out(`✗ ${UNSUPPORTED_REASON}`);
     return 1;
   }
-  if (!process.stdin.isTTY) {
-    out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
+  const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
+  if (args.length && flag === undefined) {
+    out(`✗ usage: cheapag login [--preset ${CHOICES.join("|")}]`);
     return 1;
+  }
+  if (flag !== undefined && !isChoice(flag)) {
+    out(`✗ "${flag}" is not a preset; use one of ${CHOICES.join(", ")}; nothing changed`);
+    return 1;
+  }
+  if (!process.stdin.isTTY) {
+    const saved = detectProvider();
+    if (!saved) {
+      out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
+      return 1;
+    }
+    // no terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the benchmark)
+    const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
+    if (!flag) out(`No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`);
+    return savePreset(saved.provider, choice, out) ? 0 : 1;
   }
   // the live check's OpenCode runs in its own process group; take it down on Ctrl-C too
   process.on("exit", () => stopOpencode(true));
@@ -42,6 +63,12 @@ export async function login(): Promise<number> {
     out(`✗ "${answer}" is not one of 1-${PROVIDERS.length}; nothing changed`);
     return 1;
   }
+  const preset = currentPreset(picked.id) ?? "balanced";
+  const choice = flag ?? ((await ask(`Worker models: cheapest / balanced (recommended) / strongest [${preset}]: `)) || preset);
+  if (!isChoice(choice)) {
+    out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
+    return 1;
+  }
 
   // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
   const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit" });
@@ -49,6 +76,7 @@ export async function login(): Promise<number> {
     out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
     return 1;
   }
+  if (!savePreset(picked.id, choice, out)) return 1;
 
   const provider: Provider = { provider: picked.id, via: "login" };
   const check = await liveCheck(provider);
@@ -61,14 +89,56 @@ export async function login(): Promise<number> {
   return 0;
 }
 
-/** One tiny real call to the implement model, through the bundled OpenCode, in a throwaway directory. */
+/** The user-level config as written, so saving a preset keeps its other keys; {} when there is none. */
+function readUser(): Record<string, unknown> {
+  const file = userConfigFile();
+  if (!existsSync(file)) return {};
+  const value = JSON.parse(readFileSync(file, "utf8"));
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("must hold a JSON object");
+  return value;
+}
+
+/** The preset the user's config holds, when it sets `models` (Enter keeps it); a damaged file counts as none. */
+function currentPreset(provider: Provider["provider"]) {
+  try {
+    const { models } = readUser();
+    return models ? presetOf(provider, models as ModelsConfig) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes the preset as the user config's `models`, other keys kept; custom writes nothing. */
+function savePreset(provider: Provider["provider"], choice: Choice, out: (line?: string) => void) {
+  const file = userConfigFile();
+  if (choice === "custom") {
+    out(`Worker models: custom, nothing written; set "models" in a repo's cheapag.json, or in ${file} for every repo`);
+    return true;
+  }
+  try {
+    const config = { ...readUser(), models: PRESETS[provider][choice] };
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
+  } catch (err) {
+    out(`✗ ${file}: ${(err as Error).message}; worker models not saved`);
+    return false;
+  }
+  out(`✓ Worker models: ${choice} (implement ${PRESETS[provider][choice].implement}), saved in ${file}`);
+  return true;
+}
+
+/** One tiny real call to the implement model the user's config now picks, through the bundled OpenCode, in a throwaway directory. */
 async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
-  const model = implementModel(provider.provider);
-  const name = modelName(model);
   const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
+  let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;
   try {
-    const run = ensureOpencode(provider, dir).then((opencode) =>
+    // the throwaway dir has no cheapag.json, so this is the user's config alone
+    const route = fullRoute(provider.provider, loadConfig(dir).models);
+    const model = route.implement;
+    name = modelName(model);
+    // with the route, OpenCode's config pins this model too (on OpenRouter: data collection denied)
+    const run = ensureOpencode(provider, dir, route).then((opencode) =>
       runSession({
         opencode,
         directory: dir,

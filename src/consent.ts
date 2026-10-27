@@ -3,7 +3,8 @@ import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
 import { failBlock, renderConsent } from "./report.js";
 import { loadConfig } from "./config.js";
-import { fullRoute, modelName, routeModels, type Route, type WorkerModel } from "./routing.js";
+import { fullRoute, modelName, presetOf, routeModels, type Route, type WorkerModel } from "./routing.js";
+import { projectRoot } from "./workspace.js";
 
 /**
  * Consent: nothing leaves the repo until the developer opts in with `cheapag allow` (spec: Consent, A21).
@@ -11,7 +12,8 @@ import { fullRoute, modelName, routeModels, type Route, type WorkerModel } from 
  */
 
 export type ConsentMode = "all" | "zdr-only" | "models";
-export type Consent = { mode: ConsentMode; provider: Provider["provider"]; models?: string[]; approvedAt: string };
+/** `route`: the models the CONSENT block listed when all or zero-retention was given; a preset or `models` change that alters it asks again. */
+export type Consent = { mode: ConsentMode; provider: Provider["provider"]; models?: string[]; route?: string[]; approvedAt: string };
 
 const file = (root: string) => join(root, ".cheapag", "consent.json");
 
@@ -30,7 +32,26 @@ export function readConsent(root: string): Consent | undefined {
 
 export function writeConsent(root: string, consent: Consent) {
   mkdirSync(join(root, ".cheapag"), { recursive: true });
-  writeFileSync(file(root), JSON.stringify(consent, null, 2) + "\n");
+  // an explicit model list bounds the recipients by itself; the other modes are tied to the route they were shown
+  const route = consent.mode === "models" ? undefined : routeNames(fullRoute(consent.provider, configuredModels(root)));
+  writeFileSync(file(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
+}
+
+const routeNames = (r: Route) => routeModels(r).map(modelName);
+
+/** The models config now routes to other models than the consent was shown (not judged on a damaged config, which the job's own load reports; a record from before routes were kept has none). */
+export function routeMoved(root: string, consent: Consent) {
+  const models = configuredModels(root);
+  return !!models && !!consent.route && String(consent.route) !== String(routeNames(fullRoute(consent.provider, models)));
+}
+
+/** `preset=` for ping and status: the preset the effective `models` here match (the repo's config too, inside one). */
+export function presetHere(provider: Provider["provider"]) {
+  let root = process.cwd();
+  try {
+    root = projectRoot(root);
+  } catch {} // outside a repo only the user's config applies
+  return presetOf(provider, configuredModels(root));
 }
 
 // OpenRouter's provider-routing preference that restricts it to Zero Data Retention endpoints (openrouter.ai/docs, provider routing)
@@ -66,8 +87,8 @@ function withZdr(m: WorkerModel): WorkerModel {
 export function consentGate(root: string, provider: Provider["provider"]): { block: string } | { route: Route } {
   const consent = readConsent(root);
   const full = fullRoute(provider, configuredModels(root));
-  // consent names the provider it was given for: a new login elsewhere needs a new opt-in
-  if (!consent || consent.provider !== provider) return { block: consentBlock(root, provider, full) };
+  // consent names the provider it was given for: a new login elsewhere needs a new opt-in; so does another route
+  if (!consent || consent.provider !== provider || routeMoved(root, consent)) return { block: consentBlock(root, provider, full) };
   const zdr = consent.mode === "zdr-only" && provider === "openrouter";
   const pick = (ms: (WorkerModel | undefined)[]) => ms.filter((m): m is WorkerModel => !!m && allowed(provider, consent, m)).map((m) => (zdr ? withZdr(m) : m));
   const [implement, ...fallbacks] = pick([full.implement, ...full.fallbacks, full.escalation]);

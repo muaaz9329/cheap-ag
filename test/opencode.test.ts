@@ -1,10 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
+import { PRESETS } from "../src/routing.js";
 import { callText, startServer } from "./harness.js";
 
 const require = createRequire(import.meta.url);
@@ -43,14 +44,25 @@ test("opencode-ai and its SDK are pinned to the same exact version", () => {
 });
 
 test.each([
-  ["OpenCode Go wins over the others", { deepseek: "d", openrouter: "o", "opencode-go": "g" }, "provider=opencode-go via=login"],
-  ["OpenRouter wins over DeepSeek", { deepseek: "d", openrouter: "o" }, "provider=openrouter via=login"],
-  ["DeepSeek alone", { deepseek: "d" }, "provider=deepseek via=login"],
+  ["OpenCode Go wins over the others", { deepseek: "d", openrouter: "o", "opencode-go": "g" }, "provider=opencode-go via=login preset=balanced"],
+  ["OpenRouter wins over DeepSeek", { deepseek: "d", openrouter: "o" }, "provider=openrouter via=login preset=balanced"],
+  ["DeepSeek alone", { deepseek: "d" }, "provider=deepseek via=login preset=balanced"],
   ["an unsupported provider's login is not used", { anthropic: "a" }, null],
   ["env keys without a login are ignored", {}, null],
 ] as const)("credentials from saved logins only: %s", async (_, logins, expected) => {
   const text = await pingWith({ OPENCODE_GO_API_KEY: "g", OPENROUTER_API_KEY: "o", DEEPSEEK_API_KEY: "d", CHEAPAG_OPENCODE_URL: await fakeHealth(PIN) }, logins);
   expect(text).toBe(expected ? `OK cheapag ${pkg.version} opencode=${PIN} ${expected}` : "FAIL reason: no worker provider; run npx cheap-agent login");
+});
+
+test("ping names the preset the user's config picks, or custom when it matches none", async () => {
+  const server = await startServer({ env: { CHEAPAG_OPENCODE_URL: await fakeHealth(PIN) }, logins: { openrouter: "o" } });
+  onTestFinished(server.close);
+  const dir = join(server.home, "config", "cheapag");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ models: PRESETS.openrouter.strongest }));
+  expect(await callText(server.client, "ping")).toBe(`OK cheapag ${pkg.version} opencode=${PIN} provider=openrouter via=login preset=strongest`);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ models: { implement: "openrouter/qwen/qwen3.7-plus" } }));
+  expect(await callText(server.client, "ping")).toMatch(/ via=login preset=custom$/);
 });
 
 test("refuses with FAIL when the OpenCode server reports a different version", async () => {
@@ -110,7 +122,7 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
 
   expect(children(server.pid)).toEqual([]); // nothing started until first use
   const text = await callText(server.client, "ping");
-  expect(text).toBe(`OK cheapag ${pkg.version} opencode=${PIN} provider=opencode-go via=login`);
+  expect(text).toBe(`OK cheapag ${pkg.version} opencode=${PIN} provider=opencode-go via=login preset=balanced`);
 
   const [opencodePid] = children(server.pid);
   const listening = execFileSync("lsof", ["-a", "-p", String(opencodePid), "-iTCP", "-sTCP:LISTEN", "-nP"]).toString();

@@ -34,11 +34,39 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
   deepseek: { implement: ["deepseek-flash"], research: ["deepseek-flash"], escalation: "deepseek-v4-pro" },
 };
 
+/** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
+export const PRESET_NAMES = ["cheapest", "balanced", "strongest"] as const;
+export type Preset = (typeof PRESET_NAMES)[number];
+// balanced is the default route, Flash for every tier: GLM-5.3 cost Claude 1.5x fewer tokens than Flash on the tasks Flash
+// lost (ticket 25) but showed no gain on the hard tier (26), so it is opt-in as strongest. cheapest is balanced until a
+// cheaper worker than Flash exists (a tie reports balanced). Kimi K3 was dropped: $0.36 worker per task, BUDGET on half.
+export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
+  "opencode-go": {
+    cheapest: { implement: "opencode-go/deepseek-v4.1-flash" },
+    balanced: { implement: "opencode-go/deepseek-v4.1-flash" },
+    strongest: { implement: "opencode-go/glm-5.3", medium: "opencode-go/glm-5.3" },
+  },
+  openrouter: {
+    cheapest: { implement: "openrouter/deepseek/deepseek-v4.1-flash" },
+    balanced: { implement: "openrouter/deepseek/deepseek-v4.1-flash" },
+    strongest: { implement: "openrouter/z-ai/glm-5.3", medium: "openrouter/z-ai/glm-5.3" },
+  },
+  // direct DeepSeek has no GLM: strongest implements on V4 Pro
+  deepseek: {
+    cheapest: { implement: "deepseek/deepseek-flash" },
+    balanced: { implement: "deepseek/deepseek-flash" },
+    strongest: { implement: "deepseek/deepseek-v4-pro" },
+  },
+};
+
+/** The preset whose route `models` gives on this provider, else custom (`preset=` in ping and status); a tie names balanced, the default. */
+export function presetOf(provider: ProviderId, models: ModelsConfig = {}): Preset | "custom" {
+  const key = (m: ModelsConfig) => JSON.stringify(fullRoute(provider, m));
+  return (["balanced", "cheapest", "strongest"] as const).find((p) => key(PRESETS[provider][p]) === key(models)) ?? "custom";
+}
+
 const model = (provider: ProviderId, id: string): WorkerModel =>
   provider === "openrouter" ? { providerID: provider, id, options: OPENROUTER_PRIVATE } : { providerID: provider, id };
-
-/** The implement model alone (the login live check). */
-export const implementModel = (provider: ProviderId) => model(provider, ROLES[provider].implement[0]);
 
 /**
  * The models one job may run. `fallbacks` continue the session, in order, when the current model hits a provider limit;

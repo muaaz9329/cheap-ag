@@ -21,15 +21,19 @@ export function hermeticHome(logins: Logins = {}) {
     const auth = Object.fromEntries(Object.entries(logins).map(([id, key]) => [id, { type: "api", key }]));
     writeFileSync(join(home, "data", "opencode", "auth.json"), JSON.stringify(auth), { mode: 0o600 });
   }
+  return { home, env: homeEnv(home) };
+}
+
+/** The CLI env for a hermetic home, e.g. a running server's, to run `allow` or `login` beside it. */
+export function homeEnv(home: string) {
   const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
-  const env = {
+  return {
     ...inherited,
     XDG_DATA_HOME: join(home, "data"),
     XDG_CONFIG_HOME: join(home, "config"),
     XDG_CACHE_HOME: join(home, "cache"),
     XDG_STATE_HOME: join(home, "state"),
   };
-  return { home, env };
 }
 
 /** Runs the real `cheapag allow <args>` in `cwd`, the way the developer opts a repo in; returns its output. */

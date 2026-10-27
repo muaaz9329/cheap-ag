@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode } from "./fake-opencode.js";
-import { allowRepo, callText, hermeticHome as makeHome, startServer, tempRepo, type Logins } from "./harness.js";
+import { allowRepo, callText, hermeticHome as makeHome, homeEnv, serverEntry, startServer, tempRepo, type Logins } from "./harness.js";
 
 /** A hermetic home for running the CLI outside a server, removed after the test. */
 function hermeticHome(logins?: Logins) {
@@ -109,6 +110,21 @@ test("a consent given for one provider asks again after switching to another", a
   expect(text).toMatch(/^CONSENT /);
   expect(text).toContain("send: code from this repo → OpenRouter: deepseek/deepseek-v4.1-flash, qwen/qwen3.8-flash, z-ai/glm-5.3-flash (+fallbacks qwen/qwen3.7-plus, z-ai/glm-5.3, moonshotai/kimi-k3)\n");
   expect(text).toContain(`retention: depends on the upstream provider OpenRouter routes to; "deny data collection" is always on;`);
+});
+
+test("switching the worker preset after consent asks again; allowing the new route lets the job run", async () => {
+  const { repo, fake, server, delegate } = await scenario({ allow: [] });
+  // the developer re-runs login from a script on the server's own user config
+  const env = homeEnv(server.home);
+  execFileSync(process.execPath, [serverEntry, "login", "--preset", "strongest"], { env, stdio: "pipe" });
+  const text = await delegate();
+  expect(text).toMatch(/^CONSENT /);
+  expect(text).toContain("send: code from this repo → OpenCode Go: glm-5.3, qwen3.8-flash, deepseek-v4-pro (+fallbacks qwen3.7-plus, kimi-k3, deepseek-v4.1-flash)\n");
+  expectUntouched(repo, fake);
+  expect(allowRepo(repo.dir, env)).toContain("models: opencode-go/glm-5.3, opencode-go/qwen3.8-flash");
+  fake.script({ edit: "hello.txt", content: "hi\n" }, FINISH);
+  expect(await delegate()).toMatch(/^OK /);
+  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
 });
 
 test("OpenRouter zero-retention only adds its zdr routing preference to every model, on top of deny data collection", async () => {

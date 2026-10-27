@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { startServer, tempRepo } from "./harness.js";
+import { allowRepo, homeEnv, startServer, tempRepo } from "./harness.js";
 
 const PLAN = "# Rate limit\n\n## 1 limit login\nfiles: src/hello.ts\ndo: export hello = 2\ndone-when: `node check.mjs` passes\n";
 const CHECK = `import { readFileSync } from "node:fs";
@@ -36,7 +36,7 @@ async function scenario(...scripts: Action[][]) {
     ((await server.client.callTool({ name, arguments: args })).content as { text: string }[])[0].text;
   const record = (job: string) => JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"));
   return {
-    repo, fake, record,
+    repo, fake, record, home: server.home,
     delegate: () => call("delegate", { plan: ".plan/p.md", steps: "1" }),
     reply: (job: string, answer: string) => call("reply", { job, answer }),
     jobs: (action: string, job: string) => call("jobs", { action, job }),
@@ -221,10 +221,11 @@ test("time spent BLOCKED does not count toward the minute cap", async () => {
 });
 
 test("while a job holds OpenCode, a config change cannot reboot it: other calls FAIL clearly and the job lives on", async () => {
-  const { repo, delegate, reply, call } = await scenario([ASK, ...edit(2, "answered after the refused reboot")]);
+  const { repo, home, delegate, reply, call } = await scenario([ASK, ...edit(2, "answered after the refused reboot")]);
   const job = jobOf(await delegate());
-  // a different model config makes a different OpenCode config; with the job holding the server it must not reboot
+  // a different model config (allowed by the developer) makes a different OpenCode config; with the job holding the server it must not reboot
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/qwen3.7-plus" } }));
+  allowRepo(repo.dir, homeEnv(home));
   writeFileSync(join(repo.dir, ".plan", "q.md"), PLAN);
   const refused = await call("delegate", { plan: ".plan/q.md", steps: "1" });
   expect(refused).toBe("FAIL reason: the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish");

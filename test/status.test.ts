@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { expect, onTestFinished, test } from "vitest";
+import { PRESETS } from "../src/routing.js";
 import { allowRepo, hermeticHome, serverEntry, tempRepo } from "./harness.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -47,7 +48,7 @@ test("cheapag status: running jobs, recent results newest first, consent, spend 
     { hoursAgo: 24 * 40, model: "opencode-go/qwen3.7-plus", costUsd: 9 }, // outside every window: not shown
   ]);
   const lines = status().trimEnd().split("\n");
-  expect(lines[0]).toBe(`cheapag ${version} provider=opencode-go`);
+  expect(lines[0]).toBe(`cheapag ${version} provider=opencode-go preset=balanced`);
   expect(lines[1]).toMatch(/^consent: zero-retention only \(since \d{4}-\d\d-\d\d\)$/);
   expect(lines.slice(2)).toEqual([
     "running:",
@@ -60,6 +61,24 @@ test("cheapag status: running jobs, recent results newest first, consent, spend 
     "spend (tracked on this machine, all repos; Go windows where capped):",
     "  opencode-go/deepseek-v4.1-flash  5h $4.00/$16.00 (25%)  weekly $10.00/$40.00 (25%)  monthly $10.00/$80.00 (13%)",
   ]);
+});
+
+test("cheapag status names the preset: the user's, a repo's cheapag.json over it, custom when none matches", () => {
+  const { repo, env, status } = setup({ "opencode-go": "k" });
+  const user = join(env.XDG_CONFIG_HOME, "cheapag");
+  mkdirSync(user, { recursive: true });
+  writeFileSync(join(user, "config.json"), JSON.stringify({ models: { implement: "opencode-go/kimi-k3" } }));
+  expect(status().split("\n")[0]).toBe(`cheapag ${version} provider=opencode-go preset=custom`);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  expect(status().split("\n")[0]).toBe(`cheapag ${version} provider=opencode-go preset=strongest`);
+});
+
+test("cheapag status says consent no longer covers the models after a preset change, as the next job would", () => {
+  const { repo, env, status } = setup({ "opencode-go": "k" });
+  allowRepo(repo.dir, env);
+  expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  expect(status().split("\n")[1]).toBe("consent: given for other worker models (preset or models changed); run /cheapag:allow");
 });
 
 test("cheapag status with no login, no jobs and no spend; outside a repository; bad arguments", () => {

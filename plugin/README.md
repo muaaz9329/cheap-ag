@@ -2,6 +2,18 @@
 
 Gives Claude the Cheap Agent MCP server (`delegate`, `research`, `reply`, `jobs`, `land`), the plan-writing skill, `/cheapag:status`, and the user-only commands `/cheapag:allow`, `/cheapag:clean` and `/cheapag:hook`.
 
+## Worker models
+
+`npx cheap-agent login` asks which worker models to use, after the provider. Each preset picks the implement and escalation models for your provider (OpenCode Go, OpenRouter or DeepSeek):
+
+- **cheapest**: the lowest worker spend. Claude takes over more often when the worker fails.
+- **balanced** (the default): the preset the benchmark measured and recommends.
+- **strongest**: the strongest cheap models, for when you would rather pay the worker than have Claude take over.
+
+Measured on SWE-bench Verified (OpenRouter): Flash's worker cost is about $0.005 per easy task and $0.03 per hard one; GLM-5.3 costs about $0.06 on the hard ones, and there Claude used 1.5x fewer tokens than with Flash, because GLM-5.3's failures cost Claude less to recover from. On the hard tier alone GLM-5.3 showed no gain, so `balanced` keeps Flash everywhere and `strongest` (GLM-5.3 for every task) is opt-in. `cheapest` is the same as `balanced` today.
+
+The choice goes into `models` in `~/.config/cheapag/config.json`. Run `npx cheap-agent login --preset <cheapest|balanced|strongest>` to switch without the prompts. `ping` and `cheapag status` show it as `preset=<name>`. For a finer choice, set `models` (`implement`, `research`, `escalation`, `fallback`, as full `provider/model` names) in a repo's `cheapag.json`, which overrides the user config, or in the user config itself; answering `custom` (or `--preset custom`) makes login leave it as you wrote it. Changing the models after `/cheapag:allow` makes the next job ask for it again, with the new list.
+
 ## What it costs to keep in context
 
 Everything Claude Code loads at session start is sent again on every turn: the system prompt, tool definitions, every enabled skill's description, plugin instructions and CLAUDE.md. A bigger prefix means each turn costs more, and a prefix that changes between sessions is rewritten at full price instead of read from cache. Measured on a real machine (Claude Code 2.1.285), a session that only answers "OK" cost $0.10 with ~100 user plugins and skills enabled, against $0.02–0.04 with only what the task needs.

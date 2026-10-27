@@ -28,9 +28,11 @@ const DEFAULTS: Config = {
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 
+/** The user-level config every repo's `cheapag.json` overrides; `cheapag login` writes its `models` (the preset). */
+export const userConfigFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
+
 export function loadConfig(root: string): Config {
-  const user = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
-  const [mine, repo] = [read(user), read(join(root, "cheapag.json"))];
+  const [mine, repo] = [read(userConfigFile()), read(join(root, "cheapag.json"))];
   // caps, retention and models merge key by key, so a repo can set one and keep the user's others
   return {
     ...DEFAULTS, ...mine, ...repo,

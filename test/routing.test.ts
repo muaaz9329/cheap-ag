@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { callText, startServer, tempRepo, type Logins } from "./harness.js";
+import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from "./harness.js";
 import { loadConfig } from "../src/config.js";
 import { parsePlan } from "../src/plan.js";
 import { fullRoute, modelName, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
@@ -168,8 +168,10 @@ test("config models override the role defaults; a model for another provider is 
 });
 
 test("config models: the job runs on the configured implement model; a malformed models entry is a FAIL before any job", async () => {
-  const { repo, fake, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
+  const { repo, fake, server, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/glm-5.3" } }));
+  expect(await delegate()).toMatch(/^CONSENT /); // another route than the one allowed
+  allowRepo(repo.dir, homeEnv(server.home));
   expect(await delegate()).toMatch(/^OK /);
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
 
@@ -231,6 +233,7 @@ test("a difficulty hint routes the job to its tier model: model= in the headline
   const { tools } = await server.client.listTools();
   expect(tools.find((t) => t.name === "delegate")!.inputSchema.properties!.difficulty).toMatchObject({ type: "string", enum: ["easy", "medium", "hard"] });
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { medium: "opencode-go/glm-5.3" } }));
+  allowRepo(repo.dir, homeEnv(server.home)); // a tier model changes the route, so consent is given again (ticket 27)
   const delegate = (args: Record<string, unknown>) => callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...args });
 
   const medium = await delegate({ difficulty: "medium" });
