@@ -106,13 +106,10 @@ test("guard_lines comes from the repo's cheapag.json", () => {
   expect(run("Write", { file_path: "f.ts", content: lines(6) })).toMatch(/Large edit \(6 changed lines, over 5\)/);
 });
 
-test("context: the SessionStart hook prints the delegation rule as additionalContext", () => {
+test("context: the SessionStart hook prints a one-line pointer to delegate; the rules stay in the server instructions", () => {
   const out = JSON.parse(execFileSync(process.execPath, [serverEntry, "hook", "context"], { encoding: "utf8" }));
   expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
-  expect(out.hookSpecificOutput.additionalContext).toMatch(/every code change.*including small, mechanical/s);
+  expect(out.hookSpecificOutput.additionalContext).toContain("delegate tool");
   expect(out.hookSpecificOutput.additionalContext).toContain('task: "<what to change, which files, how to check>"');
-  expect(out.hookSpecificOutput.additionalContext).toContain("Only when its headline says repro=unverified or repro=none, read the diff once"); // trust OK unless the repro is missing
-  expect(out.hookSpecificOutput.additionalContext).toContain("After a FAIL, do the task yourself");
-  expect(out.hookSpecificOutput.additionalContext).toContain("Tests: run only the test file or id the task concerns"); // the verification budget
-  expect(out.hookSpecificOutput.additionalContext).toContain("Don't open source files before delegating"); // delegate before reading
+  expect(out.hookSpecificOutput.additionalContext.length).toBeLessThan(250); // rewritten every session, after the cache breakpoint
 });

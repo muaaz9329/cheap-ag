@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { projectRoot } from "./workspace.js";
-import { REVIEW_RULE, SCOUT_RULE, VERIFY_RULE } from "./rules.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Bash"]);
@@ -58,10 +57,10 @@ export function hook(args: string[]): number {
 }
 
 /**
- * The plugin's SessionStart hook: puts the delegation rule into the session's own context, where it weighs more than
- * the MCP server's instructions (benchmark run 2: Claude saw those and still wrote code itself, "small mechanical change").
+ * The plugin's SessionStart hook: one line pointing at delegate. The rules live in the server instructions only, since
+ * this context lands after Claude Code's cache breakpoint and is rewritten every session (ticket 24.2).
  */
-export const SESSION_CONTEXT = `Cheap Agent is connected in this session. Its cheap worker model writes code so the user's Claude tokens aren't spent on it. For every code change you make here, including small, mechanical, "quick" or multi-file ones, call the cheapag delegate tool with task: "<what to change, which files, how to check>" instead of editing files yourself (Edit/Write, or Bash heredocs, redirects, sed -i). Then read its result block: OK means it already passed its checks and landed. ${REVIEW_RULE} Otherwise only edit directly when the user asks you to, or to fix one line after a worker result. ${SCOUT_RULE} ${VERIFY_RULE}`;
+export const SESSION_CONTEXT = `Cheap Agent is connected: send every code change to its delegate tool (task: "<what to change, which files, how to check>"); its server instructions have the rules.`;
 
 function context(): number {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: SESSION_CONTEXT } }) + "\n");

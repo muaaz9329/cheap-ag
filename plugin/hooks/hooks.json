@@ -1,5 +1,5 @@
 {
-  "description": "Cheap Agent: SessionStart adds the delegation rule to the session's context; the edit guard (edits and Bash file writes) is off until /cheapag:hook on, and its shell test keeps it free (no npx) while off.",
+  "description": "Cheap Agent: SessionStart adds a one-line pointer to the delegate tool; the edit guard (edits and Bash file writes) is off until /cheapag:hook on, and its shell test keeps it free (no npx) while off.",
   "hooks": {
     "PreToolUse": [
       {
