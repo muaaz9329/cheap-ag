@@ -85,18 +85,28 @@ async function singles() {
  */
 async function longSessions() {
   const n = Number(opts.run ?? 1);
-  const seq = all.filter((i) => i.long_session).sort((a, b) => a.long_session - b.long_session);
+  // --instances sets the sequence in its own order (ticket 24.3: the quick set's django instances)
+  const seq = opts.instances
+    ? opts.instances.split(",").map((id) => all.find((i) => i.instance_id === id) ?? fail(`unknown instance ${id}`))
+    : all.filter((i) => i.long_session).sort((a, b) => a.long_session - b.long_session);
   for (const arm of arms) {
     overBudget();
     const dir = checkout(seq[0], `long_${arm}_${n}`, arm);
-    let sessionId;
+    let sessionId, before;
     for (const [k, inst] of seq.entries()) {
       if (k) reset(dir, inst, arm);
       const row = await session(inst, arm, dir, [problem(inst)], sessionId);
       sessionId = row.session_id ?? sessionId;
-      record({ ...row, run: n, long_session: k + 1, ...(await grade(inst, arm, `long${n}-${k + 1}`, dir)) });
+      record({ ...row, ...sinceLast(row, before), run: n, long_session: k + 1, ...(await grade(inst, arm, `long${n}-${k + 1}`, dir)) });
+      before = row;
     }
   }
+}
+
+/** A resumed session reports its cost and the transcript's counts for the whole session so far; keep this task's share. */
+const SESSION_TOTALS = ["claude_cost_usd", "tool_uses", "delegate_calls", "research_calls", "claude_edits", "test_runs", "bash_writes"];
+function sinceLast(row, before) {
+  return before ? Object.fromEntries(SESSION_TOTALS.map((f) => [f, (row[f] ?? 0) - (before[f] ?? 0)])) : {};
 }
 
 /** A worktree of the instance's repo at its base commit, with the test script and, for cheapag, its config and consent. */
