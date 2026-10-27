@@ -19,6 +19,8 @@ const arms = (opts.arms ?? "baseline,cheapag").split(",");
 const timeoutMs = Number(opts.timeout ?? 60) * 60_000;
 // spend guards (ticket 21.1): stop once the running totals pass 80% of either budget
 const CLAUDE_BUDGET = Number(opts.budget ?? 100), WORKER_BUDGET = Number(opts["worker-budget"] ?? 5);
+// --worker-model <provider/id> (ticket 25): the cheapag arm's implement model, written to each checkout's cheapag.json
+const WORKER_MODEL = opts["worker-model"] ?? null;
 // S1 (ticket 23.1), on by default since: no user plugins/skills/settings, per-machine prompt sections moved out of the
 // cached prefix, no git-instructions boilerplate; the baseline also drops skills (cheapag needs its plugin's). --no-lean: as runs 1-2
 const LEAN = !opts["no-lean"];
@@ -154,7 +156,7 @@ function setup(dir, inst, arm) {
   chmodSync(join(dir, "swebench-test.sh"), 0o755);
   if (!arm.startsWith("cheapag")) return;
   // no test_cmd: with no arguments the script runs the whole suite (an hour+ under Rosetta); plans name their tests
-  writeFileSync(join(dir, "cheapag.json"), JSON.stringify({ allow_commands: ["./swebench-test.sh"] }));
+  writeFileSync(join(dir, "cheapag.json"), JSON.stringify({ allow_commands: ["./swebench-test.sh"], ...(WORKER_MODEL && { models: { implement: WORKER_MODEL } }) }));
   const allow = spawnSync(process.execPath, [dist, "allow"], { cwd: dir, encoding: "utf8" });
   if (allow.status !== 0) fail(`cheapag allow failed in ${dir}:\n${allow.stdout}${allow.stderr}`);
 }
@@ -216,7 +218,7 @@ async function session(inst, arm, dir, [prompt], resume) {
   const worker = jobMetrics(dir, jobsBefore);
   return {
     suite: SUITE, task: inst.instance_id, instance_id: inst.instance_id, kind: inst.difficulty, difficulty: inst.difficulty,
-    repo: inst.repo, arm, model: MODEL, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, verify_rule: VERIFY, dir, session_id: out.session_id ?? null, timed_out: timedOut,
+    repo: inst.repo, arm, model: MODEL, worker_model: cheap ? WORKER_MODEL : null, claude_version: CLAUDE_VERSION, lean: LEAN, warm: WARM, verify_rule: VERIFY, dir, session_id: out.session_id ?? null, timed_out: timedOut,
     subtype: out.subtype ?? null, budget_hit: out.subtype === "error_max_budget_usd", turns_hit: out.subtype === "error_max_turns",
     input_tokens: usage.input_tokens ?? 0, cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
