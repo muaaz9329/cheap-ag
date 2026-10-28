@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-label="Same feature, same prompt: Claude Code alone used 154k Opus tokens in 5 turns; with Cheap Agent 57k Opus tokens in 2 turns, 63% fewer, and the cheap model cost half a cent. Both versions pass all their tests.">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f2a3a"/>
+      <stop offset="1" stop-color="#1a1a19"/>
+    </linearGradient>
+  </defs>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .k { fill: #c3c2b7; font-size: 15px; letter-spacing: .06em; }
+    .big { fill: #f0efec; font-size: 64px; font-weight: 800; letter-spacing: -.02em; }
+    .acc { fill: #3987e5; }
+    .lab { fill: #c3c2b7; font-size: 16px; }
+    .foot { fill: #8f8e88; font-size: 13px; }
+  </style>
+  <rect width="880" height="360" rx="18" fill="url(#g)"/>
+  <text x="44" y="58" class="k">SAME FEATURE · SAME PROMPT · CLAUDE CODE (OPUS) WITH VS WITHOUT CHEAP AGENT</text>
+
+  <text x="44" y="150" class="big"><tspan class="acc">−63%</tspan></text>
+  <text x="44" y="182" class="lab">Opus tokens (154k → 57k)</text>
+
+  <text x="330" y="150" class="big">2<tspan class="lab" dx="10" style="font-size:28px;font-weight:600">turns</tspan></text>
+  <text x="330" y="182" class="lab">instead of 5</text>
+
+  <text x="600" y="150" class="big">½¢</text>
+  <text x="600" y="182" class="lab">what the cheap model cost</text>
+
+  <rect x="44" y="216" width="792" height="1" fill="#3a3a38"/>
+  <text x="44" y="256" class="lab" style="fill:#f0efec;font-size:18px;font-weight:600">Both versions pass all their tests. Opus never wrote a line of the code.</text>
+  <text x="44" y="290" class="foot">Task: add monthly budgets and CSV export to an existing Node.js expense tracker. Opus 5.5, Claude Code, one run each.</text>
+  <text x="44" y="312" class="foot">Benchmarks on 16 SWE-bench Verified tasks below, including where it does worse.</text>
+</svg>

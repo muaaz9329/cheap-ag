@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330" role="img" aria-label="Opus tokens with Cheap Agent as a share of plain Claude Code: a feature in existing code 37 percent, both pass all tests; 7 everyday SWE-bench bug fixes 41 percent, 7 of 7 solved in both; 9 of the hardest SWE-bench bugs 33 percent plus Sonnet cleanup, 5 of 9 solved versus 7 of 9.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .t { fill: #f0efec; font-size: 18px; font-weight: 700; }
+    .s { fill: #c3c2b7; font-size: 13px; }
+    .row { fill: #f0efec; font-size: 15px; font-weight: 600; }
+    .val { fill: #f0efec; font-size: 15px; font-weight: 700; }
+    .note { fill: #c3c2b7; font-size: 13px; }
+    .ax { fill: #8f8e88; font-size: 12px; }
+  </style>
+  <rect width="880" height="330" rx="18" fill="#1a1a19"/>
+  <text x="32" y="44" class="t">Opus tokens with Cheap Agent, as a share of plain Claude Code</text>
+  <text x="32" y="66" class="s">Lower is better. The dashed line is plain Claude Code doing the same tasks.</text>
+
+  <!-- scale: 0% at x=300, 100% at x=780 (4.8px per %) -->
+  <line x1="300" y1="92" x2="300" y2="282" stroke="#3a3a38" stroke-width="1"/>
+  <line x1="780" y1="92" x2="780" y2="282" stroke="#8f8e88" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="780" y="302" class="ax" text-anchor="middle">100% · plain Claude Code</text>
+  <text x="300" y="302" class="ax" text-anchor="middle">0%</text>
+
+  <text x="32" y="122" class="row">A feature in existing code</text>
+  <text x="32" y="141" class="note">both pass all their tests</text>
+  <path d="M300 110 h173.6 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-173.6 z" fill="#3987e5"/>
+  <text x="486" y="124" class="val">37%</text>
+
+  <text x="32" y="182" class="row">Everyday bug fixes</text>
+  <text x="32" y="201" class="note">7 SWE-bench tasks · 7/7 solved, same as plain</text>
+  <path d="M300 170 h192.8 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-192.8 z" fill="#3987e5"/>
+  <text x="505" y="184" class="val">41%</text>
+
+  <text x="32" y="242" class="row">The hardest bugs</text>
+  <text x="32" y="261" class="note">9 SWE-bench tasks · 5/9 solved vs 7/9 plain</text>
+  <path d="M300 230 h154.4 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-154.4 z" fill="#3987e5"/>
+  <text x="467" y="244" class="val">33%</text>
+  <text x="510" y="244" class="note">+ Sonnet cleanup</text>
+</svg>

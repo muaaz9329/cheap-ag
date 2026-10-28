@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" role="img" aria-label="How it works: you ask Claude; Opus writes a short task; a cheap model works in its own copy of your project, writes a test that fails, fixes the code, makes the test pass; Cheap Agent runs the tests itself and only passing work lands in your project, uncommitted; Opus reads a ten-line result and tells you. If the cheap model can't finish, a Sonnet helper finishes the step instead of Opus.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .h { fill: #f0efec; font-size: 15px; font-weight: 700; }
+    .p { fill: #c3c2b7; font-size: 12.5px; }
+    .tag { fill: #3987e5; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+  </style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#8f8e88"/></marker></defs>
+  <rect width="880" height="300" rx="18" fill="#1a1a19"/>
+
+  <rect x="24" y="40" width="190" height="130" rx="12" fill="#242423" stroke="#3a3a38"/>
+  <text x="40" y="66" class="tag">OPUS · EXPENSIVE</text>
+  <text x="40" y="92" class="h">Plans</text>
+  <text x="40" y="116" class="p">Turns your ask into one</text>
+  <text x="40" y="134" class="p">short task. Reads no code.</text>
+
+  <rect x="244" y="40" width="210" height="130" rx="12" fill="#242423" stroke="#3987e5"/>
+  <text x="260" y="66" class="tag">CHEAP MODEL · ½¢</text>
+  <text x="260" y="92" class="h">Codes, in its own copy</text>
+  <text x="260" y="116" class="p">Explores, writes a failing</text>
+  <text x="260" y="134" class="p">test, fixes, makes it pass.</text>
+
+  <rect x="484" y="40" width="180" height="130" rx="12" fill="#242423" stroke="#3a3a38"/>
+  <text x="500" y="66" class="tag">CHEAP AGENT</text>
+  <text x="500" y="92" class="h">Checks the proof</text>
+  <text x="500" y="116" class="p">Runs the tests itself. Only</text>
+  <text x="500" y="134" class="p">passing work lands.</text>
+
+  <rect x="694" y="40" width="162" height="130" rx="12" fill="#242423" stroke="#3a3a38"/>
+  <text x="710" y="66" class="tag">OPUS</text>
+  <text x="710" y="92" class="h">Tells you</text>
+  <text x="710" y="116" class="p">Reads a 10-line result.</text>
+  <text x="710" y="134" class="p">Leaves it uncommitted.</text>
+
+  <line x1="214" y1="105" x2="240" y2="105" stroke="#8f8e88" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="454" y1="105" x2="480" y2="105" stroke="#8f8e88" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="664" y1="105" x2="690" y2="105" stroke="#8f8e88" stroke-width="2" marker-end="url(#a)"/>
+
+  <path d="M349 170 V222 H600" fill="none" stroke="#8f8e88" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#a)"/>
+  <rect x="604" y="200" width="252" height="68" rx="12" fill="#242423" stroke="#3a3a38"/>
+  <text x="620" y="226" class="tag">STUCK? SONNET FINISHES</text>
+  <text x="620" y="250" class="p">Not Opus. It starts from the cheap</text>
+  <text x="620" y="266" class="p">model's notes, not from zero.</text>
+  <text x="362" y="214" class="p">couldn't finish</text>
+</svg>

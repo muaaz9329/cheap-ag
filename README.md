@@ -1,94 +1,152 @@
-# Cheap Agent
+<h1 align="center">Cheap Agent</h1>
 
-**Make your Claude Code plan last longer.** Claude stays in charge: it understands what you want, plans the change and tells you the result. A cheap model (DeepSeek by default) writes the code in a private copy of your project, proves it with a test, and only working changes come back. Claude spends its tokens thinking, not typing.
+<p align="center">
+  <em>Your Opus is a principal engineer. Stop paying it to type.</em>
+</p>
 
-## Install (one command)
+<p align="center">
+  <img src="https://img.shields.io/npm/v/cheap-agent?style=flat-square&color=111111&label=npm" alt="npm">
+  <img src="https://img.shields.io/badge/for-Claude%20Code-111111?style=flat-square" alt="For Claude Code">
+  <img src="https://img.shields.io/badge/cheap%20model-%C2%BD%C2%A2%20a%20task-111111?style=flat-square" alt="Cheap model: half a cent a task">
+  <img src="https://img.shields.io/badge/tested%20on-SWE--bench%20Verified-111111?style=flat-square" alt="Tested on SWE-bench Verified">
+  <img src="https://img.shields.io/badge/license-Elastic%202.0-111111?style=flat-square" alt="Elastic License 2.0">
+</p>
+
+<p align="center">
+  <img src="assets/hero.svg" width="880" alt="Same feature, same prompt: Claude Code alone used 154k Opus tokens in 5 turns; with Cheap Agent 57k Opus tokens in 2 turns, 63% fewer, and the cheap model cost half a cent. Both versions pass all their tests.">
+</p>
+
+<p align="center">
+  <strong>Same feature. Same prompt. 63% fewer Opus tokens.</strong><br>
+  <strong>Your Claude plan lasts longer. Your code still ships with tests.</strong>
+</p>
+
+---
+
+You know the principal engineer. Twenty years in. Sees the whole system at once. Costs a fortune per hour.
+
+You would never pay them to type out a CSV exporter.
+
+But that's exactly what happens every time Opus writes your code: the most expensive model you have, reading files, typing boilerplate, re-running tests, burning through your plan.
+
+**Cheap Agent fixes the org chart.** Opus plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
+
+## The numbers
+
+<p align="center">
+  <img src="assets/chart.svg" width="880" alt="Opus tokens with Cheap Agent as a share of plain Claude Code: a feature in existing code 37 percent, both pass all tests; 7 everyday SWE-bench bug fixes 41 percent, 7 of 7 solved in both; 9 of the hardest SWE-bench bugs 33 percent plus Sonnet cleanup, 5 of 9 solved versus 7 of 9.">
+</p>
+
+Measured in Claude Code with Opus 5.5: the same agent and the same prompts, with and without Cheap Agent. The bug fixes are real issues from real open-source projects ([SWE-bench Verified](https://www.swebench.com)), graded by the official harness.
+
+**What we won't hide:**
+- On the very hardest bugs it solved 5 of 9 where plain Opus solved 7.
+- On tiny jobs (a few lines, or a whole small app from nothing), Opus is already quick, so there's nothing to save.
+
+Cheap Agent shines on the work in between: real features and real fixes in real code. That's most of your day.
+
+## Before / after
+
+**The ask:** *"Add monthly budgets to the expense tracker, plus a CSV export. Tests for everything."*
+
+|  | Claude Code alone | Claude Code + Cheap Agent |
+|---|---|---|
+| Opus tokens | 154k | **57k** |
+| Opus turns | 5 | **2** |
+| Who wrote the code | Opus | a cheap model, for **$0.005** |
+| Tests | 33 passing | **38 passing** |
+
+Opus read the request, wrote one task and read a ten-line result. That's all it did. The cheap model explored the code, wrote a test that failed, made it pass, and handed back a change that works. Same feature, a third of the Opus bill.
+
+## How it works
+
+<p align="center">
+  <img src="assets/flow.svg" width="880" alt="How it works: Opus writes a short task; a cheap model works in its own copy of your project, writes a test that fails, fixes the code and makes the test pass; Cheap Agent runs the tests itself and only passing work lands, uncommitted; Opus reads a ten-line result and tells you. If the cheap model can't finish, a Sonnet helper finishes the step instead of Opus.">
+</p>
+
+- **Every change is proven.** The cheap model must write a test that fails before its fix and passes after. Cheap Agent runs the tests itself; it doesn't take the model's word for it.
+- **Your project stays clean.** Work happens in a private copy (a git worktree). Only passing work lands, uncommitted, so you review the diff like any other.
+- **Opus stays in charge,** but it's held to it: Cheap Agent's hooks stop Opus from quietly redoing work that already passed, or doing a failed step itself when Sonnet can.
+
+## Install
 
 ```bash
 npx cheap-agent
 ```
 
-It asks three things and does the rest:
+Pick a provider (**OpenRouter** if unsure), press Enter for the recommended models, paste your API key. It checks the key works, then adds itself to Claude Code for every project.
 
-1. **Which provider runs the cheap model.** Pick **OpenRouter** if you're unsure.
-2. **Which models.** Press Enter for the recommended one.
-3. **Your API key.** It's typed into a hidden prompt and stored on your computer; Claude never sees it.
+Then, in each project, once:
 
-Then it checks the key works and adds Cheap Agent to Claude Code for all your projects.
-
-**Then, in each project:** open a new Claude Code session and type `/cheapag:allow` once. That's your OK to send that project's code to the cheap model. After that, just ask Claude for changes as you normally would.
-
-### What you need first
-
-- [Claude Code](https://claude.com/claude-code)
-- [Node.js](https://nodejs.org) 20 or newer (the LTS download is fine)
-- An API key with a few dollars of credit, from one of:
-  - [OpenRouter](https://openrouter.ai/keys) (recommended)
-  - [DeepSeek](https://platform.deepseek.com)
-  - [OpenCode Go](https://opencode.ai)
-
-  A typical task costs the cheap model under one cent.
-- macOS or Linux. On Windows, use WSL.
-
-## What it saves
-
-Measured on [SWE-bench Verified](https://www.swebench.com) (real bugs from real open-source projects) and on a small app, against plain Claude Code (Opus) doing the same tasks:
-
-| kind of task | Claude (Opus) tokens | tasks solved |
-|---|---|---|
-| A feature in existing code (expense tracker: budgets + CSV export) | **2.7x fewer** | same (both pass all tests) |
-| Everyday bug fixes (7 SWE-bench tasks) | **2.4x fewer** | same (7 of 7) |
-| The hardest bugs (9 SWE-bench tasks) | **3x fewer**, plus Sonnet doing the cleanup | a little lower (5 of 9 vs 7 of 9) |
-| Tiny tasks (a few lines, or a whole small app from nothing) | no saving | same |
-
-When the cheap model can't finish a step, a Sonnet helper finishes it instead of Opus. Sonnet uses your plan's allowance much more slowly than Opus. Results vary by about 20% from run to run, so try it on your own work.
-
-## Everyday use
-
-You don't need to do anything differently. Claude sends code changes to the cheap model and reports back. Useful commands inside Claude Code:
-
-| command | what it does |
-|---|---|
-| `/cheapag:allow` | give your OK for this project (once per project) |
-| `/cheapag:status` | see recent jobs and what the cheap model has cost |
-| `/cheapag:hook on` | make Claude *always* hand code changes to the cheap model in this project |
-| `/cheapag:clean` | tidy up old job folders |
-
-**Your changes are never committed for you.** They land in your project uncommitted, so you review the diff as usual.
-
-## Privacy
-
-- Code from a project goes to the provider you picked, and only after you run `/cheapag:allow` there. `/cheapag:allow` shows exactly which models get it.
-- Your API key stays on your computer, in the bundled OpenCode's own credential store. It's never put in chat, in environment variables or in Claude's context.
-- With OpenRouter, how long your code is kept depends on the model's host. Cheap Agent asks OpenRouter to avoid hosts that train on your data.
-
-## Settings (optional)
-
-Put a `cheapag.json` in a project to change its behaviour, for example:
-
-```json
-{ "takeover": "self" }
+```
+/cheapag:allow
 ```
 
-| setting | default | meaning |
+**That's it.** Ask Claude for changes like you always do.
+
+**You need:**
+- [Claude Code](https://claude.com/claude-code)
+- [Node.js](https://nodejs.org) 20+
+- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com) or [OpenCode Go](https://opencode.ai)
+
+A few dollars lasts hundreds of tasks. It runs on macOS and Linux; on Windows, use WSL.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
+| `/cheapag:status` | Recent jobs, and what the cheap model has cost you. |
+| `/cheapag:hook on` | No more "I'll just do it myself": Claude *must* hand code changes to the cheap model. |
+| `/cheapag:clean` | Tidy up old job folders. |
+
+## Settings
+
+Optional. Put a `cheapag.json` in a project:
+
+| Setting | Default | What it does |
 |---|---|---|
-| `takeover` | `"sonnet"` | who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (Opus, at most 15 tool calls) |
-| `limits.max_turns` | `25` | the most turns the cheap model gets per step |
-| `models` | from setup | which cheap models to use; rerun `npx cheap-agent login --preset strongest` to switch |
+| `takeover` | `"sonnet"` | Who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (Opus, capped at 15 tool calls). |
+| `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
+| `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
+
+## FAQ
+
+**Is a half-cent model actually any good?**
+On its own, no. With a written task from Opus, a test it has to pass, and a referee that runs that test, yes, most of the time. When it isn't, it says so and Sonnet takes over.
+
+**Does Claude check the work?**
+The tests check the work, and Cheap Agent runs them. Opus checking every passing change cost three times the tokens and caught nothing in our runs, so it trusts a pass. You still review the diff before you commit.
+
+**Where does my code go?**
+To the provider you picked, only after you run `/cheapag:allow` in that project, which also shows exactly which models will see it. Your API key stays on your machine, in a hidden prompt and a local credential store, never in chat.
+
+**Will it commit or push anything?**
+Never. Changes land uncommitted. Your git, your call.
+
+**Why not just use Sonnet for everything?**
+Sonnet still costs real usage on every line it types. The cheap model types for half a cent. Sonnet only gets called when the cheap model is stuck.
+
+**Can I sell it as a service?**
+No. Use it, change it, share it, at any company, for free. Just don't host it and sell it ([Elastic License 2.0](./LICENSE)).
+
+**Why "Cheap Agent"?**
+Because your plan isn't.
 
 ## Update or remove
 
-- **Update:** run `npx cheap-agent@latest` again.
-- **Remove:**
+**Update:**
 
-  ```bash
-  claude plugin uninstall cheapag@cheapag
-  ```
+```bash
+npx cheap-agent@latest
+```
 
-  ```bash
-  claude mcp remove -s user cheapag
-  ```
+**Remove** (two commands):
 
-## License
+```bash
+claude plugin uninstall cheapag@cheapag
+```
 
-[Elastic License 2.0](./LICENSE): free for anyone, individuals and companies, to use, change and share. You may not offer it to others as a hosted or managed service.
+```bash
+claude mcp remove -s user cheapag
+```
