@@ -55,12 +55,14 @@ test("skills: plan-writing for Claude; status, and user-only allow, clean and ho
   }
 });
 
-test("the edit guard hook: PreToolUse on Edit/Write/MultiEdit/Bash, a shell test that skips npx while off, never a failing exit", () => {
+test("the guard hooks: PreToolUse on every tool behind a shell test that skips npx while unused, PostToolUse on cheapag's results, never a failing exit", () => {
   const hooks = json(join(plugin, "hooks", "hooks.json"));
-  expect(Object.keys(hooks.hooks).sort()).toEqual(["PreToolUse", "SessionStart"]);
+  expect(Object.keys(hooks.hooks).sort()).toEqual(["PostToolUse", "PreToolUse", "SessionStart"]);
   // SessionStart puts the delegation rule into the session's context (benchmark run 2: MCP instructions alone were not enough)
   expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook context`, timeout: expect.any(Number) }] }]);
-  expect(hooks.hooks.PreToolUse).toEqual([{ matcher: "Edit|Write|MultiEdit|Bash", hooks: [{ type: "command", command: expect.any(String), timeout: expect.any(Number) }] }]);
+  // ticket 29: every tool, since the take-over budget counts Reads and Bash too
+  expect(hooks.hooks.PreToolUse).toEqual([{ matcher: "*", hooks: [{ type: "command", command: expect.any(String), timeout: expect.any(Number) }] }]);
   const { command } = hooks.hooks.PreToolUse[0].hooks[0];
-  expect(command).toBe(`r=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f "$r/.cheapag/hook.json" ] && npx -y cheap-agent@${version} hook guard; exit 0`);
+  expect(command).toBe(`r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f "$r/.cheapag/hook.json" ] || [ -f "$r/.cheapag/hook/takeover" ]; } && npx -y cheap-agent@${version} hook guard; exit 0`);
+  expect(hooks.hooks.PostToolUse).toEqual([{ matcher: "mcp__.*cheapag__(delegate|jobs|reply|land)", hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook result; exit 0`, timeout: expect.any(Number) }] }]);
 });

@@ -59,9 +59,12 @@ export async function openSession(opts: {
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
 
-  /** `interrupt` ends this prompt only (the session stays usable, e.g. to hand it to another model); `opts.signal` ends the session. */
-  async function run(prompt: string, model?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult> {
-    const { signal } = opts;
+  /**
+   * `interrupt` ends this prompt only (the session stays usable, e.g. to hand it to another model); `opts.signal` ends the
+   * session. `afterStop` runs one more prompt on a stopped session (the findings note), bounded by `interrupt` alone.
+   */
+  async function run(prompt: string, model?: WorkerModel, interrupt?: AbortSignal, afterStop = false): Promise<RunResult> {
+    const signal = afterStop ? undefined : opts.signal;
     if (signal?.aborted) return { text: "", error: "aborted" };
     const abort = new AbortController();
     let backstop: NodeJS.Timeout | undefined;
@@ -176,7 +179,7 @@ export async function openSession(opts: {
       if (interrupt?.aborted && !signal?.aborted) return { finish, text, interrupted: true };
       return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
     } finally {
-      opts.signal?.removeEventListener("abort", stop);
+      signal?.removeEventListener("abort", stop);
       interrupt?.removeEventListener("abort", stop);
       clearTimeout(backstop);
       abort.abort();

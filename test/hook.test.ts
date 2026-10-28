@@ -12,6 +12,7 @@ const repoDir = join(import.meta.dirname, "..");
 const { version } = JSON.parse(readFileSync(join(repoDir, "package.json"), "utf8"));
 const hooks = JSON.parse(readFileSync(join(repoDir, "plugin", "hooks", "hooks.json"), "utf8"));
 const command = (hooks.hooks.PreToolUse[0].hooks[0].command as string).replace(`npx -y cheap-agent@${version}`, `"${process.execPath}" "${serverEntry}"`);
+const resultCommand = (hooks.hooks.PostToolUse[0].hooks[0].command as string).replace(`npx -y cheap-agent@${version}`, `"${process.execPath}" "${serverEntry}"`);
 const lines = (n: number, tag = "x") => Array.from({ length: n }, (_, i) => `${tag}${i}`).join("\n") + "\n";
 
 function setup() {
@@ -31,7 +32,14 @@ function setup() {
     return out.permissionDecisionReason as string;
   };
   const edit = (file: string, old_string: string, new_string: string, prompt?: string) => run("Edit", { file_path: file, old_string, new_string }, { prompt });
-  return { repo, cli, run, edit, env };
+  /** Feeds the PostToolUse hook a cheapag tool's result, as MCP content blocks. */
+  const result = (text: string, prompt = "p1", tool_name = "mcp__plugin_cheapag_cheapag__delegate") => {
+    const input = { session_id: "s1", prompt_id: prompt, cwd: repo.dir, hook_event_name: "PostToolUse", tool_name, tool_input: {}, tool_response: [{ type: "text", text }], tool_use_id: "t" };
+    const r = spawnSync("sh", ["-c", resultCommand], { cwd: repo.dir, env, input: JSON.stringify(input), encoding: "utf8" });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+  };
+  return { repo, cli, run, edit, env, result };
 }
 
 test("off by default: even a large write is left to the normal permission flow", () => {
@@ -112,4 +120,39 @@ test("context: the SessionStart hook prints a one-line pointer to delegate; the 
   expect(out.hookSpecificOutput.additionalContext).toContain("delegate tool");
   expect(out.hookSpecificOutput.additionalContext).toContain('task: "<what to change, which files, how to check>"');
   expect(out.hookSpecificOutput.additionalContext.length).toBeLessThan(250); // rewritten every session, after the cache breakpoint
+});
+
+const FAIL_BLOCK = "FAIL jab12 step=1 files=0 +0/-0 tests=pass turns=12 cost=$0.003\nfound: django/db/models/query.py:only(), proxy model pk\nreason: no reproduction test by turn 12";
+const read = { file_path: "a.ts" };
+
+test("take-over budget: after a FAIL, Claude's 16th tool call in that prompt is denied; cheapag's tools never count; a new prompt is free", () => {
+  const { run, result, repo } = setup();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { takeover_calls: 3 } }));
+  expect(run("Read", read)).toBeNull(); // no take-over yet: the shell test skips node entirely
+  result("OK jab11 step=1 files=1 +1/-1 tests=pass turns=4 cost=$0.002");
+  for (let i = 0; i < 5; i++) expect(run("Bash", { command: "ls" })).toBeNull(); // an OK starts nothing
+  result(FAIL_BLOCK);
+  for (let i = 0; i < 3; i++) expect(run(i ? "Bash" : "Read", i ? { command: "ls" } : read)).toBeNull();
+  expect(run("mcp__plugin_cheapag_cheapag__land", { job: "jab12" })).toBeNull();
+  const reason = run("Read", read);
+  expect(reason).toMatch(/^Take-over budget spent \(3 tool calls after a cheapag FAIL or PARTIAL\): stop now and tell the user what is fixed, what is left and the failing test\./);
+  expect(reason).toContain("limits.takeover_calls");
+  // a second failure in the same prompt does not reset the count
+  result(FAIL_BLOCK.replace("jab12", "jab13"));
+  expect(run("Bash", { command: "ls" })).toMatch(/^Take-over budget spent/);
+  // the user's next prompt ends the take-over
+  expect(run("Bash", { command: "ls" }, { prompt: "p2" })).toBeNull();
+});
+
+test("take-over budget: PARTIAL and TIMEOUT start it too; limits.takeover_calls 0 turns it off", () => {
+  const { run, result, repo } = setup();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { takeover_calls: 1 } }));
+  result("PARTIAL jab14 step=1 files=1 +13/-0 tests=pass turns=25 cost=$0.012\nmissing:\n  - unknown");
+  expect(run("Read", read)).toBeNull();
+  expect(run("Read", read)).toMatch(/^Take-over budget spent \(1 tool calls/);
+  result("TIMEOUT jab15 step=1 files=0 +0/-0 turns=9 cost=$0.01\nreason: minute cap", "p2", "mcp__cheapag__jobs");
+  expect(run("Read", read, { prompt: "p2" })).toBeNull();
+  expect(run("Read", read, { prompt: "p2" })).toMatch(/^Take-over budget spent/);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { takeover_calls: 0 } }));
+  expect(run("Read", read, { prompt: "p2" })).toBeNull();
 });

@@ -12,13 +12,13 @@ export type Config = {
 export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
 export type HardTasks = (typeof HARD_TASKS)[number];
 /** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits); `max_parallel` bounds a batch's concurrent groups; `max_blocked_minutes` bounds a wait for `reply`. */
-export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number; max_parallel: number; max_blocked_minutes: number; repro_by_turns: number };
+export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number; max_parallel: number; max_blocked_minutes: number; repro_by_turns: number; takeover_calls: number };
 /** How long cleanup keeps an unlanded worktree and a job folder, in days (spec A20). */
 export type Retention = { unlanded_worktree_days: number; job_log_days: number };
 
 const DEFAULTS: Config = {
   link_dirs: ["node_modules", ".venv", "venv", "vendor"], allow_commands: ["npx tsc --noEmit"],
-  limits: { max_turns: 25, max_minutes: 20, max_cost_usd: 0.5, max_parallel: 3, max_blocked_minutes: 60, repro_by_turns: 12 },
+  limits: { max_turns: 25, max_minutes: 20, max_cost_usd: 0.5, max_parallel: 3, max_blocked_minutes: 60, repro_by_turns: 12, takeover_calls: 15 },
   retention: { unlanded_worktree_days: 7, job_log_days: 30 },
   models: {}, // the provider's role defaults (src/routing.ts)
   escalation_skip_at: 0.8,
@@ -61,12 +61,14 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet
-  for (const key of ["max_turns", "max_minutes", "max_cost_usd", "max_parallel", "max_blocked_minutes", "repro_by_turns"] as const) {
+  for (const key of ["max_turns", "max_minutes", "max_cost_usd", "max_parallel", "max_blocked_minutes", "repro_by_turns", "takeover_calls"] as const) {
     const v = (limits as Record<string, unknown> | undefined)?.[key];
     if (v === undefined) continue;
-    const whole = key === "max_turns" || key === "max_parallel" || key === "repro_by_turns";
-    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || (whole && !Number.isInteger(v))) {
-      throw new Error(`${file}: limits.${key} must be a positive ${whole ? "whole number" : "number"}`);
+    const whole = key === "max_turns" || key === "max_parallel" || key === "repro_by_turns" || key === "takeover_calls";
+    // takeover_calls 0 turns the take-over budget off (ticket 29)
+    const min = key === "takeover_calls" ? 0 : Number.MIN_VALUE;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < min || (whole && !Number.isInteger(v))) {
+      throw new Error(`${file}: limits.${key} must be a ${min ? "positive" : "non-negative"} ${whole ? "whole number" : "number"}`);
     }
     caps[key] = v;
   }

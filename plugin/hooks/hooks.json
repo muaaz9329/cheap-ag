@@ -1,13 +1,25 @@
 {
-  "description": "Cheap Agent: SessionStart adds a one-line pointer to the delegate tool; the edit guard (edits and Bash file writes) is off until /cheapag:hook on, and its shell test keeps it free (no npx) while off.",
+  "description": "Cheap Agent: SessionStart adds a one-line pointer to the delegate tool; the edit guard (edits and Bash file writes) is off until /cheapag:hook on; after a cheapag FAIL or PARTIAL, Claude's own tool calls in that prompt are capped at limits.takeover_calls. Shell tests keep both free (no npx) while unused.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|Bash",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f \"$r/.cheapag/hook.json\" ] && npx -y cheap-agent@0.1.0 hook guard; exit 0",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f \"$r/.cheapag/hook.json\" ] || [ -f \"$r/.cheapag/hook/takeover\" ]; } && npx -y cheap-agent@0.1.0 hook guard; exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*cheapag__(delegate|jobs|reply|land)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y cheap-agent@0.1.0 hook result; exit 0",
             "timeout": 60
           }
         ]

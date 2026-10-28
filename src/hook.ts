@@ -17,17 +17,22 @@ const BASH_INPLACE = /\b(?:sed|perl)\s+(?:-[a-zA-Z]*i|--in-place)\b/;
 const BASH_CODE_WRITES = /\b(?:python3?|node)\s+-[ce]\b[\s\S]*(?:open\([^)]*["'][wa]|writeFile|writeFileSync|\.write_text)/;
 // the plugin's server and a `cheapag login` registration give the tool different prefixes, so name both
 const REDIRECT = "write a plan step and use the cheapag server's delegate tool (mcp__plugin_cheapag_cheapag__delegate, or mcp__cheapag__delegate) instead.";
+const CHEAPAG_TOOL = /^mcp__(?:plugin_cheapag_)?cheapag__/;
+// a job block whose first word means Claude now does the step itself (the server's FAIL/PARTIAL/TIMEOUT)
+const TAKE_OVER = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /m;
 
 /** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
 const flag = (root: string) => join(root, ".cheapag", "hook.json");
 
 /**
  * `cheapag hook [on|off]`: the user-only `/cheapag:hook` toggles the edit guard for the current repo; no argument
- * shows its state. `cheapag hook guard` is the plugin's PreToolUse hook (spec E6).
+ * shows its state. `cheapag hook guard` is the plugin's PreToolUse hook (spec E6); `cheapag hook result` its PostToolUse
+ * hook on cheapag's own tools, which starts the take-over budget (ticket 29).
  */
 export function hook(args: string[]): number {
   if (args.length === 1 && args[0] === "guard") return guard();
   if (args.length === 1 && args[0] === "context") return context();
+  if (args.length === 1 && args[0] === "result") return result();
   const out = (line: string) => process.stdout.write(line + "\n");
   if (args.length > 1 || (args.length && args[0] !== "on" && args[0] !== "off")) {
     out(`✗ ${USAGE}`);
@@ -73,7 +78,8 @@ function context(): number {
  */
 function guard(): number {
   try {
-    const reason = check(JSON.parse(readFileSync(0, "utf8")));
+    const input = JSON.parse(readFileSync(0, "utf8"));
+    const reason = budget(input) ?? check(input);
     if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }) + "\n");
   } catch {
     // allow
@@ -81,7 +87,68 @@ function guard(): number {
   return 0;
 }
 
-type Input = { session_id?: string; prompt_id?: string; cwd?: string; tool_name?: string; tool_input?: Record<string, unknown> };
+type Input = { session_id?: string; prompt_id?: string; cwd?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
+type TakeOver = { prompt: string; calls: number };
+
+/** Per-session take-over state; the repo-wide marker lets the plugin's shell test skip node when no take-over ever began. */
+const takeOverFile = (root: string, session: string) => join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
+const takeOverMarker = (root: string) => join(root, ".cheapag", "hook", "takeover");
+
+/**
+ * Take-over budget (ticket 29): after a cheapag FAIL, PARTIAL or TIMEOUT, Claude does the step itself. Resolved take-overs
+ * in the benchmark used at most 13 tool calls; unresolved ones up to 50. So within the same user prompt, the call after
+ * limits.takeover_calls is denied with a pointer to report back. cheapag's own tools are never counted or denied.
+ */
+function budget(input: Input): string | undefined {
+  if (!input.session_id || !input.prompt_id || typeof input.cwd !== "string" || CHEAPAG_TOOL.test(input.tool_name ?? "")) return;
+  const root = projectRoot(input.cwd);
+  const file = takeOverFile(root, input.session_id);
+  let state: TakeOver;
+  try {
+    state = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return; // no take-over in this session
+  }
+  if (state.prompt !== input.prompt_id) return; // a new user prompt ends the take-over
+  const limit = loadConfig(root).limits.takeover_calls;
+  if (!limit) return;
+  if (state.calls >= limit) return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
+  writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
+}
+
+/** Reads Claude Code's PostToolUse JSON for a cheapag tool; a FAIL/PARTIAL/TIMEOUT job block starts this prompt's take-over count. Never blocks. */
+function result(): number {
+  try {
+    const input: Input = JSON.parse(readFileSync(0, "utf8"));
+    if (!input.session_id || !input.prompt_id || typeof input.cwd !== "string" || !TAKE_OVER.test(text(input.tool_response))) return 0;
+    const root = projectRoot(input.cwd);
+    const file = takeOverFile(root, input.session_id);
+    try {
+      // a second failure in the same prompt keeps counting from the first
+      if ((JSON.parse(readFileSync(file, "utf8")) as TakeOver).prompt === input.prompt_id) return 0;
+    } catch {
+      // first take-over of the session
+    }
+    mkdirSync(join(root, ".cheapag", "hook"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ prompt: input.prompt_id, calls: 0 } satisfies TakeOver));
+    // shortcut: the marker is never removed, so a repo that once had a take-over runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
+    writeFileSync(takeOverMarker(root), "");
+  } catch {
+    // never block
+  }
+  return 0;
+}
+
+/** The text of a tool response: a string, MCP content blocks, or an object holding them. */
+function text(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(text).join("\n");
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return typeof o.text === "string" ? o.text : text(o.content ?? "");
+  }
+  return "";
+}
 
 function check(input: Input): string | undefined {
   if (process.env.CHEAPAG_ALLOW_EDITS === "1" || !EDIT_TOOLS.has(input.tool_name ?? "")) return;

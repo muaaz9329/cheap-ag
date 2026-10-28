@@ -15,6 +15,19 @@ const ch = (status: string, path: string, add: number, del = 0) => ({ status, pa
 const TWO_FILES = [ch("M", "src/api/login.ts", 28, 3), ch("M", "test/login.test.ts", 3)];
 
 describe("D5 status blocks", () => {
+  test("found: (ticket 29) sits after error: and before tried: on FAIL, first on PARTIAL; a long note wraps at 200 chars and is never cut", () => {
+    const note = `src/a.ts:parse drops the last token; ${"ruled out the lexer ".repeat(15).trim()}.`;
+    const fail = renderJob(job({ job: "j1", status: "FAIL", tests: "fail", error: ["`npm test`"], found: note, tried: ["fix 1: x → same failure"], reason: "no reproduction test by turn 12" }), 60);
+    const lines = fail.split("\n");
+    const at = lines.findIndex((l) => l.startsWith("found: "));
+    expect(lines[at - 1]).toBe("error: `npm test`");
+    expect(lines.slice(at, lines.indexOf("tried:")).join(" ")).toBe(`found: ${note}`);
+    expect(lines.slice(at, lines.indexOf("tried:")).every((l) => l.length <= 200)).toBe(true);
+    const partial = renderJob(job({ job: "j2", status: "PARTIAL", found: "a.ts:f", missing: ["the test"], worktree: ".cheapag/worktrees/j2" }));
+    expect(partial).toContain("\nfound: a.ts:f\nmissing:\n");
+    expect(renderJob(job({ job: "j3", status: "OK", found: "ignored" }))).not.toContain("found:");
+  });
+
   test("OK", () => {
     expect(renderJob(job({
       job: "j7f3a", status: "OK", landed: true, steps: "1-2", tests: "pass", usage: { turns: 22, costUsd: 0.014 },

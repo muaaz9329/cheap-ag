@@ -36,7 +36,7 @@ export function workerMetrics(dir) {
 
 /** Tool-use counts from the Claude Code transcript: did Claude delegate, and did it edit code itself (incl. after a delegation)? */
 export function transcriptMetrics(sessionId) {
-  const empty = { tool_calls_before_first_delegate: 0, test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, agent_calls: 0, difficulty_hint: null, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0 };
+  const empty = { tool_calls_before_first_delegate: 0, test_runs: 0, turns_after_last_delegate: 0, prefix_tokens: 0, cache_write_first_turn: 0, max_context: 0, tool_uses: 0, tools_used: {}, bash_writes: 0, delegate_calls: 0, research_calls: 0, agent_calls: 0, difficulty_hint: null, claude_edits: 0, claude_edits_after_delegate: 0, tool_uses_after_last_cheapag: 0, takeover_calls: 0, takeover_denied: false };
   if (!sessionId) return empty;
   const projects = join(homedir(), ".claude", "projects");
   const file = existsSync(projects) ? readdirSync(projects).map((p) => join(projects, p, `${sessionId}.jsonl`)).find(existsSync) : undefined;
@@ -46,6 +46,8 @@ export function transcriptMetrics(sessionId) {
   let maxContext = 0;
   let testRuns = 0;
   let hint = null;
+  let takeoverStart = -1; // ticket 29: tool calls so far when the first cheapag FAIL/PARTIAL/TIMEOUT came back
+  let denied = false;
   const turns = []; // per assistant message: did it call delegate (or reply)?
   let first; // the first turn's usage: what the session's fixed prefix cost (ticket 23.1) // the largest context Claude was sent on one turn: input + cache reads + cache writes
 
@@ -57,6 +59,11 @@ export function transcriptMetrics(sessionId) {
     if (u) maxContext = Math.max(maxContext, (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0));
     if (e?.message?.role === "assistant" && e.message.id && turns.at(-1)?.id !== e.message.id) turns.push({ id: e.message.id, delegated: false });
     for (const c of e?.message?.content ?? []) {
+      if (c.type === "tool_result") {
+        const out = typeof c.content === "string" ? c.content : (c.content ?? []).map((x) => x.text ?? "").join("\n");
+        if (takeoverStart < 0 && /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /m.test(out)) takeoverStart = names.length;
+        if (out.includes("Take-over budget spent")) denied = true;
+      }
       if (c.type !== "tool_use") continue;
       if (/^mcp__.*cheapag.*__(delegate|reply)$/.test(c.name) && turns.length) turns.at(-1).delegated = true;
       // ticket 26: Claude's rating, last delegate call wins, so a mis-rating is visible per row
@@ -94,6 +101,9 @@ export function transcriptMetrics(sessionId) {
     claude_edits: names.filter(isEdit).length,
     claude_edits_after_delegate: lastDelegate < 0 ? 0 : names.slice(lastDelegate + 1).filter(isEdit).length,
     tool_uses_after_last_cheapag: lastCheapag < 0 ? 0 : names.length - lastCheapag - 1,
+    // Claude's own tool calls after the first worker failure, cheapag's tools excluded (what limits.takeover_calls counts)
+    takeover_calls: takeoverStart < 0 ? 0 : names.slice(takeoverStart).filter((n) => !isCheapag(n)).length,
+    takeover_denied: denied,
   };
 }
 

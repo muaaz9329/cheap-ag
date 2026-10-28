@@ -8,9 +8,9 @@ import type { Changed } from "./workspace.js";
  *   that never reached verify, e.g. BLOCKED), usage.turns, usage.costUsd, then the optional tokens selfFix → fix=N,
  *   models.escalated → esc=1, models.final ≠ models.requested → model=<final>, redo → redo=1, billing → billing=zen.
  *   Then summary, changed, risks, review, the status's own sections, and `log:` last.
- * - Status sections (STATUS_SECTIONS): OK none · PARTIAL missing, worktree · FAIL error, tried, reason, worktree ·
+ * - Status sections (STATUS_SECTIONS): OK none · PARTIAL found, missing, worktree · FAIL error, found, tried, reason, worktree ·
  *   BLOCKED question {text, options ≤ 4} · CONFLICT conflict[], worktree · CANCELLED reason, worktree ·
- *   TIMEOUT reason, missing, worktree · BUDGET reason, worktree.
+ *   TIMEOUT found, reason, missing, worktree · BUDGET found, reason, worktree. `found` (a stopped worker's note, ≤ 600 chars) wraps, never cut.
  * - RUNNING is one line: `RUNNING <job> step=<steps> turns=<usage.turns>`.
  * - CONSENT has no job: `renderConsent` (used for research too). Research: `renderResearch` (D7). Batch: `renderBatch` (D6).
  * Paths in records are already repo-relative with forward slashes (builders use `normalisePath`).
@@ -41,6 +41,8 @@ export type JobRecord = {
   /** The de-noised tail of the last failing verify command: the command first, then indented lines. */
   error?: string[];
   tried?: string[];
+  /** A stopped worker's findings note (ticket 29): where the bug is, its hypothesis, what it ruled out. */
+  found?: string;
   /** `answer` is the reply sent (null while waiting); recorded, not rendered. */
   question?: { text: string; options: string[]; answer?: string | null } | null;
   /** Several questions asked at once (then `question` is null), answered one by one. */
@@ -92,16 +94,16 @@ export type BatchRecord = {
 
 export type ConsentRecord = { repo: string; send: string; retention: string; approve: string };
 
-type Section = "question" | "conflict" | "error" | "tried" | "reason" | "missing" | "worktree";
+type Section = "question" | "conflict" | "error" | "found" | "tried" | "reason" | "missing" | "worktree";
 const STATUS_SECTIONS: Record<Exclude<JobStatus, "RUNNING">, Section[]> = {
   OK: [],
-  PARTIAL: ["missing", "worktree"],
-  FAIL: ["error", "tried", "reason", "worktree"],
+  PARTIAL: ["found", "missing", "worktree"],
+  FAIL: ["error", "found", "tried", "reason", "worktree"],
   BLOCKED: ["question"],
   CONFLICT: ["conflict", "worktree"],
   CANCELLED: ["reason", "worktree"],
-  TIMEOUT: ["reason", "missing", "worktree"],
-  BUDGET: ["reason", "worktree"],
+  TIMEOUT: ["found", "reason", "missing", "worktree"],
+  BUDGET: ["found", "reason", "worktree"],
 };
 // D6 urgency; CANCELLED is not ranked by the spec and sits with BUDGET/TIMEOUT
 const URGENCY: JobStatus[] = ["BLOCKED", "CONFLICT", "FAIL", "BUDGET", "TIMEOUT", "CANCELLED", "PARTIAL", "RUNNING", "OK"];
@@ -170,6 +172,7 @@ function layout(r: JobRecord, c: Cuts) {
     if (e.length < r.error.length) e[e.length - 1] = `  … +${r.error.length - e.length + 1} more lines (see log)`;
     lines.push(`error: ${e[0]}`, ...e.slice(1));
   }
+  if (has("found") && r.found) lines.push(...wrap(`found: ${oneLine(r.found)}`));
   if (has("tried") && r.tried?.length) lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (has("missing") && r.missing.length) lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));

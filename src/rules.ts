@@ -10,7 +10,7 @@ export const VERIFY_RULE = "Tests: run only the test file or id the task concern
  * wrong fixes ("both marks present" instead of their order), so on medium/hard tasks Claude reads the ~20-line test
  * instead of the diff. Part of the server instructions.
  */
-export const REVIEW_RULE = "Trust an OK: don't re-run its tests or read its diff. After an OK on a task you rated medium or hard, or whose headline says repro=unverified or repro=none, read only its test= file once (without one, the diff) and check its assertions against the request: where they are looser than the request (\"does not crash\" or \"contains\" when a value, order or type is known), tighten them yourself and rerun that one file. After a FAIL, do the task yourself instead of delegating it again.";
+export const REVIEW_RULE = "Trust an OK: don't re-run its tests or read its diff. After an OK on a task you rated medium or hard, or whose headline says repro=unverified or repro=none, read only its test= file once (without one, the diff) and check its assertions against the request: where they are looser than the request (\"does not crash\" or \"contains\" when a value, order or type is known), tighten them yourself and rerun that one file. After a FAIL or PARTIAL, do the task yourself instead of delegating it again: start from its found:, test= and worktree, open only the files they name, no background runs.";
 
 /**
  * Delegate before reading (ticket 23.4): Claude read ~2 files before each delegation, so the code entered its context

@@ -210,6 +210,7 @@ function runGroup(g: GroupRun) {
   let reason: string | undefined;
   const verified: VerifyRun[] = [];
   const tried: string[] = [];
+  let found: string | undefined; // a stopped worker's findings note (ticket 29)
   let selfFix = 0;
   let escalated = false;
   let repro: JobRecord["repro"]; // the server's check of the worker's reproduction test (OK jobs only)
@@ -313,7 +314,7 @@ function runGroup(g: GroupRun) {
       // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
       tests: silent ? undefined : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
       error: failing?.tail,
-      tried,
+      tried, ...(found && { found }),
       summary: silent ? "" : report.summary, changed, risks: silent ? [] : risks,
       ...(changed.some((c) => TEST_FILE.test(c.path)) && { test: changed.find((c) => TEST_FILE.test(c.path))!.path }),
       // a landed job's files are in the working tree; an unlanded one's only in its worktree
@@ -499,6 +500,9 @@ function runGroup(g: GroupRun) {
       const diff = worktreeDiff(worktree);
       changed = diff.changed;
       write("diff.patch", diff.patch); // the log copy is redacted; landing applies the in-memory patch
+      // ticket 29: a capped worker leaves Claude what it learned, so the take-over does not re-read the same files (after the diff, so the note turn cannot change the result)
+      const cap = (stopped as Stop | undefined)?.cap;
+      if (cap === "turns" || cap === "minutes" || cap === "cost") found = await findings(session!);
       if (stopped) {
         // a capped or cancelled job never lands; its worktree is kept
       } else if (result.error) {
@@ -742,6 +746,20 @@ const TEST_FILE = /(^|\/)(tests?|testing|__tests__)\/|(^|\/)(test_[^/]*|[^/]*_te
  * changes are set aside, which proves it tests the problem. The command comes from the worker, so it only runs when it
  * starts with a command this job may already run (done-when, test_cmd, allow_commands); anything else stays unverified.
  */
+const FINDINGS_PROMPT = "You were stopped before finishing. Without calling any tool, answer in at most 600 characters: where the bug is (file:function), your best hypothesis, and what you ruled out.";
+const FINDINGS_MS = 30_000;
+
+/** One last prompt on a stopped session for its findings; any error, timeout or empty answer gives none. */
+async function findings(session: Session): Promise<string | undefined> {
+  try {
+    const r = await session.run(FINDINGS_PROMPT, undefined, AbortSignal.timeout(FINDINGS_MS), true);
+    const text = (r.error || r.interrupted ? "" : r.text || r.finish?.summary || "").replace(/\s+/g, " ").trim();
+    return text ? (text.length > 600 ? `${text.slice(0, 599)}…` : text) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function checkRepro(cwd: string, claim: string | undefined, allowed: string[], changed: string[], signal: AbortSignal): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
   if (!claim || /^n\/?a\b/i.test(claim)) return {};
   if (/^none\b/i.test(claim)) return { repro: "none", risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}` };

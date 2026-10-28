@@ -86,7 +86,10 @@ test("turn cap with nothing changed → FAIL with the reason; no hand-over (user
   expect(text).toContain("\nreason: turn cap (2) reached\n");
   expect(text).toContain(`\nworktree: .cheapag/worktrees/${job}/\n`);
   expect(fake.recorded.aborts).toHaveLength(1);
-  expect(fake.recorded.prompts).toHaveLength(1); // ticket 28: the cap is the end, no second prompt on the escalation model
+  // ticket 28: no hand-over on the escalation model; ticket 29: one findings prompt on the same model (unanswered here, so no found:)
+  expect(fake.recorded.prompts).toHaveLength(2);
+  expect(fake.recorded.prompts[1]).toMatchObject({ model: undefined, parts: [{ type: "text", text: expect.stringMatching(/^You were stopped before finishing\. Without calling any tool/) }] });
+  expect(text).not.toContain("\nfound:");
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job))).toBe(true);
 });
 
@@ -101,6 +104,20 @@ test("fail fast: a step with checks and no test file by repro_by_turns → FAIL 
   expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=0 `));
   expect(text).toContain("\nreason: no reproduction test by turn 2; the worker was still exploring\n");
   expect(fake.recorded.aborts).toHaveLength(1);
+});
+
+test("a stopped job asks the worker for its findings once; the FAIL block carries them as found: before reason:", async () => {
+  const { fake, delegate } = await scenario({
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [
+      [{ tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG, { tool: "write" }],
+      [{ text: "Bug in src/hello.ts:hello, it returns 1.\nRuled out the config loader." }],
+    ],
+  });
+  const text = await delegate();
+  expect(text).toContain("\nfound: Bug in src/hello.ts:hello, it returns 1. Ruled out the config loader.\nreason: no reproduction test by turn 2;");
+  expect(fake.recorded.prompts).toHaveLength(2);
 });
 
 test("fail fast does not fire once a test file exists; the OK headline names it as test=", async () => {
@@ -248,6 +265,8 @@ test.each([
   [{ limits: { max_minutes: "20" } }, "limits.max_minutes must be a positive number"],
   [{ limits: { max_parallel: 1.5 } }, "limits.max_parallel must be a positive whole number"],
   [{ limits: { repro_by_turns: 0 } }, "limits.repro_by_turns must be a positive whole number"],
+  [{ limits: { takeover_calls: -1 } }, "limits.takeover_calls must be a non-negative whole number"],
+  [{ limits: { takeover_calls: 2.5 } }, "limits.takeover_calls must be a non-negative whole number"],
   [{ limits: [] }, "limits must be an object"],
   [{ integration_cmd: " " }, "integration_cmd must be a non-empty string"],
 ])("a bad config %j fails before any job", async (config, message) => {
