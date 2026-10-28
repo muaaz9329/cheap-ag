@@ -6,11 +6,14 @@ import type { ModelsConfig } from "./routing.js";
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
 export type Config = {
   test_cmd?: string; integration_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
-  models: ModelsConfig; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks;
+  models: ModelsConfig; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks; takeover: TakeOver;
 };
 /** Who implements a hard task (ticket 26): the worker on `models.hard`, Claude itself, or Claude's own Sonnet subagent. */
 export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
 export type HardTasks = (typeof HARD_TASKS)[number];
+/** Who finishes a step the worker could not (ticket 30): a Sonnet subagent, or Claude itself within limits.takeover_calls. */
+export const TAKE_OVER = ["sonnet", "self"] as const;
+export type TakeOver = (typeof TAKE_OVER)[number];
 /** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits); `max_parallel` bounds a batch's concurrent groups; `max_blocked_minutes` bounds a wait for `reply`. */
 export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number; max_parallel: number; max_blocked_minutes: number; repro_by_turns: number; takeover_calls: number };
 /** How long cleanup keeps an unlanded worktree and a job folder, in days (spec A20). */
@@ -24,6 +27,7 @@ const DEFAULTS: Config = {
   escalation_skip_at: 0.8,
   guard_lines: 20,
   hard_tasks: "delegate",
+  takeover: "sonnet",
 };
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
@@ -57,7 +61,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover } = value as Record<string, unknown>;
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet
@@ -94,6 +98,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
   }
   if (hard_tasks !== undefined && !HARD_TASKS.includes(hard_tasks as HardTasks)) throw new Error(`${file}: hard_tasks must be one of ${HARD_TASKS.join(", ")}`);
+  if (takeover !== undefined && !TAKE_OVER.includes(takeover as TakeOver)) throw new Error(`${file}: takeover must be one of ${TAKE_OVER.join(", ")}`);
   if (guard_lines !== undefined && (typeof guard_lines !== "number" || !Number.isInteger(guard_lines) || guard_lines <= 0)) {
     throw new Error(`${file}: guard_lines must be a positive whole number`);
   }
@@ -121,5 +126,6 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     ...(escalation_skip_at !== undefined && { escalation_skip_at }),
     ...(guard_lines !== undefined && { guard_lines }),
     ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
+    ...(takeover !== undefined && { takeover: takeover as TakeOver }),
   };
 }

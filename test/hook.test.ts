@@ -22,8 +22,8 @@ function setup() {
   onTestFinished(() => rmSync(home, { recursive: true, force: true }));
   const cli = (...args: string[]) => execFileSync(process.execPath, [serverEntry, "hook", ...args], { cwd: repo.dir, env, encoding: "utf8" });
   /** Runs the hook; returns the deny reason, or null when it made no decision. */
-  const run = (tool_name: string, tool_input: Record<string, unknown>, opts: { prompt?: string; extraEnv?: Record<string, string>; stdin?: string } = {}) => {
-    const input = { session_id: "s1", prompt_id: opts.prompt ?? "p1", cwd: repo.dir, hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "t" };
+  const run = (tool_name: string, tool_input: Record<string, unknown>, opts: { prompt?: string; extraEnv?: Record<string, string>; stdin?: string; agent?: string } = {}) => {
+    const input = { session_id: "s1", prompt_id: opts.prompt ?? "p1", cwd: repo.dir, hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "t", ...(opts.agent && { agent_id: opts.agent, agent_type: "general-purpose" }) };
     const r = spawnSync("sh", ["-c", command], { cwd: repo.dir, env: { ...env, ...opts.extraEnv }, input: opts.stdin ?? JSON.stringify(input), encoding: "utf8" });
     expect(r.status).toBe(0);
     if (!r.stdout.trim()) return null;
@@ -125,12 +125,12 @@ test("context: the SessionStart hook prints a one-line pointer to delegate; the 
 const FAIL_BLOCK = "FAIL jab12 step=1 files=0 +0/-0 tests=pass turns=12 cost=$0.003\nfound: django/db/models/query.py:only(), proxy model pk\nreason: no reproduction test by turn 12";
 const read = { file_path: "a.ts" };
 
-test("take-over budget: after a FAIL, Claude's 16th tool call in that prompt is denied; cheapag's tools never count; a new prompt is free", () => {
+test("takeover self: after a FAIL, the call past limits.takeover_calls in that prompt is denied; cheapag's tools never count; a new prompt is free", () => {
   const { run, result, repo } = setup();
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { takeover_calls: 3 } }));
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "self", limits: { takeover_calls: 3 } }));
   expect(run("Read", read)).toBeNull(); // no take-over yet: the shell test skips node entirely
   result("OK jab11 step=1 files=1 +1/-1 tests=pass turns=4 cost=$0.002");
-  for (let i = 0; i < 5; i++) expect(run("Bash", { command: "ls" })).toBeNull(); // an OK starts nothing
+  for (let i = 0; i < 5; i++) expect(run("Bash", { command: "ls" })).toBeNull(); // an OK starts no count
   result(FAIL_BLOCK);
   for (let i = 0; i < 3; i++) expect(run(i ? "Bash" : "Read", i ? { command: "ls" } : read)).toBeNull();
   expect(run("mcp__plugin_cheapag_cheapag__land", { job: "jab12" })).toBeNull();
@@ -144,15 +144,45 @@ test("take-over budget: after a FAIL, Claude's 16th tool call in that prompt is 
   expect(run("Bash", { command: "ls" }, { prompt: "p2" })).toBeNull();
 });
 
-test("take-over budget: PARTIAL and TIMEOUT start it too; limits.takeover_calls 0 turns it off", () => {
+test("takeover self: PARTIAL and TIMEOUT start it too; limits.takeover_calls 0 turns it off", () => {
   const { run, result, repo } = setup();
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { takeover_calls: 1 } }));
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "self", limits: { takeover_calls: 1 } }));
   result("PARTIAL jab14 step=1 files=1 +13/-0 tests=pass turns=25 cost=$0.012\nmissing:\n  - unknown");
   expect(run("Read", read)).toBeNull();
   expect(run("Read", read)).toMatch(/^Take-over budget spent \(1 tool calls/);
   result("TIMEOUT jab15 step=1 files=0 +0/-0 turns=9 cost=$0.01\nreason: minute cap", "p2", "mcp__cheapag__jobs");
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
   expect(run("Read", read, { prompt: "p2" })).toMatch(/^Take-over budget spent/);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { takeover_calls: 0 } }));
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "self", limits: { takeover_calls: 0 } }));
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
 });
+
+test("takeover sonnet (default): after a FAIL, only the Agent tool and cheapag's tools are left; the subagent works freely; a new prompt is free", () => {
+  const { run, result } = setup();
+  result(FAIL_BLOCK);
+  const reason = run("Read", read);
+  expect(reason).toMatch(/^The worker did not finish this step: hand it to your Agent tool with model: sonnet \(the task, the user's words, the block's found:, test=, error: and worktree\)/);
+  expect(reason).toContain('takeover: "self"');
+  expect(run("Bash", { command: "./swebench-test.sh x" })).toMatch(/^The worker did not finish/);
+  expect(run("Agent", { model: "sonnet", prompt: "finish it" })).toBeNull();
+  expect(run("mcp__cheapag__land", { job: "jab12" })).toBeNull();
+  // the subagent's own calls carry agent_id: never denied, never counted
+  for (let i = 0; i < 4; i++) expect(run(i % 2 ? "Edit" : "Bash", i % 2 ? { file_path: "a.ts", old_string: "a", new_string: "b" } : { command: "pytest -q" }, { agent: "ab9d" })).toBeNull();
+  expect(run("Read", read, { prompt: "p2" })).toBeNull();
+}, 20_000);
+
+test("trust OK: after an OK whose checks passed, re-running tests is denied; other tools pass; tests=none and a new prompt are free; a later FAIL wins", () => {
+  const { run, result } = setup();
+  result("OK jab21 step=1 files=1 +1/-1 tests=none turns=4 cost=$0.002");
+  expect(run("Bash", { command: "npm test" })).toBeNull(); // nothing ran in the worktree: Claude may test
+  result("OK jab22 step=1 files=1 +1/-1 tests=pass turns=4 cost=$0.002 repro=unverified");
+  for (const command of ["./swebench-test.sh migrations.test_commands", "python -m pytest tests/x.py", "npx vitest run a.test.ts", "cd pkg && go test ./..."]) {
+    expect(run("Bash", { command })).toBe("An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.");
+  }
+  expect(run("Bash", { command: "git status --short" })).toBeNull();
+  expect(run("Read", read)).toBeNull();
+  expect(run("Bash", { command: "pytest -q" }, { agent: "ab9d" })).toBeNull(); // a subagent may test
+  expect(run("Bash", { command: "npm test" }, { prompt: "p2" })).toBeNull();
+  result(FAIL_BLOCK, "p2");
+  expect(run("Read", read, { prompt: "p2" })).toMatch(/^The worker did not finish/);
+}, 20_000);

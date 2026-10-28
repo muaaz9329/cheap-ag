@@ -232,9 +232,18 @@ async function session(inst, arm, dir, [prompt], resume) {
     cache_read_tokens: usage.cache_read_input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
     cache_write_tokens: usage.cache_creation_input_tokens ?? 0, ...cacheTtl(usage.cache_creation),
     claude_tokens: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.output_tokens ?? 0),
+    ...modelTokens(out.modelUsage),
     claude_cost_usd: out.total_cost_usd ?? null, duration_ms: out.duration_ms ?? Date.now() - started, num_turns: out.num_turns ?? null,
     ...worker, ...transcriptMetrics(out.session_id), result_tail: String(out.result ?? "").slice(-600),
   };
+}
+
+/** Ticket 30: tokens and list $ per model family from Claude Code's modelUsage (subagents included), so a Sonnet take-over shows apart from Opus. */
+function modelTokens(usage = {}) {
+  const fam = (re) => Object.entries(usage).filter(([m]) => re.test(m)).map(([, u]) => u);
+  const tok = (us) => us.reduce((n, u) => n + (u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheReadInputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0), 0);
+  const usd = (us) => us.reduce((n, u) => n + (u.costUSD ?? 0), 0);
+  return { opus_tokens: tok(fam(/opus/)), opus_cost_usd: usd(fam(/opus/)), sonnet_tokens: tok(fam(/sonnet/)), sonnet_cost_usd: usd(fam(/sonnet/)) };
 }
 
 function jobIds(dir) { return existsSync(join(dir, ".cheapag", "jobs")) ? readdirSync(join(dir, ".cheapag", "jobs")).filter((id) => id.startsWith("j")) : []; }

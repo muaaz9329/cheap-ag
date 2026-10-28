@@ -267,6 +267,7 @@ test.each([
   [{ limits: { repro_by_turns: 0 } }, "limits.repro_by_turns must be a positive whole number"],
   [{ limits: { takeover_calls: -1 } }, "limits.takeover_calls must be a non-negative whole number"],
   [{ limits: { takeover_calls: 2.5 } }, "limits.takeover_calls must be a non-negative whole number"],
+  [{ takeover: "opus" }, "takeover must be one of sonnet, self"],
   [{ limits: [] }, "limits must be an object"],
   [{ integration_cmd: " " }, "integration_cmd must be a non-empty string"],
 ])("a bad config %j fails before any job", async (config, message) => {

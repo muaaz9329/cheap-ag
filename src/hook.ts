@@ -18,8 +18,12 @@ const BASH_CODE_WRITES = /\b(?:python3?|node)\s+-[ce]\b[\s\S]*(?:open\([^)]*["']
 // the plugin's server and a `cheapag login` registration give the tool different prefixes, so name both
 const REDIRECT = "write a plan step and use the cheapag server's delegate tool (mcp__plugin_cheapag_cheapag__delegate, or mcp__cheapag__delegate) instead.";
 const CHEAPAG_TOOL = /^mcp__(?:plugin_cheapag_)?cheapag__/;
-// a job block whose first word means Claude now does the step itself (the server's FAIL/PARTIAL/TIMEOUT)
-const TAKE_OVER = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /m;
+// a job block whose first word means the worker did not finish the step (the server's FAIL/PARTIAL/TIMEOUT)
+const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /m;
+// an OK whose checks passed in the worker's worktree (ticket 30: re-running them caught nothing)
+const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
+// shortcut: the usual runners only; add the repo's test_cmd if Claude re-runs tests through a custom script
+const TEST_CMD = /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 
 /** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
 const flag = (root: string) => join(root, ".cheapag", "hook.json");
@@ -87,52 +91,72 @@ function guard(): number {
   return 0;
 }
 
-type Input = { session_id?: string; prompt_id?: string; cwd?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
-type TakeOver = { prompt: string; calls: number };
+// agent_id is set only on a subagent's calls (seen live on Claude Code 2.1.285); the prompt rules never count or deny them
+type Input = { session_id?: string; prompt_id?: string; agent_id?: string; cwd?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
+/** What this user prompt's cheapag results were: the worker did not finish a step (and Claude's calls since), or an OK passed its checks. */
+type PromptState = { prompt: string; calls: number; notDone?: boolean; okPassed?: boolean };
 
-/** Per-session take-over state; the repo-wide marker lets the plugin's shell test skip node when no take-over ever began. */
-const takeOverFile = (root: string, session: string) => join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
-const takeOverMarker = (root: string) => join(root, ".cheapag", "hook", "takeover");
+/** Per-session state; the repo-wide marker lets the plugin's shell test skip node until a cheapag result was ever seen. */
+const stateFile = (root: string, session: string) => join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
+const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
 
 /**
- * Take-over budget (ticket 29): after a cheapag FAIL, PARTIAL or TIMEOUT, Claude does the step itself. Resolved take-overs
- * in the benchmark used at most 13 tool calls; unresolved ones up to 50. So within the same user prompt, the call after
- * limits.takeover_calls is denied with a pointer to report back. cheapag's own tools are never counted or denied.
+ * The prompt rules (tickets 29, 30), for the main loop only:
+ * - after a FAIL, PARTIAL or TIMEOUT, takeover "sonnet" leaves only the Agent tool (to hand the step to a Sonnet subagent)
+ *   and cheapag's tools; "self" denies the call after limits.takeover_calls (resolved take-overs used at most 13).
+ * - after an OK whose checks passed, re-running tests is denied: unverified OKs were as correct as verified ones.
+ * A new user prompt clears both. cheapag's own tools and a subagent's calls are never counted or denied.
  */
 function budget(input: Input): string | undefined {
-  if (!input.session_id || !input.prompt_id || typeof input.cwd !== "string" || CHEAPAG_TOOL.test(input.tool_name ?? "")) return;
+  if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string" || CHEAPAG_TOOL.test(input.tool_name ?? "")) return;
   const root = projectRoot(input.cwd);
-  const file = takeOverFile(root, input.session_id);
-  let state: TakeOver;
+  const file = stateFile(root, input.session_id);
+  let state: PromptState;
   try {
     state = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    return; // no take-over in this session
+    return; // no cheapag result in this session yet
   }
-  if (state.prompt !== input.prompt_id) return; // a new user prompt ends the take-over
-  const limit = loadConfig(root).limits.takeover_calls;
-  if (!limit) return;
-  if (state.calls >= limit) return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
-  writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
+  if (state.prompt !== input.prompt_id) return; // a new user prompt starts fresh
+  const config = loadConfig(root);
+  if (state.notDone && config.takeover === "sonnet") {
+    if (input.tool_name === "Agent" || input.tool_name === "Task") return;
+    return `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
+  }
+  if (state.notDone) {
+    const limit = config.limits.takeover_calls;
+    if (!limit) return;
+    if (state.calls >= limit) return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
+    writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
+    return;
+  }
+  const command = input.tool_input?.command;
+  if (state.okPassed && input.tool_name === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
+    return "An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.";
+  }
 }
 
-/** Reads Claude Code's PostToolUse JSON for a cheapag tool; a FAIL/PARTIAL/TIMEOUT job block starts this prompt's take-over count. Never blocks. */
+/** Reads Claude Code's PostToolUse JSON for a cheapag tool and records what its result means for this prompt. Never blocks. */
 function result(): number {
   try {
     const input: Input = JSON.parse(readFileSync(0, "utf8"));
-    if (!input.session_id || !input.prompt_id || typeof input.cwd !== "string" || !TAKE_OVER.test(text(input.tool_response))) return 0;
+    if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string") return 0;
+    const out = text(input.tool_response);
+    const notDone = NOT_DONE.test(out), okPassed = OK_PASSED.test(out);
+    if (!notDone && !okPassed) return 0;
     const root = projectRoot(input.cwd);
-    const file = takeOverFile(root, input.session_id);
+    const file = stateFile(root, input.session_id);
+    let state: PromptState = { prompt: input.prompt_id, calls: 0 };
     try {
-      // a second failure in the same prompt keeps counting from the first
-      if ((JSON.parse(readFileSync(file, "utf8")) as TakeOver).prompt === input.prompt_id) return 0;
+      const saved: PromptState = JSON.parse(readFileSync(file, "utf8"));
+      if (saved.prompt === input.prompt_id) state = saved; // a second failure in the same prompt keeps counting from the first
     } catch {
-      // first take-over of the session
+      // first cheapag result of the session
     }
     mkdirSync(join(root, ".cheapag", "hook"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ prompt: input.prompt_id, calls: 0 } satisfies TakeOver));
-    // shortcut: the marker is never removed, so a repo that once had a take-over runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
-    writeFileSync(takeOverMarker(root), "");
+    writeFileSync(file, JSON.stringify({ ...state, ...(notDone && { notDone }), ...(okPassed && { okPassed }) } satisfies PromptState));
+    // shortcut: the marker is never removed, so a repo that once had a cheapag result runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
+    writeFileSync(marker(root), "");
   } catch {
     // never block
   }

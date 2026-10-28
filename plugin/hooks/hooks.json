@@ -1,5 +1,5 @@
 {
-  "description": "Cheap Agent: SessionStart adds a one-line pointer to the delegate tool; the edit guard (edits and Bash file writes) is off until /cheapag:hook on; after a cheapag FAIL or PARTIAL, Claude's own tool calls in that prompt are capped at limits.takeover_calls. Shell tests keep both free (no npx) while unused.",
+  "description": "Cheap Agent: SessionStart adds a one-line pointer to the delegate tool; the edit guard (edits and Bash file writes) is off until /cheapag:hook on; after a cheapag FAIL or PARTIAL, Claude hands the step to a Sonnet subagent (or, with takeover: self, its own calls are capped at limits.takeover_calls), and after an OK it does not re-run tests. Shell tests keep both free (no npx) while unused.",
   "hooks": {
     "PreToolUse": [
       {
