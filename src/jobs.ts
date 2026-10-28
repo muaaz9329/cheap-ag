@@ -31,13 +31,28 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 /** More rejections than this in one job earn a risk line. */
 const MAX_QUIET_REJECTIONS = 5;
 
-/** `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation. */
-export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; difficulty?: Difficulty };
+/**
+ * `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation.
+ * `source`: the user's request or the issue, verbatim (ticket 28), so the worker can check the step against it.
+ */
+export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; source?: string; difficulty?: Difficulty };
 /** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
 export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
 
 /** A brief longer than this is cut in the worker's prompt. */
 const MAX_BRIEF = 6_000;
+
+/** A source longer than this is cut in the worker's prompt (the issue's head is what matters; comment threads trail). */
+const MAX_SOURCE = 8000;
+
+/** `source=`: the text itself, or a repo-relative file holding it (the benchmark writes the issue to one; a user may point at a ticket export). */
+function resolveSource(root: string, source: string | undefined): string | undefined {
+  const value = source?.trim();
+  if (!value) return undefined;
+  const file = join(root, value);
+  const text = !value.includes("\n") && value.length < 512 && !isAbsolute(value) && existsSync(file) ? readFileSync(file, "utf8").trim() : value;
+  return text.length > MAX_SOURCE ? `${text.slice(0, MAX_SOURCE)}\n[… cut at ${MAX_SOURCE} characters]` : text;
+}
 
 /** `brief=`: a research id (its block from the log) or the brief's text itself. */
 function resolveBrief(root: string, brief: string | undefined): { text?: string } | { fail: string } {
@@ -80,11 +95,12 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   let input: DelegateInput;
   const brief = resolveBrief(root, req.brief);
   if ("fail" in brief) return failBlock(brief.fail);
+  const source = resolveSource(root, req.source);
   if (req.task !== undefined) {
     const made = inlinePlan(root, req);
     if ("fail" in made) return failBlock(made.fail);
-    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text, difficulty: req.difficulty };
-  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text, difficulty: req.difficulty };
+    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty };
+  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty };
   else return failBlock("give task (what to change, files, how to check), or plan and steps");
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
@@ -221,13 +237,17 @@ function runGroup(g: GroupRun) {
   const overCost = () => {
     if (session && session.totals().usage.costUsd >= limits.max_cost_usd) stop({ cap: "cost", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
   };
-  // the turn cap grows by escalation_turns once a run that hit it is handed to the escalation model
-  let turnCap = limits.max_turns;
-  let handover: AbortController | undefined; // set while the first run may still be handed over at the cap
   const overTurns = () => {
-    if (!session || session.totals().turns < turnCap) return;
-    if (handover && !handover.signal.aborted) return handover.abort(); // end this prompt; work() continues on the escalation model
-    stop({ cap: "turns", reason: `turn cap (${turnCap}) reached` });
+    if (session && session.totals().turns >= limits.max_turns) stop({ cap: "turns", reason: `turn cap (${limits.max_turns}) reached` });
+  };
+  // fail fast (ticket 28): a step with checks that has no test file in its worktree by repro_by_turns stops now, so Claude
+  // takes over without a 40-turn failed job in its context (v2 hard tier: FAIL sessions averaged 482k Claude tokens, stock 385k)
+  // shortcut: counts any test file in the worktree's status, carried-over dirty ones included; tighten to the job's own edits if that misfires
+  let reproSeen = false;
+  const reproDue = () => {
+    if (reproSeen || !cmds.length || !worktree || !session || session.totals().turns < limits.repro_by_turns) return;
+    reproSeen = git(worktree.path, ["status", "--porcelain"]).split("\n").some((l) => TEST_FILE.test(l.slice(3).trim()));
+    if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${limits.repro_by_turns}; the worker was still exploring` });
   };
   // the minute cap counts working time only: the clock is paused while the job waits BLOCKED on a reply
   let clockLeft = limits.max_minutes * 60_000;
@@ -271,6 +291,7 @@ function runGroup(g: GroupRun) {
     // server risks go first, so the 5-risk cap never cuts them
     const risks = [
       ...(reproRisk ? [reproRisk] : []),
+      ...(report.disagree && !/^none\b/i.test(report.disagree) ? [`spec vs source: ${report.disagree}`] : []),
       ...(rejections.length > MAX_QUIET_REJECTIONS ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`] : []),
       ...report.risks,
     ];
@@ -294,10 +315,11 @@ function runGroup(g: GroupRun) {
       error: failing?.tail,
       tried,
       summary: silent ? "" : report.summary, changed, risks: silent ? [] : risks,
+      ...(changed.some((c) => TEST_FILE.test(c.path)) && { test: changed.find((c) => TEST_FILE.test(c.path))!.path }),
       // a landed job's files are in the working tree; an unlanded one's only in its worktree
       review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
-      // a worker stopped at the turn cap rarely says what it left undone
-      missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped at the turn cap (${turnCap}); compare the diff with the step`] : report.missing,
+      // a worker stopped by a cap rarely says what it left undone
+      missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped (${stopped?.reason ?? "cap"}); compare the diff with the step`] : report.missing,
       reason, conflict,
       verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, ...(repro && { repro }), question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
       usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
@@ -408,7 +430,10 @@ function runGroup(g: GroupRun) {
               progress(turns, `turn ${turns}: ${part.tool}`);
               if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
               // finishing on the last allowed turn is fine
-              if (part.tool !== "finish") overTurns();
+              if (part.tool !== "finish") {
+                overTurns();
+                reproDue();
+              }
             }
           }
           if (event.type === "message.updated") overCost();
@@ -424,19 +449,8 @@ function runGroup(g: GroupRun) {
       };
       /** One prompt through the normal path: the run, then verify with up to 2 self-fixes and 1 escalation. `tag` prefixes tried: lines. */
       const work = async (prompt: string, tag = "") => {
-        // a first run that reaches the turn cap is handed, in the same session, to the escalation model with escalation_turns
-        // more turns (v2 hard tier: the worker hit 40 turns on 4 of 12 runs and escalation never ran, since it only followed a failed check)
-        const canHand = !escalated && !!escalation && !escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
-        handover = canHand ? new AbortController() : undefined;
-        let result = await routed(prompt, undefined, handover?.signal);
-        if (result.interrupted) {
-          handover = undefined;
-          escalated = true;
-          turnCap += limits.escalation_turns;
-          tried.push(`${tag}esc: ${modelName(models.current)} reached ${limits.max_turns} turns; handed to ${modelName(escalation!)} with ${limits.escalation_turns} more`);
-          result = await routed("You are taking over this task from another worker that ran out of turns. Its changes are in the worktree: check them with git diff, finish the task, run the step's checks, then call finish.", escalation);
-        }
-        handover = undefined;
+        // no hand-over at the turn cap (ticket 28): it rescued nothing in the model bake-off and doubled a failed job's length
+        let result = await routed(prompt);
         report = finishReport(result);
         failing = undefined;
         checked = false;
@@ -480,7 +494,7 @@ function runGroup(g: GroupRun) {
         if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
         return result;
       };
-      const result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note, input.brief));
+      const result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note, input.brief, input.source));
       write("finish.json", report);
       const diff = worktreeDiff(worktree);
       changed = diff.changed;
@@ -1070,13 +1084,15 @@ const newId = (prefix: string) => `${prefix}${randomBytes(4).readUInt32BE().toSt
  * The prompt after the agent's own rules (spec E2): the whole plan, then the current step(s), then the note.
  * shortcut: no repo map or CLAUDE.md/AGENTS.md excerpt yet; add them when worker quality needs the context.
  */
-function contextPack(plan: Plan, steps: PlanStep[], note?: string, brief?: string) {
+function contextPack(plan: Plan, steps: PlanStep[], note?: string, brief?: string, source?: string) {
   return [
     planText(plan),
     `>>> CURRENT STEP(S): ${steps.map((s) => s.id).join(", ")}\n\n${steps.map((s) => s.text).join("\n\n")}`,
     note && `Note: ${note}`,
     // start from what the scout found instead of re-exploring; an "unverified" repro is a lead, not a fact
     brief && `Scout brief (from research; start here, and check anything marked unverified):\n${brief}`,
+    // the user's own words: the step is Claude's reading of them, and only the worker sees both (ticket 28)
+    source && `Source (the user's request or the issue, verbatim; check the step against it and report disagreements in finish's disagree):\n${source}`,
   ].filter(Boolean).join("\n\n");
 }
 

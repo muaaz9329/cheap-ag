@@ -9,8 +9,11 @@ export const WORKER_AGENT = "cheapag-worker";
 /** How long an aborted prompt may take to go idle before its run is ended anyway. */
 const ABORT_GRACE_MS = 10_000;
 
-/** `repro`: the command that runs the worker's reproduction test, `none: <why>` when it could not reproduce, `n/a` when the step is not a fix. */
-export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[]; repro?: string };
+/**
+ * `repro`: the command that runs the worker's reproduction test, `none: <why>` when it could not reproduce, `n/a` when the step is not a fix.
+ * `disagree`: where the step's spec and the source it was given disagree, or `none` (ticket 28: a wrong spec is only visible to whoever has the source).
+ */
+export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[]; repro?: string; disagree?: string };
 export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
 /** What one prompt of a session produced; `limit` when it was aborted on a provider limit, `httpStatus` of a provider error. */
 export type RunResult = { finish?: FinishReport; text: string; error?: string; limit?: Limit; httpStatus?: number; interrupted?: boolean };
@@ -205,7 +208,7 @@ export async function runSession(opts: Parameters<typeof openSession>[0] & { pro
 /** OpenCode validates the tool's args, but the record must not trust a malformed one either. */
 function asReport(input: Record<string, unknown>): FinishReport {
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : []);
-  return { summary: String(input.summary ?? ""), risks: list(input.risks), review: list(input.review), missing: list(input.missing), ...(typeof input.repro === "string" && input.repro.trim() && { repro: input.repro.trim() }) };
+  return { summary: String(input.summary ?? ""), risks: list(input.risks), review: list(input.review), missing: list(input.missing), ...(typeof input.repro === "string" && input.repro.trim() && { repro: input.repro.trim() }), ...(typeof input.disagree === "string" && input.disagree.trim() && { disagree: input.disagree.trim() }) };
 }
 
 /**
@@ -239,10 +242,10 @@ export function finishReport(result: Pick<SessionResult, "finish" | "text">): Fi
   const report: FinishReport = { summary: "", risks: [], review: [], missing: [] };
   let list: "risks" | "review" | "missing" | undefined;
   for (const line of block.split("\n")) {
-    const kv = line.match(/^(summary|risks|review|missing|repro):\s*(.*)$/);
+    const kv = line.match(/^(summary|risks|review|missing|repro|disagree):\s*(.*)$/);
     if (kv) {
       const [, key, value] = kv;
-      if (key === "summary" || key === "repro") {
+      if (key === "summary" || key === "repro" || key === "disagree") {
         if (value.trim()) report[key] = value.trim();
         list = undefined;
       } else {

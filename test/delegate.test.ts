@@ -173,11 +173,12 @@ test("without finish, the fenced cheapag-result block is used", async () => {
   const { delegate } = await scenario([
     { edit: "src/hello.ts", content: "export const hello = 1;\n" },
     { tool: "write" },
-    { text: "Done.\n```cheapag-result\nsummary: wrote hello\nrisks:\n- untested\nreview: src/hello.ts:1-1\nmissing:\n```" },
+    { text: "Done.\n```cheapag-result\nsummary: wrote hello\nrisks:\n- untested\nreview: src/hello.ts:1-1\nmissing:\ndisagree: the step says reversed MRO, the source walks it forwards\n```" },
   ]);
   const text = await delegate("1");
   expect(text).toContain("\nsummary: wrote hello\n");
-  expect(text).toContain("\nrisks:\n  - untested\nreview: src/hello.ts:1-1\n");
+  // the server puts a disagreement first, so the risk cap never cuts it (ticket 28)
+  expect(text).toContain("\nrisks:\n  - spec vs source: the step says reversed MRO, the source walks it forwards\n  - untested\nreview: src/hello.ts:1-1\n");
 });
 
 test("with neither finish nor a result block, a placeholder summary and risk are reported", async () => {

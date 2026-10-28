@@ -6,10 +6,11 @@ export const VERIFY_RULE = "Tests: run only the test file or id the task concern
 
 /**
  * Trusting results (ticket 24.1): reading the diff of every bigger OK cost +28% tokens and caught no wrong fix, so the
- * worker proves a fix with a reproduction test the server checks (repro= in the headline); Claude reads a diff only when
- * that proof is missing. Part of the server instructions.
+ * worker proves a fix with a reproduction test the server checks (repro= in the headline). Ticket 28: loose tests passed
+ * wrong fixes ("both marks present" instead of their order), so on medium/hard tasks Claude reads the ~20-line test
+ * instead of the diff. Part of the server instructions.
  */
-export const REVIEW_RULE = "Trust an OK: don't re-run its tests or read its diff. Only when its headline says repro=unverified or repro=none, read the diff once and check it against the task; if it is wrong or incomplete, fix it yourself. After a FAIL, do the task yourself instead of delegating it again.";
+export const REVIEW_RULE = "Trust an OK: don't re-run its tests or read its diff. After an OK on a task you rated medium or hard, or whose headline says repro=unverified or repro=none, read only its test= file once (without one, the diff) and check its assertions against the request: where they are looser than the request (\"does not crash\" or \"contains\" when a value, order or type is known), tighten them yourself and rerun that one file. After a FAIL, do the task yourself instead of delegating it again.";
 
 /**
  * Delegate before reading (ticket 23.4): Claude read ~2 files before each delegation, so the code entered its context

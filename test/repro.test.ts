@@ -39,7 +39,7 @@ async function delegate(repro: string, reproTest = REPRO) {
 
 test("a reproduction that fails without the fix and passes with it: OK repro=fail→pass, landed with the test", async () => {
   const { repo, text, record } = await delegate("node test/hello.test.mjs");
-  expect(text.split("\n")[0]).toMatch(/^OK j\w+ .* repro=fail→pass$/);
+  expect(text.split("\n")[0]).toMatch(/^OK j\w+ .* repro=fail→pass test=test\/hello\.test\.mjs$/);
   expect(record.repro).toBe("fail→pass");
   expect(record.risks).toEqual([]);
   // the check ran in the worktree; the landed tree has the fix and the test

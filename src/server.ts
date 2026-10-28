@@ -37,7 +37,7 @@ Send every code change to delegate, including small, mechanical, "quick" or mult
 ${DIFFICULTY_HINT}${HARD_RULE[hard]}
 ${REVIEW_RULE}
 ${VERIFY_RULE}
-${SCOUT_RULE} Verify low-confidence briefs.
+${SCOUT_RULE} Verify low-confidence briefs. Pass source: the user's words or the issue (text or its file path), so the worker can check your task against it.
 cheapag results: the first word decides.
 OK: landed (uncommitted). Read risks.
 PARTIAL: read missing; re-delegate same step or land apply. FAIL: read error+tried, then do it yourself.
@@ -106,6 +106,7 @@ export async function serve() {
         steps: z.string().optional().describe('With plan: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them'),
         note: z.string().max(300).optional().describe("Extra guidance for this run, at most 300 characters"),
         brief: z.string().max(6000).optional().describe("A research result to start from: its id (e.g. r5k2q) or its text. The worker gets it instead of re-exploring"),
+        source: z.string().max(8000).optional().describe("The user's request or the issue text, verbatim, or the repo-relative path of a file holding it. The worker checks the task against it and reports where they disagree"),
         difficulty: z.enum(DIFFICULTIES).optional().describe("Time an engineer new to the code needs: easy < 15 min, medium < 1 h, hard > 1 h. Picks the worker model; a plan step's difficulty: wins"),
         wait: z.boolean().optional().describe('Default true: return when every group settles or one is BLOCKED. false: return RUNNING at once; then jobs(action="wait")'),
       },

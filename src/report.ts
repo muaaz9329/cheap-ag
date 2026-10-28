@@ -51,6 +51,8 @@ export type JobRecord = {
   billing?: "zen";
   /** The worker's reproduction test, checked by the server: failed on the original code and passes now, or not. */
   repro?: "fail→pass" | "unverified" | "none";
+  /** The first changed test file: what Claude reads instead of the diff after a medium/hard OK (ticket 28). */
+  test?: string;
 };
 
 export type ResearchRecord = {
@@ -143,7 +145,7 @@ function layout(r: JobRecord, c: Cuts) {
       r.status, r.job, `step=${r.steps}`, `files=${r.changed.length}`, `+${add}/-${del}`, r.tests && `tests=${r.tests}`,
       `turns=${r.usage.turns}`, `cost=$${r.usage.costUsd.toFixed(3)}`,
       r.selfFix && `fix=${r.selfFix}`, r.models.escalated && "esc=1",
-      r.models.final !== r.models.requested && `model=${r.models.final}`, r.redo && "redo=1", r.billing && `billing=${r.billing}`, r.repro && `repro=${r.repro}`,
+      r.models.final !== r.models.requested && `model=${r.models.final}`, r.redo && "redo=1", r.billing && `billing=${r.billing}`, r.repro && `repro=${r.repro}`, r.test && `test=${r.test}`,
     ].filter(Boolean).join(" "),
   ];
   const keep = new Set<string>(); // question/options lines are never elided

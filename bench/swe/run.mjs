@@ -35,7 +35,9 @@ const WARM = !opts["no-warm"];
 const VERIFY = !opts["no-verify-rule"];
 const { VERIFY_RULE } = await import(join(dirname(dist), "rules.js"));
 const CLAUDE_VERSION = spawnSync("claude", ["--version"], { encoding: "utf8" }).stdout.trim().split(" ")[0];
-const PROMPT_TAIL = "Fix this in the repository at the current directory. Run the relevant tests with `./swebench-test.sh <test args>` (it runs them in the project's own environment). Do not commit.";
+// .bench-issue.md (ticket 28): the issue text as a file, so a cheapag session can pass it as delegate source= without retyping it;
+// both arms get the same sentence, and .bench-* is excluded from git, the test tar and the graded patch
+const PROMPT_TAIL = "Fix this in the repository at the current directory. This issue text is also saved at .bench-issue.md. Run the relevant tests with `./swebench-test.sh <test args>` (it runs them in the project's own environment). Do not commit.";
 const HELPERS = ["swebench-test.sh", "cheapag.json"]; // ours, never part of the patch
 const dataset = new Map(readFileSync(join(deps, "verified.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((r) => [r.instance_id, r]));
 const all = JSON.parse(readFileSync(join(here, "instances.json"), "utf8"));
@@ -155,6 +157,7 @@ function reset(dir, inst, arm) {
 }
 
 function setup(dir, inst, arm) {
+  writeFileSync(join(dir, ".bench-issue.md"), dataset.get(inst.instance_id).problem_statement.trim() + "\n");
   writeFileSync(join(dir, "swebench-test.sh"), testScript(inst));
   chmodSync(join(dir, "swebench-test.sh"), 0o755);
   if (!arm.startsWith("cheapag")) return;

@@ -33,6 +33,7 @@ deps: <package@range>                       ← the step needs a new package
 
 - **Size:** one step ≈ under an hour of junior-developer work. Split anything bigger.
 - **Checks:** give every step an executable `done-when` (a test command, a type check), not only prose. Name the one test file or test id the step concerns, never the whole suite.
+- **Source:** put the user's request or the issue verbatim in the shared context, or pass it as `delegate(source=…)` (text or a file path): the worker checks your steps against it and reports where they disagree.
 - **Scope:** `files:` lists every file or directory the step may touch, accurately. It also decides which steps can run in parallel.
 - **Constraints:** add `dont:` for the mistakes you expect (new dependencies, touching auth, changing public APIs).
 - **Grouping:** make independent steps separate comma groups so they run in parallel; use `needs:` when one step must land first.

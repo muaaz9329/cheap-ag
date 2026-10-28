@@ -73,43 +73,48 @@ test("turn cap during a self-fix: aborted, last check passes → PARTIAL with mi
   expect(record(job)).toMatchObject({ status: "PARTIAL", landed: false, missing: ["README note not written"], verify: [{ ok: false }, { ok: true }] });
 });
 
-test("turn cap with nothing changed, also after the hand-over → FAIL with the reason (user config, merged key by key with the repo's)", async () => {
+test("turn cap with nothing changed → FAIL with the reason; no hand-over (user config, merged key by key with the repo's)", async () => {
   const { repo, fake, delegate } = await scenario({
-    userConfig: { limits: { max_turns: 2, max_cost_usd: 0.001, escalation_turns: 1 } },
+    userConfig: { limits: { max_turns: 2, max_cost_usd: 0.001 } },
     repoConfig: { limits: { max_cost_usd: 5 } }, // the repo raises the cost cap; the user's turn cap still applies
-    scripts: [
-      [{ tool: "read" }, { usage: { cost: 0.002 } }, { tool: "grep" }, LONG, { tool: "write" }],
-      [{ tool: "read" }, { tool: "grep" }, LONG, { tool: "write" }],
-    ],
+    scripts: [[{ tool: "read" }, { usage: { cost: 0.002 } }, { tool: "grep" }, LONG, { tool: "write" }]],
   });
   const text = await delegate();
   const job = jobOf(text);
-  expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=0 \\+0/-0 tests=none turns=\\d+ .*esc=1`)); // the cap fires on the 3rd turn; a turn already in flight still lands
-  expect(text).toContain("\nreason: turn cap (3) reached\n"); // 2 turns, then 1 more on the escalation model
+  expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=0 \\+0/-0 tests=none turns=\\d+ `));
+  expect(text.split("\n")[0]).not.toContain("esc=1");
+  expect(text).toContain("\nreason: turn cap (2) reached\n");
   expect(text).toContain(`\nworktree: .cheapag/worktrees/${job}/\n`);
-  expect(fake.recorded.aborts).toHaveLength(2);
+  expect(fake.recorded.aborts).toHaveLength(1);
+  expect(fake.recorded.prompts).toHaveLength(1); // ticket 28: the cap is the end, no second prompt on the escalation model
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job))).toBe(true);
 });
 
-test("turn cap on the first run → the same session is handed to the escalation model with escalation_turns more", async () => {
-  const { repo, fake, delegate } = await scenario({
-    repoConfig: { limits: { max_turns: 2, escalation_turns: 5 } },
-    scripts: [
-      [{ tool: "read" }, { tool: "grep" }, LONG, { tool: "write" }],
-      [{ edit: "src/hello.ts", content: "export const hello = 3;\n" }, { tool: "write" }, { finish: { summary: "took over and finished", risks: [], review: [], missing: [] } }],
-    ],
+test("fail fast: a step with checks and no test file by repro_by_turns → FAIL at once, so Claude takes over early", async () => {
+  const { fake, delegate } = await scenario({
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[{ tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG, { tool: "write" }]],
   });
   const text = await delegate();
   const job = jobOf(text);
-  expect(text.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 files=1 .* esc=1 model=opencode-go/deepseek-v4-pro$`));
-  expect(text).toContain("summary: took over and finished");
-  // one session, two prompts: the first interrupted at the cap, the second on the escalation model
-  expect(fake.recorded.sessions).toHaveLength(1);
-  expect(fake.recorded.prompts.map((p) => p.model?.modelID)).toEqual([undefined, "deepseek-v4-pro"]);
-  expect(JSON.stringify(fake.recorded.prompts[1].parts)).toContain("taking over this task");
-  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"));
-  expect(record.models.escalated).toBe(true);
-  expect(readFileSync(join(repo.dir, "src", "hello.ts"), "utf8")).toBe("export const hello = 3;\n");
+  expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=0 `));
+  expect(text).toContain("\nreason: no reproduction test by turn 2; the worker was still exploring\n");
+  expect(fake.recorded.aborts).toHaveLength(1);
+});
+
+test("fail fast does not fire once a test file exists; the OK headline names it as test=", async () => {
+  const { delegate } = await scenario({
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[
+      { edit: "test/hello.test.mjs", content: "process.exit(0);\n" }, { tool: "write" }, { tool: "read" }, { tool: "grep" },
+      { edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" },
+      { finish: { summary: "fixed", risks: [], review: [], missing: [], repro: "n/a" } as never },
+    ]],
+  });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^OK j\w{4} step=1 files=2 .* test=test\/hello\.test\.mjs$/);
 });
 
 test("minute cap → session aborted → TIMEOUT with reason; nothing lands, worktree kept", async () => {
@@ -242,6 +247,7 @@ test.each([
   [{ limits: { max_turns: 2.5 } }, "limits.max_turns must be a positive whole number"],
   [{ limits: { max_minutes: "20" } }, "limits.max_minutes must be a positive number"],
   [{ limits: { max_parallel: 1.5 } }, "limits.max_parallel must be a positive whole number"],
+  [{ limits: { repro_by_turns: 0 } }, "limits.repro_by_turns must be a positive whole number"],
   [{ limits: [] }, "limits must be an object"],
   [{ integration_cmd: " " }, "integration_cmd must be a non-empty string"],
 ])("a bad config %j fails before any job", async (config, message) => {
