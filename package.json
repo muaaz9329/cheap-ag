@@ -1,13 +1,36 @@
 {
   "name": "cheap-agent",
   "version": "0.1.0",
-  "description": "Cheap Agent: Claude plans and reviews while a cheaper model implements, over MCP.",
+  "description": "Cut your Claude Code usage: Claude plans, a cheap model writes the code. One command to install.",
+  "license": "Elastic-2.0",
+  "author": "muaaz9329",
+  "homepage": "https://github.com/muaaz9329/cheap-ag#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muaaz9329/cheap-ag.git"
+  },
+  "bugs": {
+    "url": "https://github.com/muaaz9329/cheap-ag/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "mcp",
+    "ai-agents",
+    "deepseek",
+    "openrouter",
+    "cost",
+    "delegation"
+  ],
   "type": "module",
   "bin": {
     "cheapag": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "plugin",
+    "LICENSE",
+    "README.md"
   ],
   "engines": {
     "node": ">=20.11"

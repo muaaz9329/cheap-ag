@@ -2,19 +2,20 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, userConfigFile } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
 import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
+import { installPlugin, stableNode } from "./install.js";
 import { fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig } from "./routing.js";
 import { runSession } from "./worker.js";
 
 /**
  * `cheapag login`: the only setup (ADR-0004). Picks a provider, lets the bundled OpenCode's own login take the key
  * (hidden input, saved in OpenCode's store; Cheap Agent never sees it), live-checks it, then offers to register
- * the server with Claude Code at user scope.
+ * the server with Claude Code at user scope and install the plugin (ticket 31). `npx cheap-agent` in a terminal runs it too.
  */
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -170,7 +171,7 @@ function explain(message: string, model: string) {
   return `live check failed: ${first}`;
 }
 
-/** Offers user-scope registration with Claude Code; prints the command whenever it does not run it. */
+/** Offers user-scope registration with Claude Code, then the plugin; prints the commands whenever it does not run them. */
 async function register(out: (line?: string) => void) {
   const command = serverCommand();
   const manual = `claude mcp add -s user cheapag -- ${command.map(quote).join(" ")}`;
@@ -182,7 +183,8 @@ async function register(out: (line?: string) => void) {
   // only a user-scope entry counts: a local or project one doesn't cover "all your projects"
   // shortcut: an existing user-scope entry is kept even if it points at an older install; re-register by hand after moving it
   if (existing.status === 0 && /Scope:\s*User/i.test(existing.stdout)) {
-    out("✓ cheapag is already registered with Claude Code; skipping");
+    out("✓ cheapag is already registered with Claude Code");
+    finish(out, installPlugin(out));
     return;
   }
   if (/^n/i.test(await ask("Add cheapag to Claude Code for all your projects? [Y/n] "))) {
@@ -190,25 +192,25 @@ async function register(out: (line?: string) => void) {
     return;
   }
   const added = spawnSync("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], { encoding: "utf8" });
-  if (added.status === 0) out("✓ Added cheapag to Claude Code (user scope). Start a new Claude Code session to use it.");
-  else out(`✗ claude mcp add failed (${(added.stderr || added.stdout).trim().split("\n")[0]}). Run it yourself:\n  ${manual}`);
+  if (added.status !== 0) {
+    out(`✗ claude mcp add failed (${(added.stderr || added.stdout).trim().split("\n")[0]}). Run it yourself:\n  ${manual}`);
+    return;
+  }
+  out("✓ Added cheapag to Claude Code for all your projects");
+  finish(out, installPlugin(out));
+}
+
+/** The last thing setup says: how to start. */
+function finish(out: (line?: string) => void, plugin: boolean) {
+  out(plugin
+    ? "\nDone. Open a new Claude Code session in your project and run /cheapag:allow once there; then ask for changes as usual."
+    : "\nThe server is set up; add the plugin with the commands above, then open a new Claude Code session.");
 }
 
 /** How Claude Code should start this installed package: npx when run from npx's cache, else this exact file. */
 function serverCommand() {
   const entry = realpathSync(process.argv[1]);
   return entry.includes("/_npx/") ? ["npx", "-y", `cheap-agent@${version}`] : [stableNode(), entry];
-}
-
-/** A `node` on PATH resolving to this same binary (e.g. Homebrew's bin symlink) survives upgrades; the versioned execPath doesn't. */
-function stableNode() {
-  const self = realpathSync(process.execPath);
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    try {
-      if (dir && realpathSync(join(dir, "node")) === self) return join(dir, "node");
-    } catch {} // no node in this PATH entry
-  }
-  return process.execPath;
 }
 
 const quote = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);

@@ -15,7 +15,7 @@ const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
  * `claude` is a stub on PATH (`registered` decides what `claude mcp get cheapag` says), or absent.
  * The worker-models question gets `preset` (default: Enter) unless `args` passes --preset; `config` is the user config before.
  */
-async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object }) {
+async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object; plugin?: "installed" | "fails"; cmd?: string[] }) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   fake.script(...(opts.check ?? [{ usage: { cost: 0.0001 } }]));
@@ -31,7 +31,10 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
     mkdirSync(bin);
     const scope = { registered: "User config (available in all your projects)", local: "Local config (private to you in this project)", unregistered: "" }[opts.claude];
     const get = scope ? `echo "cheapag:"; echo "  Scope: ${scope}"; exit 0` : "exit 1";
-    writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${calls}"\nif [ "$1 $2" = "mcp get" ]; then ${get}; fi\nexit 0\n`);
+    // ticket 31: "plugin list" / "plugin marketplace list" name cheapag once installed; "plugin install" can fail
+    const listed = opts.plugin === "installed" ? `if [ "$1 $2" = "plugin list" ]; then echo "  ❯ cheapag@cheapag"; fi\nif [ "$1 $2 $3" = "plugin marketplace list" ]; then echo "  ❯ cheapag"; fi\n` : "";
+    const fails = opts.plugin === "fails" ? `if [ "$1 $2" = "plugin install" ]; then echo "Plugin not found" >&2; exit 1; fi\n` : "";
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${calls}"\nif [ "$1 $2" = "mcp get" ]; then ${get}; fi\n${listed}${fails}exit 0\n`);
     chmodSync(join(bin, "claude"), 0o755);
   }
   const steps = [
@@ -41,7 +44,7 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
     ...(opts.register ? [{ expect: "Y/n", send: `${opts.register}\r` }] : []),
   ];
   const spec = {
-    cmd: [process.execPath, serverEntry, "login", ...(opts.args ?? [])],
+    cmd: opts.cmd ?? [process.execPath, serverEntry, "login", ...(opts.args ?? [])],
     cwd: home,
     env: { ...env, CHEAPAG_OPENCODE_URL: fake.url, PATH: [bin, ...(opts.path ?? []), dirname(process.execPath), "/usr/bin", "/bin"].join(":"), TERM: "xterm" },
     steps,
@@ -57,6 +60,8 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
     saved: existsSync(auth) ? Object.keys(JSON.parse(readFileSync(auth, "utf8"))) : [],
     config: existsSync(config) ? JSON.parse(readFileSync(config, "utf8")) : undefined,
     fake,
+    marketplace: join(home, "config", "cheapag", "marketplace"),
+    launcher: join(home, "config", "cheapag", "bin", "cheapag"),
   };
 }
 
@@ -70,14 +75,18 @@ async function scriptedLogin(args: string[]) {
 }
 
 const ADD = `mcp add -s user cheapag -- ${process.execPath} ${serverEntry}`;
+/** The plugin steps on a machine without it (ticket 31). */
+const PLUGIN = (marketplace: string) => ["plugin marketplace list", "plugin list", `plugin marketplace add ${marketplace}`, "plugin install cheapag@cheapag"];
 
 test("login saves the key through the bundled OpenCode, live-checks it, and registers at user scope on yes", async () => {
   const r = await runLogin({ claude: "unregistered", register: "y" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.saved).toEqual(["openrouter"]);
   expect(r.output).toContain("✓ openrouter/deepseek/deepseek-v4.1-flash answered (cost $0.0001)");
-  expect(r.output).toContain("✓ Added cheapag to Claude Code (user scope).");
-  expect(r.claudeCalls).toEqual(["mcp get cheapag", ADD]);
+  expect(r.output).toContain("✓ Added cheapag to Claude Code for all your projects");
+  expect(r.output).toContain("✓ Added the cheapag plugin to Claude Code");
+  expect(r.output).toContain("Open a new Claude Code session in your project and run /cheapag:allow once there");
+  expect(r.claudeCalls).toEqual(["mcp get cheapag", ADD, ...PLUGIN(r.marketplace)]);
   // the live check ran the implement model on the provider just saved
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" });
   expect(r.output).not.toContain(KEY.slice(10)); // OpenCode masks the input; nothing echoes it
@@ -138,7 +147,8 @@ test("registration uses a node symlink on PATH (e.g. Homebrew's bin) over the ve
   mkdirSync(stable);
   symlinkSync(process.execPath, join(stable, "node"));
   const r = await runLogin({ claude: "unregistered", register: "y", path: [stable] });
-  expect(r.claudeCalls).toEqual(["mcp get cheapag", `mcp add -s user cheapag -- ${join(stable, "node")} ${serverEntry}`]);
+  expect(r.claudeCalls.slice(0, 2)).toEqual(["mcp get cheapag", `mcp add -s user cheapag -- ${join(stable, "node")} ${serverEntry}`]);
+  expect(readFileSync(r.launcher, "utf8")).toContain(`exec '${join(stable, "node")}' '${serverEntry}' "$@"`);
 }, 90_000);
 
 test("answering no prints the exact command instead of running it", async () => {
@@ -148,18 +158,53 @@ test("answering no prints the exact command instead of running it", async () => 
   expect(r.claudeCalls).toEqual(["mcp get cheapag"]);
 }, 90_000);
 
-test("an existing registration is detected and skipped without asking", async () => {
+test("an existing registration is detected and kept without asking; the plugin is still installed", async () => {
   const r = await runLogin({ claude: "registered" });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).toContain("✓ cheapag is already registered with Claude Code; skipping");
+  expect(r.output).toContain("✓ cheapag is already registered with Claude Code\n");
   expect(r.output).not.toContain("[Y/n]");
-  expect(r.claudeCalls).toEqual(["mcp get cheapag"]);
+  expect(r.claudeCalls).toEqual(["mcp get cheapag", ...PLUGIN(r.marketplace)]);
+}, 90_000);
+
+test("the plugin is generated from the package: hooks and commands call the launcher, no .mcp.json, its own marketplace", async () => {
+  const r = await runLogin({ claude: "registered" });
+  const plugin = join(r.marketplace, "cheapag");
+  const hooks = readFileSync(join(plugin, "hooks", "hooks.json"), "utf8");
+  expect(hooks).not.toContain("npx -y");
+  expect(hooks).toContain(`${r.launcher} hook guard`);
+  expect(hooks).toContain(`${r.launcher} hook result`);
+  expect(hooks).toContain(`${r.launcher} hook context`);
+  expect(readFileSync(join(plugin, "skills", "allow", "SKILL.md"), "utf8")).toContain(`allowed-tools: Bash(${r.launcher} allow) Bash(${r.launcher} allow *)`);
+  expect(existsSync(join(plugin, ".mcp.json"))).toBe(false); // the server is registered at user scope instead
+  expect(JSON.parse(readFileSync(join(r.marketplace, ".claude-plugin", "marketplace.json"), "utf8"))).toMatchObject({ name: "cheapag", plugins: [{ name: "cheapag", source: "./cheapag" }] });
+  // the launcher runs this install, falling back to the pinned npm version
+  const launcher = readFileSync(r.launcher, "utf8");
+  expect(launcher).toMatch(/^#!\/bin\/sh\n/);
+  expect(launcher).toContain(`[ -f '${serverEntry}' ] && exec '${process.execPath}' '${serverEntry}' "$@"`);
+  expect(launcher).toMatch(/\nexec npx -y cheap-agent@\d+\.\d+\.\d+ "\$@"\n$/);
+  const context = await promisify(execFile)(r.launcher, ["hook", "context"], { encoding: "utf8" });
+  expect(context.stdout).toContain('"hookEventName":"SessionStart"');
+}, 90_000);
+
+test("re-running setup updates the plugin it installed; a failed plugin step prints the commands to run", async () => {
+  const again = await runLogin({ claude: "registered", plugin: "installed" });
+  expect(again.claudeCalls).toEqual(["mcp get cheapag", "plugin marketplace list", "plugin list", "plugin marketplace update cheapag", "plugin update cheapag@cheapag"]);
+  const failed = await runLogin({ claude: "registered", plugin: "fails" });
+  expect(failed.exit).toBe("EXIT 0");
+  expect(failed.output).toContain(`✗ claude plugin install cheapag@cheapag failed (Plugin not found). Run these yourself:\n  claude plugin marketplace add ${failed.marketplace}\n  claude plugin install cheapag@cheapag`);
+  expect(failed.output).toContain("add the plugin with the commands above");
+}, 120_000);
+
+test("npx cheap-agent with no arguments in a terminal runs setup (Claude Code starts the server with a piped stdin)", async () => {
+  const r = await runLogin({ claude: "registered", cmd: [process.execPath, serverEntry] });
+  expect(r.output).toContain("Cheap Agent login");
+  expect(r.exit).toBe("EXIT 0");
 }, 90_000);
 
 test("a registration at another scope does not count: login still offers the user-scope add", async () => {
   const r = await runLogin({ claude: "local", register: "y" });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.claudeCalls).toEqual(["mcp get cheapag", ADD]);
+  expect(r.claudeCalls.slice(0, 2)).toEqual(["mcp get cheapag", ADD]);
 }, 90_000);
 
 test("without the claude CLI, login prints the command to run", async () => {
