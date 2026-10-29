@@ -158,15 +158,26 @@ test("takeover self: PARTIAL and TIMEOUT start it too; limits.takeover_calls 0 t
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
 });
 
-test("takeover sonnet (default): after a FAIL, only the Agent tool and cheapag's tools are left; the subagent works freely; a new prompt is free", () => {
+test("takeover sonnet (default): after a FAIL, only the Agent tool, read-only tools and cheapag's tools are left; the subagent works freely; a new prompt is free", () => {
   const { run, result } = setup();
   result(FAIL_BLOCK);
-  const reason = run("Read", read);
+  const reason = run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" });
   expect(reason).toMatch(/^The worker did not finish this step: hand it to your Agent tool with model: sonnet \(the task, the user's words, the block's found:, test=, error: and worktree\)/);
   expect(reason).toContain('takeover: "self"');
   expect(run("Bash", { command: "./swebench-test.sh x" })).toMatch(/^The worker did not finish/);
   expect(run("Agent", { model: "sonnet", prompt: "finish it" })).toBeNull();
   expect(run("mcp__cheapag__land", { job: "jab12" })).toBeNull();
+  // reads and read-only Bash are how the reader inspects the diff before handing it over
+  expect(run("Read", read)).toBeNull();
+  expect(run("Grep", { pattern: "x" })).toBeNull();
+  expect(run("Glob", { pattern: "*.ts" })).toBeNull();
+  expect(run("LS", { path: "." })).toBeNull();
+  expect(run("Bash", { command: "git diff -- src/a.ts" })).toBeNull();
+  expect(run("Bash", { command: "cat src/a.ts | head" })).toBeNull();
+  // writes and test runs stay denied
+  expect(run("Bash", { command: "npm test" })).toMatch(/^The worker did not finish/);
+  expect(run("Bash", { command: "echo x > f" })).toMatch(/^The worker did not finish/);
+  expect(run("Bash", { command: "cat a && npm test" })).toMatch(/^The worker did not finish/);
   // the subagent's own calls carry agent_id: never denied, never counted
   for (let i = 0; i < 4; i++) expect(run(i % 2 ? "Edit" : "Bash", i % 2 ? { file_path: "a.ts", old_string: "a", new_string: "b" } : { command: "pytest -q" }, { agent: "ab9d" })).toBeNull();
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
@@ -185,5 +196,5 @@ test("trust OK: after an OK whose checks passed, re-running tests is denied; oth
   expect(run("Bash", { command: "pytest -q" }, { agent: "ab9d" })).toBeNull(); // a subagent may test
   expect(run("Bash", { command: "npm test" }, { prompt: "p2" })).toBeNull();
   result(FAIL_BLOCK, "p2");
-  expect(run("Read", read, { prompt: "p2" })).toMatch(/^The worker did not finish/);
+  expect(run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" }, { prompt: "p2" })).toMatch(/^The worker did not finish/);
 }, slow(20_000));

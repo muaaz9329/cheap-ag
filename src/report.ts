@@ -40,6 +40,8 @@ export type JobRecord = {
   models: { requested: string; final: string; escalated: boolean };
   /** The de-noised tail of the last failing verify command: the command first, then indented lines. */
   error?: string[];
+  /** `env`: the failing check could not run (missing tool, broken Node), so the code may still be fine. */
+  check?: "env";
   tried?: string[];
   /** A stopped worker's findings note (ticket 29): where the bug is, its hypothesis, what it ruled out. */
   found?: string;
@@ -61,6 +63,8 @@ export type ResearchRecord = {
   format: "cheapag/1";
   job: string;
   status: "ANSWER" | "UNSURE" | "FAIL" | "BUDGET";
+  /** An ANSWER recovered after a turn cap, or one the worker marked `status: partial`: what was found so far. */
+  partial?: boolean;
   filesRead: number;
   usage: { turns: number; costUsd: number };
   models?: { requested: string; final: string };
@@ -109,6 +113,8 @@ const STATUS_SECTIONS: Record<Exclude<JobStatus, "RUNNING">, Section[]> = {
 const URGENCY: JobStatus[] = ["BLOCKED", "CONFLICT", "FAIL", "BUDGET", "TIMEOUT", "CANCELLED", "PARTIAL", "RUNNING", "OK"];
 const rank = (s: JobStatus) => (s === "TIMEOUT" || s === "CANCELLED" ? URGENCY.indexOf("BUDGET") : URGENCY.indexOf(s));
 
+/** The summary a worker that never reported gets (src/worker.ts). */
+export const NO_SUMMARY = "(worker gave no summary)";
 const BUDGET_TOKENS = 400;
 const LINE_MAX = 200;
 
@@ -144,14 +150,17 @@ function layout(r: JobRecord, c: Cuts) {
   const del = r.changed.reduce((n, x) => n + x.del, 0);
   const lines = [
     [
-      r.status, r.job, `step=${r.steps}`, `files=${r.changed.length}`, `+${add}/-${del}`, r.tests && `tests=${r.tests}`,
+      r.status, r.job, `step=${r.steps}`, `files=${r.changed.length}`, `+${add}/-${del}`, r.tests && `tests=${r.tests}`, r.check && `check=${r.check}`,
       `turns=${r.usage.turns}`, `cost=$${r.usage.costUsd.toFixed(3)}`,
       r.selfFix && `fix=${r.selfFix}`, r.models.escalated && "esc=1",
       r.models.final !== r.models.requested && `model=${r.models.final}`, r.redo && "redo=1", r.billing && `billing=${r.billing}`, r.repro && `repro=${r.repro}`, r.test && `test=${r.test}`,
     ].filter(Boolean).join(" "),
   ];
   const keep = new Set<string>(); // question/options lines are never elided
-  if (r.summary) lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
+  // a worker with no summary has nothing to put there: `found:` leads instead
+  const lead = r.summary === NO_SUMMARY && has("found") && r.found;
+  if (lead) lines.push(...wrap(`found: ${oneLine(r.found!)}`));
+  if (r.summary && !lead) lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
   // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
   if (r.changed.length && r.status !== "BLOCKED") {
     lines.push("changed:", ...r.changed.slice(0, c.changed).map((x) => `  ${x.status} ${x.path}${x.add ? ` +${x.add}` : ""}${x.del ? ` -${x.del}` : ""}`));
@@ -170,9 +179,11 @@ function layout(r: JobRecord, c: Cuts) {
   if (has("error") && r.error?.length) {
     const e = r.error.slice(0, c.error);
     if (e.length < r.error.length) e[e.length - 1] = `  … +${r.error.length - e.length + 1} more lines (see log)`;
-    lines.push(`error: ${e[0]}`, ...e.slice(1));
+    // an env failure carries the reason first, then the ordinary tail (the command and its output)
+    if (r.check === "env") lines.push(`error: environment: the check could not run (${e[0]})`, ...e.slice(1));
+    else lines.push(`error: ${e[0]}`, ...e.slice(1));
   }
-  if (has("found") && r.found) lines.push(...wrap(`found: ${oneLine(r.found)}`));
+  if (has("found") && r.found && !lead) lines.push(...wrap(`found: ${oneLine(r.found)}`));
   if (has("tried") && r.tried?.length) lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (has("missing") && r.missing.length) lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
@@ -186,7 +197,7 @@ export function renderResearch(r: ResearchRecord) {
   const lines = [
     [
       r.status, r.job, `files_read=${r.filesRead}`, `turns=${r.usage.turns}`, `cost=$${r.usage.costUsd.toFixed(3)}`,
-      r.models && r.models.final !== r.models.requested && `model=${r.models.final}`,
+      r.models && r.models.final !== r.models.requested && `model=${r.models.final}`, r.partial && "status=partial",
     ].filter(Boolean).join(" "),
   ];
   // a scout brief (ticket 23.4): ranked files, the reproduction, dead ends, then the prose

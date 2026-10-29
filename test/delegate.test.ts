@@ -158,7 +158,7 @@ test.each([
   ["a step in two groups", PLAN, "1,1", 'FAIL reason: plan .plan/hello.md: steps "1,1": step 1 is in more than one group'],
   ["a plan path outside the repo", PLAN, "1", null],
   ["a step missing done-when", "# T\n## 1 a\nfiles: a.ts\n", "1", `FAIL reason: plan .plan/hello.md: step 1 (line 2): missing done-when:\n${PLAN_FORMAT}`],
-  ["a heading without an id", "# T\n## add things\nfiles: a\ndone-when: x\n", "1", `FAIL reason: plan .plan/hello.md: line 2: step heading needs an id (integer or integer+letter), e.g. "## 3 add route"\n${PLAN_FORMAT}`],
+  ["a heading without an id", "# T\n## add things\nfiles: a\ndone-when: x\n", "1", `FAIL reason: plan .plan/hello.md: line 2: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")\n${PLAN_FORMAT}`],
   ["bulleted keys with no H1 (as Claude first wrote it)", "## 1 greet\n\n- files: src/greet.js\n- done-when: exists\n", "1", `FAIL reason: plan .plan/hello.md: line 1: step before the plan's H1 title\n${PLAN_FORMAT}`],
 ] as const)("%s fails immediately without starting a job", async (_, plan, steps, expected) => {
   const { repo, fake, delegate } = await scenario(null, plan);

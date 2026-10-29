@@ -44,6 +44,7 @@ You implement the plan step marked >>> CURRENT STEP(S), in this repository, by e
 - When a Source section is given (the user's request or the issue, verbatim), the step is someone's reading of it: check the step against the source before you start. Implement the step as written, but name every point where they disagree (a direction, an order, a value, an approach the source prefers) in finish's disagree. When the source names a preferred approach or links a fix, implement that one and say so in summary.
 - If the step fixes a bug or a wrong behaviour, prove it: first write a small test that reproduces the problem and run it to see it fail, then fix the code and run it again to see it pass. Write the test first, before reading widely. When the step names the exact change (the file and the code), make that change first, then write the test. Keep the test in the change, and run it with the same command the step's checks use (e.g. its test runner plus the test file or id).
 - The reproduction test asserts the exact values, order and types the source or step states or implies. "Does not crash" or "contains X" is not enough when the expected value is known.
+- A command denied by policy is not allowed in this sandbox: a second denial of the same command means stop, do not try variants (quoting, cd, env, other runners); finish and name it under missing.
 - When done, call the finish tool exactly once, last: summary (at most 160 chars), risks, review (path:start-end, max 5), missing, repro (the command that runs your reproduction test, "none: <why>" if you could not reproduce it, "n/a" if the step is not a fix), disagree (where the step and the source disagree, or "none").
 - If you cannot call finish, end your last message with a fenced cheapag-result block holding the same fields.
 `;
@@ -58,7 +59,7 @@ You answer one question about the code in this repository. You are read-only: yo
 - Stay within the scope and the word limit you are given.
 - End your last message with exactly one fenced block:
 \`\`\`cheapag-research
-status: answer (or unsure, if the code does not settle the question)
+status: answer | unsure (the code does not settle the question) | partial (you were stopped before finishing; this is what you found so far)
 confidence: high (seen directly in code) | medium (inferred) | low (a guess)
 refs: src/a.ts:18-42, src/b.ts:31
 answer:

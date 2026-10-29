@@ -3,7 +3,7 @@ import { gitBash, killProcessGroup, normalisePath } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
 
-export type VerifyRun = { cmd: string; ok: boolean; ms: number; output: string };
+export type VerifyRun = { cmd: string; ok: boolean; ms: number; output: string; code: number | null; signal: string | null };
 
 // a backstop per command; the job's minute cap (its `signal`) bounds the whole job
 const COMMAND_TIMEOUT_MS = 5 * 60_000;
@@ -13,6 +13,26 @@ const OUTPUT_LIMIT = 1024 * 1024;
 export function verifyCommands(doneWhen: string[], testCmd?: string) {
   const backticked = doneWhen.flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim())).filter(Boolean);
   return backticked.length ? backticked : testCmd ? [testCmd] : [];
+}
+
+/**
+ * Every string the ruleset must allow for one check command, so the worker can run it as written: the command
+ * itself, plus each `&&`/`||`/`;`/`|` segment (OpenCode checks segments separately), each as typed and with its
+ * leading `NAME=value` (or `export NAME=value`) assignments stripped. De-duplicated, in first-seen order.
+ */
+export function checkAllows(cmd: string): string[] {
+  const out: string[] = [];
+  const add = (s: string) => {
+    const value = s.trim();
+    if (value && !out.includes(value)) out.push(value);
+  };
+  add(cmd);
+  for (const segment of cmd.split(/&&|\|\||;|\|/)) {
+    add(segment);
+    const stripped = segment.trim().replace(/^(?:export\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").trim();
+    if (stripped) add(stripped);
+  }
+  return out;
 }
 
 /**
@@ -44,6 +64,7 @@ function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyR
     const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;
+    let exitSignal: string | null = null;
     // keep the end: failures and summaries come last
     const collect = (chunk: string) => (output = (output + chunk).slice(-OUTPUT_LIMIT));
     child.stdout.setEncoding("utf8").on("data", collect);
@@ -58,21 +79,39 @@ function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyR
     };
     signal?.addEventListener("abort", halt, { once: true });
     // a backgrounded child (`server &`) would hold the pipes open: when the shell exits, stop its whole group
-    child.on("exit", (exitCode) => {
+    child.on("exit", (exitCode, exitSignalValue) => {
       code = exitCode;
+      exitSignal = exitSignalValue;
       killGroup();
     });
     child.on("close", () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", halt);
-      resolve({ cmd, ok: code === 0 && !signal?.aborted, ms: Date.now() - started, output });
+      resolve({ cmd, ok: code === 0 && !signal?.aborted, ms: Date.now() - started, output, code, signal: exitSignal });
     });
     child.on("error", (err) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", halt);
-      resolve({ cmd, ok: false, ms: Date.now() - started, output: err.message });
+      resolve({ cmd, ok: false, ms: Date.now() - started, output: err.message, code: null, signal: null });
     });
   });
+}
+
+// output only a shell or dynamic loader emits when it cannot run the command at all
+const ENV_OUTPUT = /command not found|dyld|Abort trap|is not recognized as an internal or external command|cannot execute binary|No such file or directory: .*\b(node|npx|python3?|pytest|go|cargo)\b/i;
+
+/**
+ * Why a failed check looks environmental (a missing tool or a broken Node) rather than a failing test: the exit code,
+ * the signal, or a phrase only a shell or loader emits. `undefined` when the run passed or failed like ordinary code.
+ */
+export function envFailure(run: VerifyRun): string | undefined {
+  // a run cheapag itself stopped (job cap, cancel, command timeout) died of our SIGKILL: not the environment's fault
+  if (run.ok || /\(cheapag: stopped/.test(run.output)) return undefined;
+  if (run.signal) return `signal ${run.signal}`;
+  if (run.code === 127) return "exit 127: command not found";
+  if (run.code === 134) return "exit 134 (dyld abort)";
+  const match = run.output.match(ENV_OUTPUT);
+  return match ? `exit ${run.code ?? "?"}: ${match[0].trim()}` : undefined;
 }
 
 const MARKER = /✗|✘|×|\bFAIL\b|Error:|error TS\d+|AssertionError|Traceback|panicked|^E\s{2,}/;

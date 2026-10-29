@@ -14,7 +14,7 @@ Save plans under `.plan/` in the repository, e.g. `.plan/rate-limit.md` (the dev
 ```
 # <plan title>                              ← required, exactly one H1
 <shared context, optional, ≤ ~15 lines>
-## <id> <short title>                       ← id = integer or integer+letter (3, 3a)
+## <id> <short title>                       ← id = integer or integer+letter (3, 3a; s3, step-3 also work)
 files: <path>, <dir/>, ...                  ← required; scope + overlap key
 do: <what to build; continuation lines indented 2+ spaces>
 done-when: <condition>; <condition>         ← required; `backticked` = executed

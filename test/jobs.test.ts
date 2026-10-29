@@ -106,7 +106,7 @@ test("fail fast: a step with checks and no test file by repro_by_turns → FAIL 
   expect(fake.recorded.aborts).toHaveLength(1);
 });
 
-test("a stopped job asks the worker for its findings once; the FAIL block carries them as found: before reason:", async () => {
+test("a stopped job asks the worker for its findings once; the FAIL block carries them as found:, leading when the worker gave no summary", async () => {
   const { fake, delegate } = await scenario({
     doneWhen: "`node check.mjs` passes",
     repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
@@ -116,7 +116,8 @@ test("a stopped job asks the worker for its findings once; the FAIL block carrie
     ],
   });
   const text = await delegate();
-  expect(text).toContain("\nfound: Bug in src/hello.ts:hello, it returns 1. Ruled out the config loader.\nreason: no reproduction test by turn 2;");
+  expect(text).toContain("\nfound: Bug in src/hello.ts:hello, it returns 1. Ruled out the config loader.\n");
+  expect(text).toContain("\nreason: no reproduction test by turn 2;");
   expect(fake.recorded.prompts).toHaveLength(2);
 });
 
@@ -274,4 +275,36 @@ test.each([
   const { repo, fake, delegate } = await scenario({ repoConfig: config, scripts: [] });
   expect(await delegate()).toBe(`FAIL reason: ${join(repo.dir, "cheapag.json")}: ${message}`);
   expect(fake.recorded.sessions).toEqual([]);
+});
+
+test("ticket 33: a medium step gets twice an easy one's turns before the turn cap", async () => {
+  const repoConfig = { limits: { max_turns: 2 } };
+  const easy = await scenario({ repoConfig, scripts: [[{ tool: "read" }, { tool: "grep" }, LONG, { tool: "write" }]] });
+  const easyText = await callText(easy.server.client, "delegate", { plan: ".plan/p.md", steps: "1", difficulty: "easy" });
+  expect(easyText.split("\n")[0]).toMatch(/^FAIL \w+ step=1 files=0 \+0\/-0 tests=none turns=2 /);
+  expect(easyText).toContain("\nreason: turn cap (2) reached\n");
+
+  const medium = await scenario({ repoConfig, scripts: [[{ tool: "read" }, { tool: "grep" }, { tool: "read" }, { tool: "grep" }, LONG, { tool: "write" }]] });
+  const mediumText = await callText(medium.server.client, "delegate", { plan: ".plan/p.md", steps: "1", difficulty: "medium" });
+  expect(mediumText.split("\n")[0]).toMatch(/^FAIL \w+ step=1 files=0 \+0\/-0 tests=none turns=4 /);
+  expect(mediumText).toContain("\nreason: turn cap (4) reached\n");
+});
+
+test("ticket 33: a turn cap during the fixes still escalates once, on its own budget; esc fixes it and the job lands", async () => {
+  const { repo, fake, server, record } = await scenario({
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { max_turns: 3, repro_by_turns: 20 } },
+    scripts: [
+      // a failing change, then enough tools to hit the turn cap (3)
+      [{ edit: "src/hello.ts", content: "export const hello = 1;\n" }, { tool: "write" }, { tool: "read" }, { tool: "grep" }, LONG, { tool: "write" }],
+      // the escalation model's own, smaller budget runs and fixes the check
+      [{ edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" }, { finish: { summary: "esc fixed it", risks: [], review: [], missing: [] } }],
+    ],
+  });
+  const text = await callText(server.client, "delegate", { plan: ".plan/p.md", steps: "1" });
+  const job = jobOf(text);
+  expect(text.split("\n")[0]).toBe(`OK ${job} step=1 files=1 +1/-0 tests=pass turns=5 cost=$0.000 esc=1 model=opencode-go/deepseek-v4-pro`);
+  expect(fake.recorded.prompts.some((p) => p.model?.modelID === "deepseek-v4-pro")).toBe(true);
+  expect(record(job)).toMatchObject({ status: "OK", landed: true, models: { escalated: true, final: "opencode-go/deepseek-v4-pro" } });
+  expect(readFileSync(join(repo.dir, "src/hello.ts"), "utf8")).toBe("export const hello = 2;\n");
 });

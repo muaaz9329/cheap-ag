@@ -1,5 +1,6 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { runningOpencode, type Opencode } from "./opencode.js";
+import { NO_SUMMARY } from "./report.js";
 import { rejectionMessage, type Rule } from "./permissions.js";
 import { modelName, type Limit, type WorkerModel } from "./routing.js";
 
@@ -255,7 +256,7 @@ function describe(err: unknown) {
 /** The HTTP status of a provider error (APIError), e.g. OpenRouter's 402 for insufficient credits. */
 const statusOf = (err: unknown) => (err as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
 
-const NO_REPORT: FinishReport = { summary: "(worker gave no summary)", risks: ["worker did not report; review diff"], review: [], missing: [] };
+const NO_REPORT: FinishReport = { summary: NO_SUMMARY, risks: ["worker did not report; review diff"], review: [], missing: [] };
 
 /** The finish tool's report; else the last fenced `cheapag-result` block, parsed leniently; else a placeholder. */
 export function finishReport(result: Pick<SessionResult, "finish" | "text">): FinishReport {

@@ -28,6 +28,16 @@ describe("D5 status blocks", () => {
     expect(renderJob(job({ job: "j3", status: "OK", found: "ignored" }))).not.toContain("found:");
   });
 
+  test("found: leads the block when the worker gave no summary (the summary: line is omitted); with a summary the order is unchanged", () => {
+    const none = renderJob(job({ job: "j8", status: "FAIL", summary: "(worker gave no summary)", error: ["`npm test`"], found: "a.ts:f", reason: "turn cap" })).split("\n");
+    expect(none.slice(1, 4)).toEqual(["found: a.ts:f", "error: `npm test`", "reason: turn cap"]);
+    expect(none.join("\n")).not.toContain("summary:");
+    const partial = renderJob(job({ job: "j9", status: "PARTIAL", summary: "(worker gave no summary)", found: "a.ts:f", missing: ["x"] })).split("\n");
+    expect(partial.slice(1, 3)).toEqual(["found: a.ts:f", "missing:"]);
+    const kept = renderJob(job({ job: "j10", status: "FAIL", summary: "did x", error: ["`npm test`"], found: "a.ts:f" })).split("\n");
+    expect(kept.slice(1, 4)).toEqual(["summary: did x", "error: `npm test`", "found: a.ts:f"]);
+  });
+
   test("OK", () => {
     expect(renderJob(job({
       job: "j7f3a", status: "OK", landed: true, steps: "1-2", tests: "pass", usage: { turns: 22, costUsd: 0.014 },
@@ -100,6 +110,21 @@ describe("D5 status blocks", () => {
       "  - esc: v4-pro rewrote route registration → same failure",
       "worktree: .cheapag/worktrees/j4e1c/",
       "log: .cheapag/jobs/j4e1c/",
+    ));
+  });
+
+  test("FAIL check=env: the check could not run, so error: leads with the environment line (ticket 33)", () => {
+    expect(renderJob(job({
+      job: "j7e1n", status: "FAIL", steps: "1", tests: "fail", usage: { turns: 3, costUsd: 0.001 }, check: "env",
+      error: ["exit 127: command not found", "`nonexistent-cmd-xyz`", "  sh: nonexistent-cmd-xyz: command not found"],
+      worktree: ".cheapag/worktrees/j7e1n",
+    }))).toBe(block(
+      "FAIL j7e1n step=1 files=0 +0/-0 tests=fail check=env turns=3 cost=$0.001",
+      "error: environment: the check could not run (exit 127: command not found)",
+      "`nonexistent-cmd-xyz`",
+      "  sh: nonexistent-cmd-xyz: command not found",
+      "worktree: .cheapag/worktrees/j7e1n/",
+      "log: .cheapag/jobs/j7e1n/",
     ));
   });
 

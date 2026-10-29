@@ -124,6 +124,24 @@ test("paths scope the search: the prompt names them, refs outside are dropped, a
   expect(fake.recorded.sessions).toHaveLength(1);
 });
 
+test("a path that does not exist but whose basename is unique is resolved by basename with a note; several are ambiguous", async () => {
+  const { repo, fake, research } = await scenario();
+  mkdirSync(join(repo.dir, "a"));
+  mkdirSync(join(repo.dir, "b"));
+  writeFileSync(join(repo.dir, "a", "util.ts"), "export {};\n");
+  writeFileSync(join(repo.dir, "b", "util.ts"), "export {};\n");
+  repo.git("add", "-A");
+  repo.git("commit", "-q", "-m", "two utils");
+
+  fake.script(block("status: answer\nconfidence: high\nanswer: ok"));
+  const text = await research({ question: "q", paths: "nope/README.md" });
+  expect(text).toContain("nope/README.md resolved to README.md");
+  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: prompt("Question: q\nScope: look only under README.md; cite only files there.") }]);
+
+  expect(await research({ question: "q", paths: "x/util.ts" })).toBe("FAIL reason: path x/util.ts not found; did you mean: a/util.ts, b/util.ts");
+  expect(fake.recorded.sessions).toHaveLength(1);
+});
+
 test("UNSURE: when the worker says so, and (low confidence) when it answers without the block; FAIL when it says nothing", async () => {
   const { fake, research } = await scenario();
   fake.script(block("status: unsure\nconfidence: low\nanswer: no refresh endpoint found"));
@@ -221,4 +239,19 @@ test("a claimed reproduction the worker never ran is marked unverified and drops
   expect(text).toContain("\nconfidence: low\n");
   fake.script(block("status: answer\nconfidence: medium\nrepro: not attempted\nnotes: read only"));
   expect(await research({ question: "where is it?" })).toMatch(/\nrepro: not attempted\n[\s\S]*\nconfidence: medium\n/);
+});
+
+test("a turn cap recovers what the worker read: one no-tool prompt, rendered as ANSWER status=partial; other failures stay FAIL", async () => {
+  const { repo, fake, research } = await scenario();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_turns: 2 } }));
+  fake.script({ tool: "read" }, { tool: "grep" }, { wait: 60_000 });
+  fake.script(block("status: partial\nconfidence: medium\nrefs: src/auth.ts:18-22\nanswer:\nSo far: validation looks to be in src/auth.ts:18-22."));
+  const text = await research({ question: "where is JWT validated?" });
+  expect(text).toMatch(/^ANSWER r\w{4} files_read=1 turns=2 cost=\$0.000 status=partial\nfiles: src\/auth.ts:18-22\nnotes:\nSo far: /);
+  expect(text).toContain("\nreason: turn cap (2) reached\n");
+  expect(fake.recorded.prompts[1].parts).toMatchObject([{ text: expect.stringContaining("status: partial") }]);
+
+  // a partial reply that does not parse is the old FAIL
+  fake.script({ tool: "read" }, { tool: "grep" }, { wait: 60_000 });
+  expect(await research({ question: "q" })).toMatch(/^FAIL r\w{4} .*\nreason: turn cap \(2\) reached\n/);
 });

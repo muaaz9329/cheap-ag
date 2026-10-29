@@ -9,7 +9,7 @@ import { loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
 import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
-import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
+import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
   conflictPaths, createWorktree, git, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
@@ -25,11 +25,16 @@ import { isAlive, normalisePath } from "./platform.js";
  */
 function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
   const { scripts, exact } = projectScripts(worktree.path);
-  return workerRuleset({ scripts, exact: [...exact, ...cmds], allowCommands: config.allow_commands, linked: worktree.linked });
+  return workerRuleset({ scripts, exact: [...exact, ...cmds.flatMap(checkAllows)], allowCommands: config.allow_commands, linked: worktree.linked });
 }
 
 /** More rejections than this in one job earn a risk line. */
 const MAX_QUIET_REJECTIONS = 5;
+
+/** Ticket 33: a harder step earns proportionally more turns before its cap (defaults 25/50/75 for easy/medium/hard). */
+const TURN_SCALE: Record<Difficulty, number> = { easy: 1, medium: 2, hard: 3 };
+/** The turn cap for the escalation attempt after a turn-cap stop: its own, smaller budget (ticket 33). */
+const ESC_TURNS = 15;
 
 /**
  * `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation.
@@ -222,8 +227,14 @@ function runGroup(g: GroupRun) {
 
   // caps count across the whole job; any stop aborts the session, and all but the turn cap also kill verify
   const { limits } = config;
+  // ticket 33: the turn cap scales with the step's difficulty, and the escalation attempt gets its own smaller one
+  const scale = TURN_SCALE[difficulty ?? "easy"];
+  let turnCap = limits.max_turns * scale;
+  let turnBase = 0; // turns already spent when the current turn budget began (reset for the escalation attempt)
+  const escCap = Math.min(limits.max_turns, ESC_TURNS);
   const halt = new AbortController(); // the worker session
   const kill = new AbortController(); // verify processes: a turn cap still runs one last check, so PARTIAL never hides failing tests
+  let escTurn: AbortController | undefined; // the escalation attempt's own run, when it follows a turn-cap stop
   let stopped = undefined as Stop | undefined; // set from callbacks: keep TS from narrowing it to undefined
   let landing = false;
   const stop = (why: Stop) => {
@@ -234,21 +245,22 @@ function runGroup(g: GroupRun) {
     blocked.delete(job); // a reply arriving now must not resume a stopped job
     halt.abort();
     if (why.cap !== "turns") kill.abort();
+    else escTurn?.abort(); // a turn cap during the escalation attempt ends that run too (it runs after `halt` aborted)
   };
   const overCost = () => {
     if (session && session.totals().usage.costUsd >= limits.max_cost_usd) stop({ cap: "cost", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
   };
   const overTurns = () => {
-    if (session && session.totals().turns >= limits.max_turns) stop({ cap: "turns", reason: `turn cap (${limits.max_turns}) reached` });
+    if (session && session.totals().turns - turnBase >= turnCap) stop({ cap: "turns", reason: `turn cap (${turnCap}) reached` });
   };
   // fail fast (ticket 28): a step with checks that has no test file in its worktree by repro_by_turns stops now, so Claude
   // takes over without a 40-turn failed job in its context (v2 hard tier: FAIL sessions averaged 482k Claude tokens, stock 385k)
   // shortcut: counts any test file in the worktree's status, carried-over dirty ones included; tighten to the job's own edits if that misfires
   let reproSeen = false;
   const reproDue = () => {
-    if (reproSeen || !cmds.length || !worktree || !session || session.totals().turns < limits.repro_by_turns) return;
+    if (reproSeen || !cmds.length || !worktree || !session || session.totals().turns < limits.repro_by_turns * scale) return;
     reproSeen = git(worktree.path, ["status", "--porcelain"]).split("\n").some((l) => TEST_FILE.test(l.slice(3).trim()));
-    if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${limits.repro_by_turns}; the worker was still exploring` });
+    if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${limits.repro_by_turns * scale}; the worker was still exploring` });
   };
   // the minute cap counts working time only: the clock is paused while the job waits BLOCKED on a reply
   let clockLeft = limits.max_minutes * 60_000;
@@ -296,6 +308,8 @@ function runGroup(g: GroupRun) {
       ...(rejections.length > MAX_QUIET_REJECTIONS ? [`${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`] : []),
       ...report.risks,
     ];
+    // a failing check that could not run at all (missing tool, broken Node) reads as an environment failure, not bad code
+    const env = failing ? envFailure(failing.run) : undefined;
     const record = {
       format: "cheapag/1" as const, job, batch: g.batch, kind: g.fix ? "fix" : "implement", status, landed,
       plan: input.plan, steps: stepIds, provider: g.provider.provider,
@@ -313,7 +327,8 @@ function runGroup(g: GroupRun) {
       sessionID: session?.sessionID ?? null,
       // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
       tests: silent ? undefined : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
-      error: failing?.tail,
+      error: failing ? (env ? [env, ...failing.tail] : failing.tail) : undefined,
+      ...(env && { check: "env" as const }),
       tried, ...(found && { found }),
       summary: silent ? "" : report.summary, changed, risks: silent ? [] : risks,
       ...(changed.some((c) => TEST_FILE.test(c.path)) && { test: changed.find((c) => TEST_FILE.test(c.path))!.path }),
@@ -497,8 +512,30 @@ function runGroup(g: GroupRun) {
         if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
         return result;
       };
-      const result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note, input.brief, input.source));
+      let result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note, input.brief, input.source));
       write("finish.json", report);
+      // ticket 33: a turn cap during verify/fixes no longer loses the escalation. With a diff and a failing check it
+      // still runs once on the escalation model, on its own smaller budget; a cap reached here ends the job as before.
+      const escSkip = escalated || !failing || !cmds.length || !worktree || !session ? "not now" : escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
+      if (stopped?.cap === "turns" && !escSkip && worktreeDiff(worktree!).changed.length) {
+        escalated = true;
+        turnBase = session!.totals().turns;
+        turnCap = escCap;
+        escTurn = new AbortController();
+        stopped = undefined; // the escalation replaces the turn-cap stop
+        const before = failing!.tail;
+        result = await session!.run(`Verification failed. Fix the cause, then call finish again.\n\n${before.join("\n")}`, escalation, escTurn.signal, true);
+        const fresh = result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
+        if (fresh) report = fresh;
+        write("finish.json", report);
+        const label = `esc: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
+        if (result.error || result.interrupted) {
+          tried.push(`${label} → ${(stopped as Stop | undefined) ? `stopped: ${(stopped as Stop | undefined)!.reason}` : result.limit ? `usage limit: ${result.limit.message.slice(0, 80)}` : "worker error"}`);
+        } else {
+          failing = await verify();
+          tried.push(`${label} → ${!failing ? "passed" : sameFailure(before, failing.tail) ? "same failure" : "different failure"}`);
+        }
+      }
       const diff = worktreeDiff(worktree);
       changed = diff.changed;
       write("diff.patch", diff.patch); // the log copy is redacted; landing applies the in-memory patch
@@ -715,7 +752,7 @@ async function integrate(
     save();
     // shortcut: the lock is held for the whole check, so a check longer than the lock timeout (10 min) makes other landings FAIL; split the lock if suites get that long
     const [run] = await withLock(root, () => runVerify(root, [cmd], () => {}));
-    state.verify.push({ cmd: run.cmd, ok: run.ok, ms: run.ms });
+    state.verify.push({ cmd: run.cmd, ok: run.ok, ms: run.ms, code: run.code, signal: run.signal });
     if (run.ok) {
       state.integration = "pass";
       return;

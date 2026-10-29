@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, basename, join, relative } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
 import { redact, type Provider } from "./credentials.js";
@@ -11,7 +11,8 @@ import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
-import { createWorktree, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
+import { createWorktree, git, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
+import { checkAllows } from "./verify.js";
 
 /**
  * Research: one question about the codebase, answered by a worker that reads, searches and runs test commands but
@@ -28,7 +29,7 @@ const DEFAULT_WORDS = 200;
 const MAX_REFS = 5;
 
 export type ResearchInput = { question: string; paths?: string; max_words?: number };
-type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence" | "repro" | "deadEnds">;
+type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence" | "repro" | "deadEnds" | "partial">;
 
 export async function research(
   input: ResearchInput,
@@ -39,11 +40,22 @@ export async function research(
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
   const scope: string[] = [];
+  const resolvedPaths: string[] = [];
   for (const path of (input.paths ?? "").split(",").map((p) => p.trim()).filter(Boolean)) {
     const rel = normalisePath(relative(root, join(root, path)));
     if (isAbsolute(path) || rel === ".." || rel.startsWith("../")) return failBlock(`path ${path} must be inside the repository, relative to its root`);
-    if (!existsSync(join(root, path))) return failBlock(`path ${path} not found`);
-    if (rel) scope.push(rel); // "." is the whole repo: no scope
+    if (existsSync(join(root, path))) {
+      if (rel) scope.push(rel); // "." is the whole repo: no scope
+      continue;
+    }
+    // a miss may just be the wrong directory: find the file by basename among the tracked files
+    const name = basename(path);
+    const matches = git(root, ["ls-files", "-z", "--", `*/${name}`, name]).split("\0").filter(Boolean);
+    if (!matches.length) return failBlock(`path ${path} not found`);
+    if (matches.length > 1) return failBlock(`path ${path} not found; did you mean: ${matches.join(", ")}`);
+    const found = normalisePath(matches[0]);
+    scope.push(found);
+    resolvedPaths.push(`${path} resolved to ${found}`);
   }
   let config: Config;
   try {
@@ -78,12 +90,13 @@ export async function research(
   let error: string | undefined;
   let budget: string | undefined;
   // set from event callbacks: keep TS from narrowing it to undefined
-  let stopped = undefined as { status: "FAIL" | "BUDGET"; reason: string } | undefined;
+  let stopped = undefined as { status: "FAIL" | "BUDGET"; reason: string; cap?: "turns" } | undefined;
+  let partialText = "";
   let worktree: Worktree | undefined;
   try {
     worktree = createWorktree(root, id, config.link_dirs);
     const { scripts, exact } = projectScripts(worktree.path);
-    const permission = researchRuleset({ scripts, exact: [...exact, ...(config.test_cmd ? [config.test_cmd] : [])], allowCommands: config.allow_commands });
+    const permission = researchRuleset({ scripts, exact: [...exact, ...(config.test_cmd ? checkAllows(config.test_cmd) : [])], allowCommands: config.allow_commands });
     const halt = new AbortController();
     const stop = (why: NonNullable<typeof stopped>) => {
       stopped ??= why;
@@ -100,7 +113,7 @@ export async function research(
           if (state.status === "completed" && tool === "bash") ran.push(String(state.input.command ?? ""));
           if (state.status === "completed" || state.status === "error") {
             ctx.progress(turns, `turn ${turns}: ${tool}`);
-            if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached` });
+            if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached`, cap: "turns" });
           }
         }
         if (event.type === "message.updated" && session.totals().usage.costUsd >= limits.max_cost_usd) {
@@ -111,6 +124,8 @@ export async function research(
     try {
       // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
       ({ text, error, budget } = await runRouted(session, prompt, models, ctx.provider.provider));
+      // only a turn cap recovers: the worker read the code, so one no-tool prompt gets what it found (minute/cost caps are about spend)
+      if (stopped?.cap === "turns") partialText = await partialAnswer(session);
     } finally {
       clearTimeout(timer);
       const totals = session.totals();
@@ -132,10 +147,14 @@ export async function research(
     }
   }
 
-  const answer: Answer = stopped ? { status: stopped.status, answer: "", refs: [] }
+  const recovered = stopped?.cap === "turns" && partialText ? verifyRepro(parseAnswer(partialText, root, scope, maxWords), ran) : undefined;
+  let answer: Answer = recovered ? { ...recovered, partial: true }
+    : stopped ? { status: stopped.status, answer: "", refs: [] }
     : budget ? { status: "BUDGET", answer: "", refs: [] }
     : error ? { status: "FAIL", answer: "", refs: [] }
     : verifyRepro(parseAnswer(text, root, scope, maxWords), ran) ?? { status: "FAIL", answer: "", refs: [] };
+  // a path resolved by basename says so in the notes, so Claude learns the entry was approximate
+  if (resolvedPaths.length) answer = { ...answer, answer: [...resolvedPaths, answer.answer].filter(Boolean).join("\n") };
   const reason = stopped?.reason
     ?? budget
     ?? (error ? `worker error: ${error}` : answer.status === "FAIL" ? "the research worker gave no answer" : undefined);
@@ -152,6 +171,18 @@ export async function research(
   write("research.json", record);
   write("result.txt", block + "\n");
   return block;
+}
+
+const PARTIAL_PROMPT = "You were stopped before finishing. Without calling any tool, answer the question now from what you read, in the cheapag-research block format with status: partial.";
+
+/** One last no-tool prompt on a turn-capped session; any error, timeout or interruption gives no text. */
+async function partialAnswer(session: Session): Promise<string> {
+  try {
+    const r = await session.run(PARTIAL_PROMPT, undefined, AbortSignal.timeout(30_000), true);
+    return r.error || r.interrupted ? "" : r.text;
+  } catch {
+    return "";
+  }
 }
 
 /** Research verifies before it claims (ticket 23.4: unverified handoffs inject false confidence). */
@@ -205,6 +236,7 @@ export function parseAnswer(text: string, root: string, scope: string[], maxWord
   const confidence = fields.confidence?.trim().toLowerCase().match(/^(high|medium|low)/)?.[1] as Answer["confidence"];
   return {
     status: /^unsure/i.test(fields.status?.trim() ?? "") ? "UNSURE" : "ANSWER",
+    partial: /^partial/i.test(fields.status?.trim() ?? "") || undefined,
     answer: capWords(answer, maxWords),
     // refs from the refs line; failing that, any cited in the prose
     refs: listed.length ? listed : refs(answer, root, scope),

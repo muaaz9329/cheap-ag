@@ -28,8 +28,9 @@ export function parsePlan(source: string): Plan {
     }
     if (/^## /.test(line)) {
       if (title === undefined) throw new Error(`${at}: step before the plan's H1 title`);
-      const m = line.match(/^## +(\d+[a-z]?)(?: +(.*))?$/);
-      if (!m) throw new Error(`${at}: step heading needs an id (integer or integer+letter), e.g. "## 3 add route"`);
+      // s1, step2, step-2 and plain 3 all normalise to the digits (plus an optional letter, like 3a)
+      const m = line.match(/^## +(?:step-?|s)?(\d+[a-z]?)(?: +(.*))?$/);
+      if (!m) throw new Error(`${at}: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")`);
       if (steps.some((s) => s.id === m[1])) throw new Error(`${at}: duplicate step id ${m[1]}`);
       steps.push({ id: m[1], title: (m[2] ?? "").trim(), fields: {}, text: line, line: i + 1 });
       field = undefined;

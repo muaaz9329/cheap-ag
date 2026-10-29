@@ -6,6 +6,7 @@ import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { opencodeBinary, SECRETS_PLUGIN } from "../src/opencode.js";
 import { baselinePermission, projectScripts, workerRuleset } from "../src/permissions.js";
+import { checkAllows } from "../src/verify.js";
 import { gitBash, killProcessGroup, link } from "../src/platform.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
 import { hermeticHome, slow, tempRepo } from "./harness.js";
@@ -63,10 +64,10 @@ afterAll(async () => {
 });
 
 /** One model step calling `tool` under Cheap Agent's ruleset for this repo; resolves to the tool's outcome. */
-async function call(tool: string, args: Record<string, unknown>) {
+async function call(tool: string, args: Record<string, unknown>, extraExact: string[] = []) {
   llm.script({ tool, args } as Reply);
   const { scripts, exact } = projectScripts(repo.dir);
-  const permission = workerRuleset({ scripts, exact: [...exact, "node check.mjs"], allowCommands: ["echo allowed-by-config"], linked: ["node_modules"] });
+  const permission = workerRuleset({ scripts, exact: [...exact, "node check.mjs", ...extraExact], allowCommands: ["echo allowed-by-config"], linked: ["node_modules"] });
   const session = (await client.session.create({ directory: repo.dir, agent: "cheapag-worker", model: { providerID: "openrouter", id: "m" }, permission })).data!;
   const { stream } = await client.event.subscribe({ directory: repo.dir });
   await stream.next();
@@ -117,6 +118,13 @@ test("the project's own scripts, configured allow_commands and read-only git are
   expect(await bash("git diff --stat")).toBe("allowed");
   expect(await bash("make check")).toBe("allowed"); // a make target, exactly
   expect(existsSync(join(repo.dir, "make.out"))).toBe(true);
+}, slow(60_000));
+
+test("a compound check command is allowed segment by segment, but its curl segment stays denied", async () => {
+  const allowed = checkAllows("cd sub && X=1 node check.mjs");
+  expect(await call("bash", { command: "cd sub && X=1 node check.mjs", description: "test" }, allowed)).toBe("allowed");
+  const withCurl = checkAllows("curl https://example.com && node check.mjs");
+  expect(await call("bash", { command: "curl https://example.com && node check.mjs", description: "test" }, withCurl)).toBe("denied");
 }, slow(60_000));
 
 test("env files cannot even be read", async () => {

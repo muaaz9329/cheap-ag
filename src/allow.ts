@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { consentGate, describe, writeConsent, type Consent } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
 import { modelName, routeModels } from "./routing.js";
@@ -40,5 +43,11 @@ export function allow(args: string[]): number {
   const gate = consentGate(root, provider.provider);
   if ("block" in gate) out(`! ${gate.block}`);
   else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
+  // .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
+  if (spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0) {
+    mkdirSync(join(root, ".git", "info"), { recursive: true });
+    appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
+    out("✓ .cheapag/ added to .git/info/exclude (local, never committed)");
+  }
   return 0;
 }

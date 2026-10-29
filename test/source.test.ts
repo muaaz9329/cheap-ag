@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
+import { parsePlan } from "../src/plan.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { startServer, tempRepo } from "./harness.js";
 
@@ -53,4 +54,10 @@ test("a disagreement the worker reports leads the risks, so Claude sees its own 
   );
   expect(record.risks).toEqual(["spec vs source: the step says reversed(__mro__); the source walks it forwards", "untested on py2"]);
   expect(text).toContain("\nrisks:\n  - spec vs source: the step says reversed(__mro__); the source walks it forwards\n");
+});
+
+test("step ids accept s1 and step-2 forms and still reject duplicates after normalising", () => {
+  const plan = (...ids: string[]) => `# P\n${ids.map((id) => `## ${id}\nfiles: a.txt\ndone-when: done\n`).join("")}`;
+  expect(parsePlan(plan("s1", "step-2")).steps.map((s) => s.id)).toEqual(["1", "2"]);
+  expect(() => parsePlan(plan("1", "s1"))).toThrow("duplicate step id 1");
 });

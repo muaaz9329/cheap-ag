@@ -24,6 +24,9 @@ const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /m;
 const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
 // shortcut: the usual runners only; add the repo's test_cmd if Claude re-runs tests through a custom script
 const TEST_CMD = /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
+// sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
+const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
+const READ_PARTS = ["git diff", "git log", "git show", "git status", "cat", "head", "tail", "ls", "grep", "rg", "wc", "find", "pwd", "echo"];
 
 /** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
 const flag = (root: string) => join(root, ".cheapag", "hook.json");
@@ -121,6 +124,9 @@ function budget(input: Input): string | undefined {
   const config = loadConfig(root);
   if (state.notDone && config.takeover === "sonnet") {
     if (input.tool_name === "Agent" || input.tool_name === "Task") return;
+    if (READ_TOOLS.has(input.tool_name ?? "")) return;
+    const command = input.tool_input?.command;
+    if (input.tool_name === "Bash" && typeof command === "string" && readOnly(command)) return;
     return `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
   }
   if (state.notDone) {
@@ -207,9 +213,17 @@ function check(input: Input): string | undefined {
 /** Plans live in .plan/ and are how Claude delegates, so the guard never blocks them. */
 const isPlan = (root: string, file: string) => file.startsWith(join(root, ".plan") + sep);
 
+/** Sonnet take-over: Bash is read-only when no part writes or runs tests, and every `&&`/`;`/`|` part starts with a reader. */
+function readOnly(command: string): boolean {
+  if (command.includes(">")) return false;
+  if (TEST_CMD.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command)) return false;
+  if (BASH_WRITES.some((re) => command.match(re))) return false;
+  const parts = command.split(/&&|\|\||;|\|/).map((p) => p.trim()).filter(Boolean);
+  return parts.length > 0 && parts.every((p) => READ_PARTS.some((r) => p === r || p.startsWith(r + " ")));
+}
+
 /** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
-function bashCheck(cwd: string, command: string): string | undefined {
-  const root = projectRoot(cwd);
+function bashCheck(cwd: string, command: string): string | undefined {  const root = projectRoot(cwd);
   if (!existsSync(flag(root))) return;
   const targets: string[] = [];
   for (const re of BASH_WRITES) for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);

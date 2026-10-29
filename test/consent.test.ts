@@ -173,3 +173,14 @@ test("cheapag allow rejects unknown arguments and needs a login and a git repo",
   expect(fails(join(home, "not-a-repo"), env, [])).toContain("is not inside a git repository");
   expect(existsSync(join(repo.dir, ".cheapag", "consent.json"))).toBe(false);
 });
+
+test("cheapag allow adds .cheapag/ to .git/info/exclude once, not again on a second run", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const exclude = join(repo.dir, ".git", "info", "exclude");
+  writeFileSync(exclude, ""); // undo the harness's ignore rule
+  const { env } = hermeticHome({ "opencode-go": "k" });
+  expect(allowRepo(repo.dir, env)).toContain(".cheapag/ added to .git/info/exclude");
+  allowRepo(repo.dir, env);
+  expect(readFileSync(exclude, "utf8").split("\n").filter((l) => l === ".cheapag/")).toHaveLength(1);
+});

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { startServer, tempRepo } from "./harness.js";
-import { errorTail } from "../src/verify.js";
+import { errorTail, checkAllows, envFailure, runVerify } from "../src/verify.js";
 
 /** A committed check script that prints test-runner-style output: passes, noise, duplicates and frames. */
 const CHECK = `import { readFileSync } from "node:fs";
@@ -160,6 +160,43 @@ test("without a backticked condition or a test_cmd, nothing runs: tests=none", a
 });
 
 test("errorTail strips a Windows root and forward-slashes the rest", () => {
-  const run = { cmd: "node x", ok: false, ms: 1, output: "at C:\\r\\repo\\.cheapag\\worktrees\\j1/src/hello.ts:4:1" };
+  const run = { cmd: "node x", ok: false, ms: 1, output: "at C:\\r\\repo\\.cheapag\\worktrees\\j1/src/hello.ts:4:1", code: 1, signal: null };
   expect(errorTail(run, "C:\\r\\repo").join("\n")).toContain(".cheapag/worktrees/j1/src/hello.ts:4:1");
+});
+
+test("a check that cannot run at all is an environment failure (exit 127), not a test failure", async () => {
+  const [run] = await runVerify(process.cwd(), ["nonexistent-cmd-xyz"], () => {});
+  expect(run.ok).toBe(false);
+  expect(run.code).toBe(127);
+  expect(run.signal).toBeNull();
+  expect(envFailure(run)).toBe("exit 127: command not found");
+});
+
+test("envFailure is undefined for a pass and an ordinary test failure, and names the code, signal or loader phrase", () => {
+  const run = (r: Partial<Parameters<typeof envFailure>[0]>) => ({ cmd: "node check.mjs", ok: false, ms: 1, output: "", code: 1, signal: null, ...r });
+  expect(envFailure(run({ ok: true, code: 0 }))).toBeUndefined();
+  expect(envFailure(run({ output: "✗ expected 2, received 1" }))).toBeUndefined();
+  expect(envFailure(run({ code: 127 }))).toBe("exit 127: command not found");
+  expect(envFailure(run({ code: 134 }))).toBe("exit 134 (dyld abort)");
+  expect(envFailure(run({ code: null, signal: "SIGSEGV" }))).toBe("signal SIGSEGV");
+  expect(envFailure(run({ code: null, signal: "SIGKILL", output: "x\n(cheapag: stopped, job cap or cancel)" }))).toBeUndefined();
+  expect(envFailure(run({ code: null, signal: "SIGKILL", output: "x\n(cheapag: stopped after 5 min)" }))).toBeUndefined();
+  expect(envFailure(run({ output: "Error: dyld: Library not loaded: libnode.dylib" }))).toBe("exit 1: dyld");
+  expect(envFailure(run({ output: "exec: No such file or directory: node" }))).toBe("exit 1: No such file or directory: node");
+});
+
+test("checkAllows expands a compound check into the segments OpenCode checks, env assignments stripped", () => {
+  expect(checkAllows("cd apps/dev && PATH=/x:$PATH DYLD_LIBRARY_PATH=/y node scripts/run.mjs a b")).toEqual([
+    "cd apps/dev && PATH=/x:$PATH DYLD_LIBRARY_PATH=/y node scripts/run.mjs a b",
+    "cd apps/dev",
+    "PATH=/x:$PATH DYLD_LIBRARY_PATH=/y node scripts/run.mjs a b",
+    "node scripts/run.mjs a b",
+  ]);
+  expect(checkAllows("npm test -- x; echo done | cat")).toEqual([
+    "npm test -- x; echo done | cat",
+    "npm test -- x",
+    "echo done",
+    "cat",
+  ]);
+  expect(checkAllows("export X=1 npm test")).toEqual(["export X=1 npm test", "npm test"]);
 });
