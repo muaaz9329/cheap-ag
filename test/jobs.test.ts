@@ -5,7 +5,7 @@ import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, startServer, tempRepo } from "./harness.js";
 import { isAlive } from "../src/platform.js";
 
-const plan = (doneWhen: string) => `# Hello\n\n## 1 hello two\nfiles: src/hello.ts, README.md\ndo: export hello = 2\ndone-when: ${doneWhen}\n`;
+const plan = (doneWhen: string, doText = "export hello = 2") => `# Hello\n\n## 1 hello two\nfiles: src/hello.ts, README.md\ndo: ${doText}\ndone-when: ${doneWhen}\n`;
 /** Passes once src/hello.ts exports 2. */
 const CHECK = `import { readFileSync } from "node:fs";
 if (readFileSync("src/hello.ts", "utf8").trim() !== "export const hello = 2;") { console.log(" ✗ hello › equals 2"); process.exit(1); }
@@ -20,11 +20,11 @@ setTimeout(() => {}, 60_000);
 const LONG: Action = { wait: 60_000 }; // a model step that only an abort ends
 
 /** A repo with the plan and config files written, a fake worker scripted per prompt, and a server on both. */
-async function scenario(opts: { scripts: Action[][]; doneWhen?: string; repoConfig?: unknown; userConfig?: unknown }) {
+async function scenario(opts: { scripts: Action[][]; doneWhen?: string; doText?: string; repoConfig?: unknown; userConfig?: unknown }) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   mkdirSync(join(repo.dir, ".plan"));
-  writeFileSync(join(repo.dir, ".plan", "p.md"), plan(opts.doneWhen ?? "hello is 2"));
+  writeFileSync(join(repo.dir, ".plan", "p.md"), plan(opts.doneWhen ?? "hello is 2", opts.doText));
   writeFileSync(join(repo.dir, "check.mjs"), CHECK);
   const pidFile = join(repo.dir, ".git", "slow.pid");
   writeFileSync(join(repo.dir, "slow.mjs"), SLOW(pidFile));
@@ -95,6 +95,7 @@ test("turn cap with nothing changed → FAIL with the reason; no hand-over (user
 
 test("fail fast: a step with checks and no test file by repro_by_turns → FAIL at once, so Claude takes over early", async () => {
   const { fake, delegate } = await scenario({
+    doText: "fix the bug: hello should be 2",
     doneWhen: "`node check.mjs` passes",
     repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
     scripts: [[{ tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG, { tool: "write" }]],
@@ -106,8 +107,41 @@ test("fail fast: a step with checks and no test file by repro_by_turns → FAIL 
   expect(fake.recorded.aborts).toHaveLength(1);
 });
 
+test("fail fast skips a feature step: no bug to reproduce, so no test is demanded", async () => {
+  const { delegate } = await scenario({
+    doText: "add a goodbye export",
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[
+      { tool: "read" }, { tool: "grep" }, { tool: "read" }, { tool: "grep" },
+      { edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" },
+      { finish: { summary: "added", risks: [], review: [], missing: [], repro: "n/a" } as never },
+    ]],
+  });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^OK /);
+  expect(text).not.toContain("no reproduction test");
+});
+
+test("fail fast gives a started fix double the turns, then stops it as never proven", async () => {
+  const { delegate } = await scenario({
+    doText: "fix the bug: hello should be 2",
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[
+      { edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" },
+      { tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG,
+    ]],
+  });
+  const text = await delegate();
+  // a turn-cap stop with passing checks is PARTIAL: the reason rides in missing:
+  expect(text.split("\n")[0]).toMatch(/^PARTIAL \w+ step=1 files=1 .* turns=4 /);
+  expect(text).toContain("no reproduction test by turn 4; the fix was started but never proven");
+});
+
 test("a stopped job asks the worker for its findings once; the FAIL block carries them as found:, leading when the worker gave no summary", async () => {
   const { fake, delegate } = await scenario({
+    doText: "fix the bug: hello should be 2",
     doneWhen: "`node check.mjs` passes",
     repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
     scripts: [

@@ -35,6 +35,8 @@ const MAX_QUIET_REJECTIONS = 5;
 const TURN_SCALE: Record<Difficulty, number> = { easy: 1, medium: 2, hard: 3 };
 /** The turn cap for the escalation attempt after a turn-cap stop: its own, smaller budget (ticket 33). */
 const ESC_TURNS = 15;
+/** Fail fast applies only to fixes (ticket 37): a step or source naming any of these is a bug to reproduce first. */
+const FIX_WORDS = /\b(bug|fix(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|error|crash(?:es|ed)?|regress(?:ion|ed)?|broken|incorrect|wrong|traceback|exception)\b/i;
 
 /**
  * `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation.
@@ -258,11 +260,20 @@ function runGroup(g: GroupRun) {
   // fail fast (ticket 28): a step with checks that has no test file in its worktree by repro_by_turns stops now, so Claude
   // takes over without a 40-turn failed job in its context (v2 hard tier: FAIL sessions averaged 482k Claude tokens, stock 385k)
   // shortcut: counts any test file in the worktree's status, carried-over dirty ones included; tighten to the job's own edits if that misfires
+  // ticket 37: only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
+  const isFix = g.fix || FIX_WORDS.test([...steps.map((s) => `${s.title} ${s.fields.do ?? ""}`), input.source ?? ""].join("\n"));
   let reproSeen = false;
+  let carried = new Set<string>(); // paths already dirty when the worktree opened (carried over from the repo): not the worker's edits
+  const dirty = () => git(worktree!.path, ["status", "--porcelain"]).split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
   const reproDue = () => {
-    if (reproSeen || !cmds.length || !worktree || !session || session.totals().turns < limits.repro_by_turns * scale) return;
-    reproSeen = git(worktree.path, ["status", "--porcelain"]).split("\n").some((l) => TEST_FILE.test(l.slice(3).trim()));
-    if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${limits.repro_by_turns * scale}; the worker was still exploring` });
+    if (reproSeen || !isFix || !cmds.length || !worktree || !session || session.totals().turns < limits.repro_by_turns * scale) return;
+    // a started fix (a changed non-test file) gets double the turns to prove it; the worker may just not have written its test yet
+    const files = dirty();
+    const started = files.some((f) => !TEST_FILE.test(f) && !carried.has(f));
+    const by = limits.repro_by_turns * scale * (started ? 2 : 1);
+    if (session.totals().turns < by) return;
+    reproSeen = files.some((f) => TEST_FILE.test(f));
+    if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${by}; ${started ? "the fix was started but never proven" : "the worker was still exploring"}` });
   };
   // the minute cap counts working time only: the clock is paused while the job waits BLOCKED on a reply
   let clockLeft = limits.max_minutes * 60_000;
@@ -433,6 +444,7 @@ function runGroup(g: GroupRun) {
       if (stopped as Stop | undefined) throw new Error("stopped before it started"); // cancelled while queued; the stop's reason is recorded
       startClock(); // queued time is not working time
       worktree = createWorktree(root, job, config.link_dirs);
+      carried = new Set(dirty());
       session = await openSession({
         opencode,
         directory: worktree.path,
