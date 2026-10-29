@@ -40,12 +40,13 @@ test.each([
   oc.stderr.resume();
   const kill = () => killProcessGroup(oc.pid, "SIGKILL");
     process.once("exit", kill);
+  let client: ReturnType<typeof createOpencodeClient> | undefined;
     try {
     const url = await new Promise<string>((resolve, reject) => {
       oc.stdout.on("data", (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]));
       oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
     });
-    const client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
+    client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
     const { stream } = await client.event.subscribe({ directory: repo.dir });
     await stream.next();
     const session = (await client.session.create({ directory: repo.dir, model: { providerID: "openrouter", id: model.id } })).data!;
@@ -58,6 +59,8 @@ test.each([
     expect(llm.requests.length).toBeGreaterThan(0);
     for (const body of llm.requests) expect(body.provider).toEqual(expected);
   } finally {
+    // dispose the repo's instance before the repo is removed: OpenCode holds its directory open (Windows cannot delete one)
+    await client?.instance.dispose({ directory: repo.dir }).catch(() => {});
     kill(); // in the body, not a hook: this server must never outlive the test
   }
 }, slow(60_000));

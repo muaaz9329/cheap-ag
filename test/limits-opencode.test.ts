@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2";
 import { afterAll, beforeAll, expect, onTestFinished, test } from "vitest";
 import { opencodeBinary } from "../src/opencode.js";
 import { killProcessGroup } from "../src/platform.js";
@@ -18,6 +19,7 @@ const FLASH = "deepseek/deepseek-v4.1-flash";
 const QWEN = "qwen/qwen3.7-plus";
 let llm: Awaited<ReturnType<typeof startFakeLlm>>;
 let opencode: { url: string; password: string; version: string };
+let client: ReturnType<typeof createOpencodeClient>;
 let kill = () => {};
 
 beforeAll(async () => {
@@ -42,6 +44,7 @@ beforeAll(async () => {
     oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
   });
   opencode = { url, password: "t", version: "" };
+  client = createOpencodeClient({ baseUrl: url, directory: process.cwd(), headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
 }, slow(60_000));
 
 afterAll(async () => {
@@ -51,7 +54,11 @@ afterAll(async () => {
 
 async function session() {
   const repo = tempRepo();
-  onTestFinished(repo.cleanup);
+  // dispose the repo's instance before the repo is removed: the running OpenCode holds its directory open (Windows cannot delete one)
+  onTestFinished(async () => {
+    await client.instance.dispose({ directory: repo.dir }).catch(() => {});
+    repo.cleanup();
+  });
   return openSession({ opencode, directory: repo.dir, model: { providerID: "openrouter", id: FLASH }, onEvent: () => {} });
 }
 

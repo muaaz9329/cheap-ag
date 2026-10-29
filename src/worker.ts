@@ -1,5 +1,5 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
-import type { Opencode } from "./opencode.js";
+import { runningOpencode, type Opencode } from "./opencode.js";
 import { rejectionMessage, type Rule } from "./permissions.js";
 import { modelName, type Limit, type WorkerModel } from "./routing.js";
 
@@ -200,6 +200,26 @@ export async function openSession(opts: {
 }
 
 export type Session = Awaited<ReturnType<typeof openSession>>;
+
+/**
+ * Disposes the OpenCode instance for `directory`: nothing it still holds open then keeps the directory from being
+ * removed (Windows cannot delete one), and a long-lived server does not keep a watcher per past job. Best effort:
+ * no running server, or any error, changes nothing.
+ */
+export async function releaseDirectory(directory: string) {
+  const opencode = await runningOpencode();
+  if (!opencode) return;
+  try {
+    const client = createOpencodeClient({
+      baseUrl: opencode.url,
+      directory,
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${opencode.password}`).toString("base64")}` },
+    });
+    await client.instance.dispose({ directory }, { signal: AbortSignal.timeout(10_000) });
+  } catch {
+    // best effort: a failed dispose must never fail a job
+  }
+}
 
 /** One prompt in a fresh session (the login live check). */
 export async function runSession(opts: Parameters<typeof openSession>[0] & { prompt: string }): Promise<SessionResult> {

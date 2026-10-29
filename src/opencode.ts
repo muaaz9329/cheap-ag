@@ -67,22 +67,21 @@ answer:
 `;
 
 // Runs inside OpenCode (Bun). Its input is captured from the event stream, so it only has to exist and validate.
-export const FINISH_TOOL_SOURCE = `import { tool } from "@opencode-ai/plugin";
-
-export default tool({
+// It imports nothing (OpenCode accepts a plain { description, args, execute } with JSON Schema args), so OpenCode has nothing to install.
+export const FINISH_TOOL_SOURCE = `export default {
   description: "Report the step as done. Call exactly once, as your last action.",
   args: {
-    summary: tool.schema.string().max(160).describe("What you did, at most 160 characters"),
-    risks: tool.schema.array(tool.schema.string()).describe("Assumptions, unverified conditions, edits outside files:"),
-    review: tool.schema.array(tool.schema.string()).max(5).describe("Ranges worth a human look, as path:start-end"),
-    missing: tool.schema.array(tool.schema.string()).describe("Anything the step asked for that you did not do"),
-    repro: tool.schema.string().describe("The exact command that runs your reproduction test (fails on the original code, passes now); 'none: <why>' if you could not reproduce the problem; 'n/a' if the step is not a fix"),
-    disagree: tool.schema.string().describe("Where the step's spec and the Source you were given disagree (direction, order, value, approach), or 'none'"),
+    summary: { type: "string", maxLength: 160, description: "What you did, at most 160 characters" },
+    risks: { type: "array", items: { type: "string" }, description: "Assumptions, unverified conditions, edits outside files:" },
+    review: { type: "array", items: { type: "string" }, maxItems: 5, description: "Ranges worth a human look, as path:start-end" },
+    missing: { type: "array", items: { type: "string" }, description: "Anything the step asked for that you did not do" },
+    repro: { type: "string", description: "The exact command that runs your reproduction test (fails on the original code, passes now); 'none: <why>' if you could not reproduce the problem; 'n/a' if the step is not a fix" },
+    disagree: { type: "string", description: "Where the step's spec and the Source you were given disagree (direction, order, value, approach), or 'none'" },
   },
   async execute() {
     return "Reported. Stop now.";
   },
-});
+};
 `;
 
 /**
@@ -118,6 +117,12 @@ export function writeConfigDir(dir: string, config: string) {
   mkdirSync(join(dir, "agents"), { recursive: true });
   mkdirSync(join(dir, "tools"), { recursive: true });
   mkdirSync(join(dir, "plugins"), { recursive: true });
+  // node_modules + package-lock.json listing @opencode-ai/plugin make OpenCode skip its npm install of it into this dir (core/src/npm.ts); neither generated file imports it
+  mkdirSync(join(dir, "node_modules"), { recursive: true });
+  writeFileSync(
+    join(dir, "package-lock.json"),
+    JSON.stringify({ name: "cheapag-opencode", lockfileVersion: 3, requires: true, packages: { "": { dependencies: { "@opencode-ai/plugin": OPENCODE_PIN } } } }),
+  );
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "agents", "cheapag-research.md"), RESEARCH_PROMPT);
   writeFileSync(join(dir, "tools", "finish.ts"), FINISH_TOOL_SOURCE);
@@ -163,6 +168,15 @@ export function holdOpencode() {
     if (held) holds--;
     held = false;
   };
+}
+
+/** The running server, if one is up; never boots one. */
+export async function runningOpencode(): Promise<Opencode | undefined> {
+  try {
+    return await started;
+  } catch {
+    return undefined; // a failed boot leaves nothing to reach
+  }
 }
 
 export function ensureOpencode(provider: Provider, projectDir = process.cwd(), route?: Route): Promise<Opencode> {
@@ -216,6 +230,8 @@ function spawnServer(configDir: string, password: string) {
         OPENCODE_SERVER_PASSWORD: password,
         OPENCODE_CONFIG_DIR: configDir,
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        // OpenCode watches each session dir's .git; cheapag uses none of its events, and on Windows the open handle blocks removing the worktree
+        OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
         ...(bash ? { SHELL: bash } : {}),
         // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
         OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),

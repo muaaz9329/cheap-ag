@@ -10,7 +10,7 @@ import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
 import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
 import { errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
-import { finishReport, openSession, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
+import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
   conflictPaths, createWorktree, git, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
@@ -368,6 +368,7 @@ function runGroup(g: GroupRun) {
   const redo = async (patch: string, clash: string, work: (prompt: string, tag: string) => Promise<RunResult>) => {
     redone = 1;
     write("conflict.patch", patch); // log copy of the change that clashed
+    await releaseDirectory(worktree!.path); // release before the path is removed, then recreated
     removeWorktree(root, worktree!);
     // the same path, so the session's directory stays valid
     worktree = createWorktree(root, job, config.link_dirs);
@@ -393,6 +394,7 @@ function runGroup(g: GroupRun) {
       landing = true;
       pauseClock();
       if (!(await land(root, job, diff.patch, diff.changed.map((c) => c.path)))) {
+        await releaseDirectory(worktree.path);
         removeWorktree(root, worktree);
         return;
       }
@@ -518,8 +520,10 @@ function runGroup(g: GroupRun) {
           landing = true; // from here on, caps and cancel no longer apply (until a redo works again)
           pauseClock();
           const clash = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
-          if (!clash) removeWorktree(root, worktree);
-          else await redo(diff.patch, clash, work);
+          if (!clash) {
+            await releaseDirectory(worktree.path);
+            removeWorktree(root, worktree);
+          } else await redo(diff.patch, clash, work);
         }
       }
     } catch (err) {
@@ -1007,6 +1011,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
     writeWhole(join(dir, "result.txt"), redact(text + "\n"));
   };
   if (action === "discard") {
+    await releaseDirectory(worktree.path); // release before the worktree is removed
     removeWorktree(root, worktree); // dependency links are unlinked first
     save({ discarded: true });
     return `OK ${id} discarded`;
@@ -1019,6 +1024,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
     const files = conflictPaths(clash);
     throw new Error(`landing conflict${files.length ? ` in ${files.join(", ")}` : ""}, working tree untouched; discard it, or fix the overlap and delegate again`);
   }
+  await releaseDirectory(worktree.path); // release before the worktree is removed
   removeWorktree(root, worktree);
   save({ landed: true, changed: diff.changed });
   const add = diff.changed.reduce((n, c) => n + c.add, 0);

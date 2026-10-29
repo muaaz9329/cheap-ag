@@ -85,6 +85,7 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
     questionReplies: [] as { requestID: string; answers?: string[][]; rejected: boolean }[],
     permissionReplies: [] as { requestID: string; reply: string; message?: string }[],
     aborts: [] as string[],
+    disposed: [] as string[],
   };
 
   function emit(directory: string, type: string, properties: Record<string, unknown>) {
@@ -283,6 +284,11 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
       const k = keyed.findIndex((s) => text.includes(s.match));
       void execute(run, k >= 0 ? keyed.splice(k, 1)[0].actions : (scripts.shift() ?? []));
       return;
+    }
+
+    if (route === "POST /instance/dispose") {
+      recorded.disposed.push(directory);
+      return json(res, true);
     }
 
     if ((m = route.match(/^POST \/session\/([^/]+)\/abort$/))) {

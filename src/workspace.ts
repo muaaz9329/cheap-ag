@@ -78,8 +78,10 @@ function discard(root: string, path: string, links: string[]) {
   try {
     git(root, ["worktree", "remove", "--force", path]);
   } catch {
-    // git no longer knows it (pruned by hand): rm never follows symlinks
-    rmSync(path, { recursive: true, force: true });
+    // git no longer knows it (pruned by hand): rm never follows symlinks.
+    // OpenCode releases a disposed directory's handles asynchronously, and Windows refuses to
+    // delete a directory that is still open; rmSync only retries EBUSY/EPERM-type errors.
+    rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     git(root, ["worktree", "prune"]);
   }
 }

@@ -10,7 +10,7 @@ import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
-import { openSession, type Session } from "./worker.js";
+import { openSession, releaseDirectory, type Session } from "./worker.js";
 import { createWorktree, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
 
 /**
@@ -126,7 +126,10 @@ export async function research(
     error = (err as Error).message;
   } finally {
     release(); // the session is done: a config change may reboot OpenCode now
-    if (worktree) removeWorktree(root, worktree);
+    if (worktree) {
+      await releaseDirectory(worktree.path); // release before the worktree is removed
+      removeWorktree(root, worktree);
+    }
   }
 
   const answer: Answer = stopped ? { status: stopped.status, answer: "", refs: [] }

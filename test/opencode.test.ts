@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { isAlive } from "../src/platform.js";
+import { isAlive, killProcessGroup } from "../src/platform.js";
 import { PRESETS } from "../src/routing.js";
 import { callText, slow, startServer } from "./harness.js";
 
@@ -149,10 +149,11 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   }
 
   const configDir = join(server.home, ".cheapag", "opencode");
-  expect(readdirSync(configDir).sort()).toEqual(["agents", "opencode.json", "plugins", "tools"]);
+  expect(readdirSync(configDir).sort()).toEqual(["agents", "node_modules", "opencode.json", "package-lock.json", "plugins", "tools"]);
 
   // a crashed OpenCode is replaced on the next call, not reused
-  process.kill(opencodePid, "SIGKILL");
+  // a crashed OpenCode: kill its whole process group (Windows: the top process alone leaves its children holding the server home)
+  killProcessGroup(opencodePid, "SIGKILL");
   await vi.waitFor(() => expect(children(server.pid)).not.toContain(opencodePid));
   expect(await callText(server.client, "ping")).toMatch(/^OK /);
   const [restartedPid] = children(server.pid);
@@ -165,6 +166,7 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
 
 test("the generated finish tool is valid JavaScript (a syntax error makes OpenCode drop it and the worker do nothing)", async () => {
   const { FINISH_TOOL_SOURCE } = await import("../src/opencode.js");
+  expect(FINISH_TOOL_SOURCE).not.toContain("import");
   const dir = mkdtempSync(join(tmpdir(), "cheapag-finish-"));
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "finish.mjs");
@@ -172,4 +174,14 @@ test("the generated finish tool is valid JavaScript (a syntax error makes OpenCo
   const r = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
   expect(r.stderr).toBe("");
   expect(r.status).toBe(0);
+});
+
+test("the config dir pre-seeds node_modules and a package-lock so OpenCode skips its npm install", async () => {
+  const { writeConfigDir, OPENCODE_PIN } = await import("../src/opencode.js");
+  const dir = mkdtempSync(join(tmpdir(), "cheapag-config-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  writeConfigDir(dir, "{}");
+  expect(readdirSync(dir).sort()).toEqual(["agents", "node_modules", "opencode.json", "package-lock.json", "plugins", "tools"]);
+  const lock = JSON.parse(readFileSync(join(dir, "package-lock.json"), "utf8")) as { packages: { "": { dependencies: Record<string, string> } } };
+  expect(lock.packages[""].dependencies["@opencode-ai/plugin"]).toBe(OPENCODE_PIN);
 });
