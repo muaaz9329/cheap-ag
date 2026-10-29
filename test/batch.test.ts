@@ -208,7 +208,7 @@ test("a group BLOCKED early: delegate returns at once with it first, the others 
   );
   const t0 = Date.now();
   const early = await delegate("1,2,3");
-  expect(Date.now() - t0).toBeLessThan(1500); // not held until groups 1 and 3 finish
+  expect(Date.now() - t0).toBeLessThan(slow(1500)); // not held until groups 1 and 3 finish
   const batch = batchOf(early);
   const [one, two, three] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
   expect(early).toMatch(new RegExp([
@@ -364,12 +364,12 @@ test("a redo after a long wait to land does not start out of time: the wait is c
       "2": [{ edit: "README.md", content: "# two\n" }, { hook: () => writeFileSync(join(dir, "README.md"), "# mine\n") }, { tool: "edit" }, finish("two")],
       "2 redo": [],
     },
-    { limits: { max_minutes: 0.02 } }, // 1.2 s of working time per job
+    { limits: { max_minutes: slow(0.02 * 1000) / 1000 } }, // 1.2 s of working time per job (3.6 s on Windows)
   );
   dir = repo.dir;
   const early = await delegate("1,2");
   const [one] = jobsIn(early).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
-  await new Promise((r) => setTimeout(r, 2_000)); // group 2 sits parked far longer than its whole minute cap
+  await new Promise((r) => setTimeout(r, slow(2_000))); // group 2 sits parked far longer than its whole minute cap
   const done = await call("reply", { job: one, answer: "a" });
   expect(done).not.toContain("TIMEOUT");
   expect(done).toMatch(/^CONFLICT j\w{4} step=2 .* redo=1$/m); // the redo ran (and, unscripted, left its markers)

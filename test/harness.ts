@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -69,7 +69,7 @@ export async function startServer(opts: { cwd?: string; env?: Record<string, str
     close: async () => {
       await client.close();
       // Windows holds handles briefly after a process exits
-      rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
     },
   };
 }
@@ -102,15 +102,16 @@ export function tempRepo(state: RepoState = "clean") {
   if (state === "dirty") writeFileSync(join(dir, "README.md"), "# fixture\n\nedited\n");
   if (state === "untracked") writeFileSync(join(dir, "notes.txt"), "untracked\n");
 
-  return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
+  return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }) };
 }
 
 /** Every file in a checkout (but .git and .cheapag) with its bytes, plus git's view: index entries and status. Equal snapshots = an untouched tree. */
 export function snapshot(dir: string) {
   const files = Object.fromEntries((readdirSync(dir, { recursive: true }) as string[])
-    .filter((p) => !/^\.(git|cheapag)(\/|$)/.test(p) && lstatSync(join(dir, p)).isFile())
-    .sort()
-    .map((p) => [p, readFileSync(join(dir, p)).toString("base64")]));
+    .map((p) => [p, p.split(sep).join("/")] as const)
+    .filter(([raw, p]) => !/^\.(git|cheapag)(\/|$)/.test(p) && lstatSync(join(dir, raw)).isFile())
+    .sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([raw, p]) => [p, readFileSync(join(dir, raw)).toString("base64")]));
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir }).toString();
   return { files, index: git("ls-files", "-s"), status: git("status", "--porcelain", "--untracked-files=all") };
 }

@@ -125,9 +125,12 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   expect(text).toBe(`OK cheapag ${pkg.version} opencode=${PIN} provider=opencode-go via=login preset=balanced`);
 
   const [opencodePid] = children(server.pid);
-  const listening = execFileSync("lsof", ["-a", "-p", String(opencodePid), "-iTCP", "-sTCP:LISTEN", "-nP"]).toString();
-  expect(listening).toMatch(/127\.0\.0\.1:\d+ \(LISTEN\)/);
-  expect(listening).not.toMatch(/\*:\d+ \(LISTEN\)/);
+  if (process.platform !== "win32") {
+    // no lsof on Windows
+    const listening = execFileSync("lsof", ["-a", "-p", String(opencodePid), "-iTCP", "-sTCP:LISTEN", "-nP"]).toString();
+    expect(listening).toMatch(/127\.0\.0\.1:\d+ \(LISTEN\)/);
+    expect(listening).not.toMatch(/\*:\d+ \(LISTEN\)/);
+  }
 
   const configDir = join(server.home, ".cheapag", "opencode");
   expect(readdirSync(configDir).sort()).toEqual(["agents", "opencode.json", "plugins", "tools"]);

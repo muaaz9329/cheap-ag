@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { startServer, tempRepo } from "./harness.js";
+import { errorTail } from "../src/verify.js";
 
 /** A committed check script that prints test-runner-style output: passes, noise, duplicates and frames. */
 const CHECK = `import { readFileSync } from "node:fs";
@@ -156,4 +157,9 @@ test("without a backticked condition or a test_cmd, nothing runs: tests=none", a
   const { text, record } = await scenario([RIGHT("set hello to 2")], "hello is 2");
   expect(text.split("\n")[0]).toContain(" tests=none ");
   expect(record.verify).toEqual([]);
+});
+
+test("errorTail strips a Windows root and forward-slashes the rest", () => {
+  const run = { cmd: "node x", ok: false, ms: 1, output: "at C:\\r\\repo\\.cheapag\\worktrees\\j1/src/hello.ts:4:1" };
+  expect(errorTail(run, "C:\\r\\repo").join("\n")).toContain(".cheapag/worktrees/j1/src/hello.ts:4:1");
 });

@@ -6,7 +6,7 @@ import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { opencodeBinary, SECRETS_PLUGIN } from "../src/opencode.js";
 import { baselinePermission, projectScripts, workerRuleset } from "../src/permissions.js";
-import { killProcessGroup, link } from "../src/platform.js";
+import { gitBash, killProcessGroup, link } from "../src/platform.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
 import { hermeticHome, slow, tempRepo } from "./harness.js";
 
@@ -40,7 +40,7 @@ beforeAll(async () => {
   writeFileSync(join(config, "agents", "cheapag-worker.md"), "---\ndescription: worker\nmode: primary\n---\nYou implement plan steps.\n");
   const oc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     detached: true,
-    env: { ...env, OPENCODE_SERVER_PASSWORD: "t", OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_PERMISSION: JSON.stringify(baselinePermission()) },
+    env: { ...env, ...(gitBash() && { SHELL: gitBash() }), OPENCODE_SERVER_PASSWORD: "t", OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_PERMISSION: JSON.stringify(baselinePermission()) },
   });
   oc.stderr.resume(); // never let a full pipe stall the server
   stop = () => killProcessGroup(oc.pid, "SIGKILL");
@@ -142,7 +142,8 @@ test("protected paths cannot be edited; ordinary files can", async () => {
 }, slow(60_000));
 
 test("linked dependency dirs are readable through the worktree link but never writable; outside paths are denied", async () => {
-  expect(await call("read", { filePath: join(repo.dir, "node_modules", "dep", "index.js") })).toBe("allowed");
+  // Windows (CI 2026-10-29): OpenCode denies reads through the junction; the worker can't read linked deps there
+  expect(await call("read", { filePath: join(repo.dir, "node_modules", "dep", "index.js") })).toBe(process.platform === "win32" ? "denied" : "allowed");
   expect(await write("node_modules/dep/evil.js")).toBe("denied");
   expect(await write(join(deps, "dep", "evil.js"))).toBe("denied");
   expect(await call("read", { filePath: "/etc/hosts" })).toBe("denied");

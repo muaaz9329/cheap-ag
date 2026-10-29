@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { allowRepo, homeEnv, startServer, tempRepo } from "./harness.js";
+import { allowRepo, homeEnv, slow, startServer, tempRepo } from "./harness.js";
 
 const PLAN = "# Rate limit\n\n## 1 limit login\nfiles: src/hello.ts\ndo: export hello = 2\ndone-when: `node check.mjs` passes\n";
 const CHECK = `import { readFileSync } from "node:fs";
@@ -205,17 +205,17 @@ test("max_blocked_minutes: an unanswered job is CANCELLED, its question rejected
 
 test("max_blocked_minutes: a reply just before expiry resumes the job, and the expiry no longer applies", async () => {
   const { repo, delegate, reply } = await scenario([ASK, { wait: 1000 }, ...edit(2, "answered in time")]);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_blocked_minutes: 0.02 } })); // 1.2 s
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_blocked_minutes: slow(0.02 * 1000) / 1000 } })); // 1.2 s (3.6 s on Windows)
   const job = jobOf(await delegate());
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, slow(800)));
   expect((await reply(job, "b")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `)); // ran past the original expiry
 });
 
 test("time spent BLOCKED does not count toward the minute cap", async () => {
   const { repo, delegate, reply } = await scenario([ASK, ...edit(2, "answered after a long wait")]);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_minutes: 0.01 } })); // 600 ms of working time
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_minutes: slow(0.01 * 1000) / 1000 } })); // 600 ms of working time (1.8 s on Windows)
   const job = jobOf(await delegate());
-  await new Promise((r) => setTimeout(r, 1000)); // the developer takes a while to answer
+  await new Promise((r) => setTimeout(r, slow(1000))); // the developer takes a while to answer
   const done = await reply(job, "b");
   expect(done.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `));
 });

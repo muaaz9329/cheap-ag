@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { gitBash, killProcessGroup } from "./platform.js";
+import { gitBash, killProcessGroup, normalisePath } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
 
@@ -89,9 +89,11 @@ const MAX_LINES = 25;
  * Falls back to the last lines when no failure marker is found.
  */
 export function errorTail(run: VerifyRun, root: string): string[] {
+  // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
+  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
   const lines = run.output
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .split(`${root}/`).join("")
+    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) => rest.replace(/\\/g, "/"))
     .split(/\r?\n/)
     .map((l) => l.replace(/\t/g, "  ").trimEnd())
     .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
@@ -132,3 +134,6 @@ export const sameFailure = (a: string[], b: string[]) => a.join("\n").replace(/\
 
 /** At most 200 chars, eliding the middle. */
 const clip = (line: string) => (line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`);
+
+/** Escapes a string for literal use inside a RegExp. */
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
