@@ -5,7 +5,7 @@ import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from "./harness.js";
 import { loadConfig } from "../src/config.js";
 import { parsePlan } from "../src/plan.js";
-import { fullRoute, modelName, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import { clock, fullRoute, modelName, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
 import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
@@ -61,7 +61,7 @@ test("every allowed model capped → BUDGET with the Go window and the provider'
   const job = text.match(/^BUDGET (j\w{4}) /)![1];
   expect(text.split("\n")[0]).toBe(`BUDGET ${job} step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000 model=opencode-go/qwen3.7-plus`);
   // the earliest reset among the capped models
-  expect(text).toContain(`\nreason: Go 5h window exhausted for deepseek-v4.1-flash, qwen3.7-plus (resets ~${new Date(reset).toTimeString().slice(0, 5)})\n`);
+  expect(text).toContain(`\nreason: Go 5h window exhausted for deepseek-v4.1-flash, qwen3.7-plus (resets ~${clock(reset)})\n`);
   expect(text).toContain(`\nworktree: .cheapag/worktrees/${job}/\n`);
   expect(models()).toEqual([undefined, "qwen3.7-plus"]); // glm-5.3 and kimi-k3 are not zero-retention: never tried
   expect(existsSync(join(repo.dir, "hello.txt"))).toBe(false);

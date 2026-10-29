@@ -161,7 +161,7 @@ function exhausted(provider: ProviderId, limits: Limit[]) {
 }
 
 /** Local time as HH:MM, with the date in front when it is not today. */
-function clock(ms: number) {
+export function clock(ms: number) {
   const d = new Date(ms);
   const hhmm = d.toTimeString().slice(0, 5);
   return d.toDateString() === new Date().toDateString() ? hhmm : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${hhmm}`;
