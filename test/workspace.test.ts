@@ -74,6 +74,38 @@ test("dependency directories are linked into the worktree, never diffed or lande
   expect(existsSync(worktree)).toBe(false);
 });
 
+test("a dependency dir the repo already gitignores is not named in add's pathspec (git 2.55 rejects it)", async () => {
+  const { repo, text } = await scenario({
+    prepare: (dir, git) => {
+      writeFileSync(join(dir, ".gitignore"), "node_modules\n");
+      git("add", ".gitignore");
+      git("commit", "-q", "-m", "ignore node_modules");
+      mkdirSync(join(dir, "node_modules", "dep"), { recursive: true });
+      writeFileSync(join(dir, "node_modules", "dep", "index.js"), "module.exports = 42;\n");
+    },
+    doneWhen: "`node -e \"process.exit(require('dep') === 42 ? 0 : 1)\"` succeeds",
+  });
+  expect(text.split("\n")[0]).toMatch(/^OK .* files=1 .* tests=pass /);
+  expect(text).not.toContain("node_modules");
+  expect(repo.git("status", "--porcelain", "--untracked-files=all")).not.toContain("node_modules");
+});
+
+test("a directory-only gitignore rule leaves the worktree's dependency symlink unignored, so it is still excluded", async () => {
+  const { repo, text } = await scenario({
+    prepare: (dir, git) => {
+      writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
+      git("add", ".gitignore");
+      git("commit", "-q", "-m", "ignore node_modules dirs");
+      mkdirSync(join(dir, "node_modules", "dep"), { recursive: true });
+      writeFileSync(join(dir, "node_modules", "dep", "index.js"), "module.exports = 42;\n");
+    },
+    doneWhen: "`test -f node_modules/dep/index.js`",
+  });
+  expect(text.split("\n")[0]).toMatch(/^OK .* files=1 .* tests=pass /);
+  expect(text).not.toContain("node_modules");
+  expect(repo.git("status", "--porcelain", "--untracked-files=all")).not.toContain("node_modules");
+});
+
 test("a failed job keeps its worktree with the dependency link in place", async () => {
   const { text, worktree } = await scenario({
     prepare: (dir) => mkdirSync(join(dir, "node_modules", "dep"), { recursive: true }),

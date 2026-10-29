@@ -68,7 +68,7 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
   const linked = links.map((l) => normalisePath(relative(path, l)));
 
   // the carried-over state as a tree object: the job's baseline, without committing anything
-  git(path, ["add", "-A", "--", ".", ...outside(linked)]);
+  git(path, ["add", "-A", "--", ".", ...outside(notIgnored(path, linked))]);
   const base = git(path, ["write-tree"]).trim();
   return { path, head, stash, base, links, linked };
 }
@@ -89,6 +89,10 @@ function discard(root: string, path: string, links: string[]) {
 /** Pathspecs that keep Cheap Agent's state and the given dependency dirs out of a git operation. */
 const outside = (dirs: string[]) => [".cheapag", ...dirs].map((d) => `:(exclude,top,literal)${d}`);
 
+// git 2.55 rejects a pathspec naming an ignored path, even as an exclusion; an already-ignored dir needs no exclusion
+const notIgnored = (dir: string, paths: string[]) =>
+  paths.filter((p) => spawnSync("git", [...GIT_ARGS, "check-ignore", "-q", "--", p], { cwd: dir, stdio: "pipe" }).status !== 0);
+
 const isDirectory = (path: string) => {
   try {
     return statSync(path).isDirectory();
@@ -102,7 +106,7 @@ export function worktreeDiff(worktree: Worktree) {
   const { path, base } = worktree;
   // the worktree's own index: throwaway, never committed. A linked dir is a symlink, which a `node_modules/`
   // ignore rule does not match, so the linked ones (only those: a tracked vendor/ stays in) are excluded.
-  git(path, ["add", "-A", "--", ".", ...outside(worktree.linked)]);
+  git(path, ["add", "-A", "--", ".", ...outside(notIgnored(path, worktree.linked))]);
   const patch = git(path, ["diff", "--cached", "--binary", base]);
   const stats = git(path, ["diff", "--cached", "--numstat", "-z", "--no-renames", base]).split("\0").filter(Boolean);
   const statuses = new Map<string, string>();
