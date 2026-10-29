@@ -2,14 +2,25 @@ name: ci
 
 on:
   push:
+    paths-ignore: ['**.md', 'docs/**', 'assets/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'assets/**']
+  workflow_dispatch:
+    inputs:
+      os:
+        type: choice
+        options: [both, windows, ubuntu]
+        default: both
+      tests:
+        type: string
+        default: ''
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON(inputs.os == 'windows' && '["windows-latest"]' || inputs.os == 'ubuntu' && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     steps:
       - name: Configure git for LF checkouts
         shell: bash
@@ -22,8 +33,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Install Sysinternals Handle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $dir = "$env:RUNNER_TEMP\handle"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Invoke-WebRequest -Uri https://download.sysinternals.com/files/Handle.zip -OutFile "$dir\Handle.zip"
+          Expand-Archive -Path "$dir\Handle.zip" -DestinationPath $dir -Force
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - run: npm test -- ${{ inputs.tests }}
       - name: Smoke test the packaged CLI
+        if: inputs.tests == ''
         shell: bash
         run: |
           npm pack
@@ -33,6 +55,7 @@ jobs:
           echo "$out"
           echo "$out" | grep -q cheapag
       - name: Live tests when an API key is present
+        if: inputs.tests == ''
         shell: bash
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
