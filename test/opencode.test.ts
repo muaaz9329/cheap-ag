@@ -206,4 +206,5 @@ test("the config dir pre-seeds node_modules and a package-lock so OpenCode skips
   expect(readdirSync(dir).sort()).toEqual(["agents", "node_modules", "opencode.json", "package-lock.json", "plugins", "tools"]);
   const lock = JSON.parse(readFileSync(join(dir, "package-lock.json"), "utf8")) as { packages: { "": { dependencies: Record<string, string> } } };
   expect(lock.packages[""].dependencies["@opencode-ai/plugin"]).toBe(OPENCODE_PIN);
+  expect(readFileSync(join(dir, "agents", "cheapag-worker.md"), "utf8")).toContain("list every case the step or Source names or implies");
 });
