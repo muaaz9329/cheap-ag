@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { callText, startServer, tempRepo } from "./harness.js";
+import { callText, slow, startServer, tempRepo } from "./harness.js";
 
 type StepSpec = { id: string; files: string; needs?: string };
 const plan = (steps: StepSpec[]) =>
@@ -188,7 +188,7 @@ test("a group waiting to land can be cancelled at once; it never lands, and late
   const batch = JSON.parse(readFileSync(join(dir, ".cheapag", "batches", `${batchOf(text)}.json`), "utf8"));
   const [j1, , j3] = jobsIn(text).sort((a, b) => a.step.localeCompare(b.step)).map((j) => j.job);
   expect(batch.landed).toEqual([j1, j3]); // step order held even though group 2 settled early
-}, 30_000);
+}, slow(30_000));
 
 const ASK: Action = { question: "Which header style?", options: ["atx", "setext"] };
 const header = (text: string) => text.split("\n")[0];
@@ -243,7 +243,7 @@ test("a group BLOCKED early: delegate returns at once with it first, the others 
   const t1 = Date.now();
   expect(await call("jobs", { action: "wait", job: batch })).toBe(done);
   expect(Date.now() - t1).toBeLessThan(500);
-}, 30_000);
+}, slow(30_000));
 
 test("a BLOCKED group holds back later groups' landing, without their minute cap running out while they wait", async () => {
   let dir = "";
@@ -267,7 +267,7 @@ test("a BLOCKED group holds back later groups' landing, without their minute cap
   expect(header(done)).toMatch(/ OK=2 landed=2 /);
   const record = JSON.parse(readFileSync(join(dir, ".cheapag", "batches", `${batchOf(early)}.json`), "utf8"));
   expect(record.landed).toEqual([one, two]);
-}, 30_000);
+}, slow(30_000));
 
 test("max_blocked_minutes inside a batch: the unanswered group is CANCELLED, jobs wait settles, and later groups still land", async () => {
   const { delegate, inRepo, call } = await scenario(
@@ -286,7 +286,7 @@ test("max_blocked_minutes inside a batch: the unanswered group is CANCELLED, job
   expect(done).toContain("\nreason: no reply within 0.01 min\n");
   expect(inRepo("a.txt")).toBe(false);
   expect(inRepo("b.txt")).toBe(true);
-}, 30_000);
+}, slow(30_000));
 
 test("wait=false returns every group RUNNING at once; jobs wait follows the batch to the end", async () => {
   const { call } = await scenario(
@@ -303,7 +303,7 @@ test("wait=false returns every group RUNNING at once; jobs wait follows the batc
     `next: jobs(action="wait", job="${batch}")`,
   ].join("\n"));
   expect(header(await settle(call, batch))).toMatch(/ OK=2 landed=2 /);
-}, 30_000);
+}, slow(30_000));
 
 test("jobs wait on a single job: blocks until it settles, returns a BLOCKED one at once, and a finished one's block", async () => {
   const { call, inRepo } = await scenario([{ id: "1", files: "a.txt" }], { "1": writes("a.txt", { wait: 300 }, ASK) });
@@ -335,7 +335,7 @@ test("a group still queued for a worker slot has a job from the start, and is ca
   expect(header(await settle(call, batchOf(text)))).toMatch(/ CANCELLED=1 OK=1 landed=1 /);
   expect(fake.recorded.sessions).toHaveLength(1); // group 2 never started
   expect(inRepo("b.txt")).toBe(false);
-}, 30_000);
+}, slow(30_000));
 
 test("jobs wait on a batch returns at once when nothing can move without a reply (the others are waiting to land behind it)", async () => {
   const { delegate, call } = await scenario(
@@ -352,7 +352,7 @@ test("jobs wait on a batch returns at once when nothing can move without a reply
   expect(Date.now() - t0).toBeLessThan(2_000); // never hangs waiting for a reply only Claude can give
   expect(waited).toContain(`BLOCKED ${one} step=1 `);
   expect(waited).toContain(`next: reply(job="${one}", ...)`);
-}, 30_000);
+}, slow(30_000));
 
 test("a redo after a long wait to land does not start out of time: the wait is counted once, not at all", async () => {
   let dir = "";
@@ -442,7 +442,7 @@ test("a semantic break (clean merge, failing combined check) gets a fix job on t
   expect(inRepo("fixed.txt")).toBe(true);
   expect(batchRecord(s.repo.dir, batch)).toMatchObject({ integration: "pass", fix: fix.job, verify: [{ cmd: CHECK, ok: false }] });
   expect(JSON.parse(readFileSync(join(s.repo.dir, ".cheapag", "jobs", fix.job, "result.json"), "utf8"))).toMatchObject({ kind: "fix", batch, landed: true });
-}, 30_000);
+}, slow(30_000));
 
 test("a fix job that cannot make the combined check pass: integration=fail with the de-noised error and the fix job's block", async () => {
   const s = await scenario([{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }], { "1": writes("a.txt"), "2": writes("b.txt") }, INTEGRATION);
@@ -459,7 +459,7 @@ test("a fix job that cannot make the combined check pass: integration=fail with 
   expect(text).toContain(`worktree: .cheapag/worktrees/${fix.job}/`);
   expect(s.inRepo("other.txt")).toBe(false); // the failed fix never lands
   expect(batchRecord(s.repo.dir, batch)).toMatchObject({ integration: "fail", fix: fix.job, integrationError: [`\`${CHECK}\``, "  Error: a.txt and b.txt clash"] });
-}, 30_000);
+}, slow(30_000));
 
 test("a group that did not land keeps integration=pending; land discard of it runs the check on what landed", async () => {
   const s = await scenario([{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }], { "1": writes("a.txt"), "2": failsAfter("b.txt") }, INTEGRATION);
@@ -473,7 +473,7 @@ test("a group that did not land keeps integration=pending; land discard of it ru
   expect(landed.split("\n").slice(0, 3)).toEqual([`OK ${two} discarded`, "", `BATCH ${batch} groups=2 FAIL=1 OK=1 landed=1 integration=pass cost=$0.000`]);
   expect(batchRecord(s.repo.dir, batch)).toMatchObject({ integration: "pass", verify: [{ cmd: CHECK, ok: true }] });
   expect(s.fake.recorded.sessions).toHaveLength(2); // it passed: no fix job
-}, 30_000);
+}, slow(30_000));
 
 test("land apply of the last unlanded group runs the check; its failure gets a fix job that lands", async () => {
   const s = await scenario([{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }], { "1": writes("a.txt"), "2": failsAfter("b.txt") }, INTEGRATION);
@@ -491,7 +491,7 @@ test("land apply of the last unlanded group runs the check; its failure gets a f
   expect(batchRecord(s.repo.dir, batch)).toMatchObject({ integration: "pass", fix: lines[3].split(" ")[1] });
   // a finished batch is shown from its records, the fix job included
   expect(await s.call("jobs", { action: "wait", job: batch })).toBe(lines.slice(2).join("\n"));
-}, 30_000);
+}, slow(30_000));
 
 test("a discarded group's steps are not in the fix job: it fixes only what landed", async () => {
   const s = await scenario(
@@ -505,7 +505,7 @@ test("a discarded group's steps are not in the fix job: it fixes only what lande
   const landed = await s.call("land", { job: three, action: "discard" });
   expect(landed.split("\n")[2]).toMatch(/ integration=pass /);
   expect(landed.split("\n")[3]).toMatch(/^OK j\w{4} step=1,2 /);
-}, 30_000);
+}, slow(30_000));
 
 test("a single-group delegation is not a batch: no integration check", async () => {
   const s = await scenario([{ id: "1", files: "a.txt" }, { id: "2", files: "b.txt" }], { "1": writes("a.txt") }, { integration_cmd: "exit 1" });

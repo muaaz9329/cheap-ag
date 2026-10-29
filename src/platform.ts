@@ -1,6 +1,6 @@
 import { spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithBufferEncoding, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
-import { delimiter, join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
 
 /**
  * Platform: everything OS-specific lives here (spec A18). Windows is supported through junctions, taskkill and
@@ -80,6 +80,22 @@ export function which(name: string, platform: NodeJS.Platform = process.platform
     }
   }
   return undefined;
+}
+
+/**
+ * Git for Windows' bash, for running bash-syntax commands on Windows. Never a bare `bash` from PATH: on Windows that
+ * can be WSL's System32\bash.exe, which resolves Windows paths differently.
+ */
+export function gitBash(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (platform !== "win32") return undefined;
+  // Claude Code's own variable; trust it when it points at a real file
+  const override = env.CLAUDE_CODE_GIT_BASH_PATH;
+  if (override && existsSync(override)) return override;
+  const git = which("git", platform, env);
+  if (!git) return undefined;
+  // Git for Windows: git.exe in <Git>\cmd, bash.exe in <Git>\bin
+  const bash = join(dirname(git), "..", "bin", "bash.exe");
+  return existsSync(bash) ? bash : undefined;
 }
 
 /** Double-quotes an argument Node will re-split under `shell: true` on Windows. */

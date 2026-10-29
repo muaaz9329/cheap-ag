@@ -211,13 +211,18 @@ export function parseAnswer(text: string, root: string, scope: string[], maxWord
   };
 }
 
+/** The raw `path:line(-line)` candidates in text, before validation. Accepts a Windows drive letter and backslashes. */
+export function refTokens(text: string): { path: string; from: string; to: string | undefined }[] {
+  return [...text.matchAll(/((?:[A-Za-z]:)?[\w./\\@-]+):(\d+)(?:-(\d+))?/g)].map(([, path, from, to]) => ({ path, from, to }));
+}
+
 /**
  * Validated `path:line(-line)` refs from free text, at most 5: the file exists in the main checkout, inside the repo
  * (and the scope, when there is one), and has those lines. Absolute paths inside the repo are made relative.
  */
 function refs(text: string, root: string, scope: string[]): ResearchRecord["refs"] {
   const out: ResearchRecord["refs"] = [];
-  for (const [, path, from, to] of text.matchAll(/([\w./@-]+):(\d+)(?:-(\d+))?/g)) {
+  for (const { path, from, to } of refTokens(text)) {
     const abs = isAbsolute(path) ? path : join(root, path);
     const rel = normalisePath(relative(root, abs));
     const start = Number(from);

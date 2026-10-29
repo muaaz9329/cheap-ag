@@ -7,7 +7,7 @@ import { installPaths, writePlugin } from "../src/install.js";
 import { normalisePath } from "../src/platform.js";
 import { PRESETS } from "../src/routing.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { hermeticHome, serverEntry, tempRepo, type Logins } from "./harness.js";
+import { hermeticHome, serverEntry, slow, tempRepo, type Logins } from "./harness.js";
 
 const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
 
@@ -115,7 +115,7 @@ tty("login saves the key through the bundled OpenCode, live-checks it, and regis
   // Enter on the worker-models question took balanced, the default
   expect(r.output).toContain("Worker models: cheapest / balanced (recommended) / strongest [balanced]");
   expect(r.config).toEqual({ models: PRESETS.openrouter.balanced });
-}, 90_000);
+}, slow(90_000));
 
 tty("picking strongest writes its models to the user config, and the live check runs its implement model", async () => {
   const r = await runLogin({ claude: "registered", preset: "strongest" });
@@ -123,14 +123,14 @@ tty("picking strongest writes its models to the user config, and the live check 
   expect(r.config).toEqual({ models: PRESETS.openrouter.strongest });
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "z-ai/glm-5.3" });
   expect(r.output).toContain("✓ openrouter/z-ai/glm-5.3 answered");
-}, 90_000);
+}, slow(90_000));
 
 tty("re-running login offers the current preset; Enter keeps it and the config's other keys", async () => {
   const r = await runLogin({ claude: "registered", config: { test_cmd: "make check", models: PRESETS.openrouter.strongest } });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("strongest [strongest]");
   expect(r.config).toEqual({ test_cmd: "make check", models: PRESETS.openrouter.strongest });
-}, 90_000);
+}, slow(90_000));
 
 tty("--preset sets the models without asking; an answer that is no preset changes nothing", async () => {
   const r = await runLogin({ claude: "registered", args: ["--preset", "cheapest"] });
@@ -141,7 +141,7 @@ tty("--preset sets the models without asking; an answer that is no preset change
   expect(bad.exit).toMatch(/^EXIT 1 UNMATCHED/); // never got to the key
   expect(bad.output).toContain('✗ "fastest" is not one of cheapest, balanced, strongest, custom; nothing changed');
   expect(bad.config).toBeUndefined();
-}, 90_000);
+}, slow(90_000));
 
 test("without a terminal, login sets the preset for the saved provider: the flag, custom, the balanced fallback, a bad name", async () => {
   const strongest = await scriptedLogin(["--preset", "strongest"]);
@@ -171,14 +171,14 @@ test.skipIf(process.platform === "win32")("registration uses a node symlink on P
   const r = await runLogin({ claude: "unregistered", register: "y", path: [stable] });
   expect(r.claudeCalls.slice(0, 2)).toEqual(["mcp get cheapag", `mcp add -s user cheapag -- ${join(stable, "node")} ${serverEntry}`]);
   expect(readFileSync(r.launcher, "utf8")).toContain(JSON.stringify(serverEntry));
-}, 90_000);
+}, slow(90_000));
 
 tty("answering no prints the exact command instead of running it", async () => {
   const r = await runLogin({ claude: "unregistered", register: "n" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain(`Not registered. To add it later, run:\n  claude ${ADD}`);
   expect(r.claudeCalls).toEqual(["mcp get cheapag"]);
-}, 90_000);
+}, slow(90_000));
 
 tty("an existing registration is detected and kept without asking; the plugin is still installed", async () => {
   const r = await runLogin({ claude: "registered" });
@@ -186,7 +186,7 @@ tty("an existing registration is detected and kept without asking; the plugin is
   expect(r.output).toContain("✓ cheapag is already registered with Claude Code\n");
   expect(r.output).not.toContain("[Y/n]");
   expect(r.claudeCalls).toEqual(["mcp get cheapag", ...PLUGIN(r.marketplace)]);
-}, 90_000);
+}, slow(90_000));
 
 tty("the plugin is generated from the package: hooks and commands call the launcher, no .mcp.json, its own marketplace", async () => {
   const r = await runLogin({ claude: "registered" });
@@ -207,7 +207,7 @@ tty("the plugin is generated from the package: hooks and commands call the launc
   expect(launcher).toContain("pathToFileURL");
   const context = await promisify(execFile)(process.execPath, [r.launcher, "hook", "context"], { encoding: "utf8" });
   expect(context.stdout).toContain('"hookEventName":"SessionStart"');
-}, 90_000);
+}, slow(90_000));
 
 tty("re-running setup updates the plugin it installed; a failed plugin step prints the commands to run", async () => {
   const again = await runLogin({ claude: "registered", plugin: "installed" });
@@ -216,25 +216,25 @@ tty("re-running setup updates the plugin it installed; a failed plugin step prin
   expect(failed.exit).toBe("EXIT 0");
   expect(failed.output).toContain(`✗ claude plugin install cheapag@cheapag failed (Plugin not found). Run these yourself:\n  claude plugin marketplace add ${failed.marketplace}\n  claude plugin install cheapag@cheapag`);
   expect(failed.output).toContain("add the plugin with the commands above");
-}, 120_000);
+}, slow(120_000));
 
 tty("npx cheap-agent with no arguments in a terminal runs setup (Claude Code starts the server with a piped stdin)", async () => {
   const r = await runLogin({ claude: "registered", cmd: [process.execPath, serverEntry] });
   expect(r.output).toContain("Cheap Agent login");
   expect(r.exit).toBe("EXIT 0");
-}, 90_000);
+}, slow(90_000));
 
 tty("a registration at another scope does not count: login still offers the user-scope add", async () => {
   const r = await runLogin({ claude: "local", register: "y" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.claudeCalls.slice(0, 2)).toEqual(["mcp get cheapag", ADD]);
-}, 90_000);
+}, slow(90_000));
 
 tty("without the claude CLI, login prints the command to run", async () => {
   const r = await runLogin({ claude: "absent" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain(`Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  claude ${ADD}`);
-}, 90_000);
+}, slow(90_000));
 
 tty("a failed live check explains the fix, keeps the saved login, and does not offer registration", async () => {
   const r = await runLogin({ claude: "unregistered", check: [{ error: { name: "APIError", message: "401 Missing Authentication header" } }] });
@@ -242,7 +242,7 @@ tty("a failed live check explains the fix, keeps the saved login, and does not o
   expect(r.output).toContain("✗ the key was rejected (401 Missing Authentication header); run npx cheap-agent login again with the right key");
   expect(r.saved).toEqual(["openrouter"]);
   expect(r.claudeCalls).toEqual([]);
-}, 90_000);
+}, slow(90_000));
 
 tty.each([
   ["no credit", "402 Insufficient credits", "✗ the account has no credit (402 Insufficient credits); top it up, then run npx cheap-agent login again"],
@@ -251,7 +251,7 @@ tty.each([
   const r = await runLogin({ claude: "unregistered", check: [{ error: { name: "APIError", message } }] });
   expect(r.exit).toBe("EXIT 1");
   expect(r.output).toContain(expected);
-}, 90_000);
+}, slow(90_000));
 
 test("login refuses a non-interactive stdin instead of hanging", async () => {
   const { env } = hermeticHome();
@@ -266,7 +266,7 @@ tty("re-running login adds a provider; the earlier one keeps precedence and that
   expect(r.output).toContain("Currently using: OpenCode Go.");
   expect(r.output).toContain("Note: OpenCode Go is also saved and is used first.");
   expect(r.saved.sort()).toEqual(["opencode-go", "openrouter"]);
-}, 90_000);
+}, slow(90_000));
 
 test("writePlugin on win32 emits double-quoted, forward-slash commands with no sh gate", () => {
   const { home, env } = hermeticHome();

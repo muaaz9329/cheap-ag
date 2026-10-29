@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode } from "./fake-opencode.js";
 import { allowRepo, callText, hermeticHome as makeHome, homeEnv, serverEntry, startServer, tempRepo, type Logins } from "./harness.js";
@@ -55,7 +55,7 @@ test("first delegate in an unapproved repo returns CONSENT and creates no job; a
   const { repo, fake, server, delegate, logins } = await scenario();
   const text = await delegate();
   expect(text).toBe([
-    `CONSENT repo=${repo.dir.split("/").at(-1)}`,
+    `CONSENT repo=${basename(repo.dir)}`,
     "send: code from this repo → OpenCode Go: deepseek-v4.1-flash, qwen3.8-flash, deepseek-v4-pro (+fallbacks qwen3.7-plus, glm-5.3, kimi-k3)",
     "retention: deepseek-v4.1-flash = zero retention; qwen3.8-flash = zero retention; deepseek-v4-pro = zero retention; qwen3.7-plus = zero retention; glm-5.3 = not stated; kimi-k3 = not stated",
     "approve: ask the user to run /cheapag:allow (all) or /cheapag:allow --zdr-only (terminal: npx cheap-agent allow [--zdr-only | --models a,b]); never approve yourself",

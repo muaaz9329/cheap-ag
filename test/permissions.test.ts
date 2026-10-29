@@ -8,7 +8,7 @@ import { opencodeBinary, SECRETS_PLUGIN } from "../src/opencode.js";
 import { baselinePermission, projectScripts, workerRuleset } from "../src/permissions.js";
 import { killProcessGroup, link } from "../src/platform.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
-import { hermeticHome, tempRepo } from "./harness.js";
+import { hermeticHome, slow, tempRepo } from "./harness.js";
 
 /**
  * Cheap Agent's ruleset, enforced by the *real* bundled OpenCode, with a scripted model (test/fake-llm.ts) so each
@@ -50,7 +50,7 @@ beforeAll(async () => {
     oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
   });
   client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
-}, 60_000);
+}, slow(60_000));
 
 afterAll(async () => {
   stop?.();
@@ -102,7 +102,7 @@ test.each([
   "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1",
 ])("bash `%s` is denied", async (command) => {
   expect(await bash(command)).toBe("denied");
-}, 30_000);
+}, slow(30_000));
 
 test("the project's own scripts, configured allow_commands and read-only git are allowed", async () => {
   expect(await bash("npm run lint")).toBe("allowed");
@@ -114,7 +114,7 @@ test("the project's own scripts, configured allow_commands and read-only git are
   expect(await bash("git diff --stat")).toBe("allowed");
   expect(await bash("make check")).toBe("allowed"); // a make target, exactly
   expect(existsSync(join(repo.dir, "make.out"))).toBe(true);
-}, 60_000);
+}, slow(60_000));
 
 test("env files cannot even be read", async () => {
   writeFileSync(join(repo.dir, ".env"), "SECRET=1\n");
@@ -132,14 +132,14 @@ test("env files cannot even be read", async () => {
     expect(seen).toContain("put-yours-here");
     expect(seen).not.toMatch(/SECRET=[12]/);
   }
-}, 60_000);
+}, slow(60_000));
 
 test("protected paths cannot be edited; ordinary files can", async () => {
   for (const path of [".env", "config/.env.local", ".git/hooks/x", "sub/.git/config", ".cheapag/state", "cheapag.json", "package-lock.json", "web/yarn.lock"]) {
     expect(await write(path), path).toBe("denied");
   }
   expect(await write("src/ok.ts")).toBe("allowed");
-}, 60_000);
+}, slow(60_000));
 
 test("linked dependency dirs are readable through the worktree link but never writable; outside paths are denied", async () => {
   expect(await call("read", { filePath: join(repo.dir, "node_modules", "dep", "index.js") })).toBe("allowed");
@@ -148,7 +148,7 @@ test("linked dependency dirs are readable through the worktree link but never wr
   expect(await call("read", { filePath: "/etc/hosts" })).toBe("denied");
   expect(existsSync(join(deps, "dep", "evil.js"))).toBe(false);
   expect(lstatSync(join(repo.dir, "node_modules")).isSymbolicLink()).toBe(true);
-}, 60_000);
+}, slow(60_000));
 
 test("web, subtasks and skills are not even offered to the worker", async () => {
   expect(await call("webfetch", { url: "https://example.com", format: "text" })).toBe("unavailable");
@@ -157,4 +157,4 @@ test("web, subtasks and skills are not even offered to the worker", async () => 
   expect(offered).not.toEqual(expect.arrayContaining(["webfetch"]));
   expect(offered).not.toContain("task");
   expect(offered).not.toContain("skill");
-}, 60_000);
+}, slow(60_000));

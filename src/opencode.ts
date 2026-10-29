@@ -6,7 +6,7 @@ import { arch } from "node:os";
 import { dirname, join } from "node:path";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
-import { killProcessGroup, opencodePlatform } from "./platform.js";
+import { gitBash, killProcessGroup, opencodePlatform } from "./platform.js";
 import { fullRoute, modelName, routeModels, type Route } from "./routing.js";
 
 const require = createRequire(import.meta.url);
@@ -202,6 +202,8 @@ async function boot(projectDir: string, config: string): Promise<Opencode> {
 }
 
 function spawnServer(configDir: string, password: string) {
+  // on Windows point the worker at Git Bash, so it runs and parses its commands as bash, like the rest of cheapag
+  const bash = process.platform === "win32" ? gitBash() : undefined;
   return new Promise<string>((resolve, reject) => {
     // detached: its own process group, so stopOpencode() also takes down anything it spawned
     const proc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
@@ -214,6 +216,7 @@ function spawnServer(configDir: string, password: string) {
         OPENCODE_SERVER_PASSWORD: password,
         OPENCODE_CONFIG_DIR: configDir,
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        ...(bash ? { SHELL: bash } : {}),
         // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
         OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
       },

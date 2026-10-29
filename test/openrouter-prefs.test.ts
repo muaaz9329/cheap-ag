@@ -7,7 +7,7 @@ import { consentGate, writeConsent } from "../src/consent.js";
 import { opencodeBinary } from "../src/opencode.js";
 import { killProcessGroup } from "../src/platform.js";
 import { startFakeLlm } from "./fake-llm.js";
-import { hermeticHome, tempRepo } from "./harness.js";
+import { hermeticHome, slow, tempRepo } from "./harness.js";
 
 /**
  * OpenRouter routing preferences, as the real bundled OpenCode actually sends them. The model options come from
@@ -60,4 +60,4 @@ test.each([
   } finally {
     kill(); // in the body, not a hook: this server must never outlive the test
   }
-}, 60_000);
+}, slow(60_000));

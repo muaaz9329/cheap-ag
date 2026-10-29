@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { PRESETS } from "../src/routing.js";
-import { callText, startServer } from "./harness.js";
+import { callText, slow, startServer } from "./harness.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as { version: string; dependencies: Record<string, string> };
@@ -142,7 +142,7 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   await server.close();
   await vi.waitFor(() => expect(() => execFileSync("pgrep", ["-g", String(restartedPid)])).toThrow(), { timeout: 5000 });
   await vi.waitFor(() => expect(() => execFileSync("pgrep", ["-g", String(opencodePid)])).toThrow(), { timeout: 5000 });
-}, 30_000);
+}, slow(30_000));
 
 test("the generated finish tool is valid JavaScript (a syntax error makes OpenCode drop it and the worker do nothing)", async () => {
   const { FINISH_TOOL_SOURCE } = await import("../src/opencode.js");

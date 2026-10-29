@@ -2,7 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
-import { hermeticHome, serverEntry, tempRepo } from "./harness.js";
+import { gitBash } from "../src/platform.js";
+import { hermeticHome, serverEntry, slow, tempRepo } from "./harness.js";
 
 /**
  * The edit guard at its own seam (spec: Testing Decisions): the plugin's real hook command, with its npx pin swapped
@@ -24,7 +25,7 @@ function setup() {
   /** Runs the hook; returns the deny reason, or null when it made no decision. */
   const run = (tool_name: string, tool_input: Record<string, unknown>, opts: { prompt?: string; extraEnv?: Record<string, string>; stdin?: string; agent?: string } = {}) => {
     const input = { session_id: "s1", prompt_id: opts.prompt ?? "p1", cwd: repo.dir, hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "t", ...(opts.agent && { agent_id: opts.agent, agent_type: "general-purpose" }) };
-    const r = spawnSync("sh", ["-c", command], { cwd: repo.dir, env: { ...env, ...opts.extraEnv }, input: opts.stdin ?? JSON.stringify(input), encoding: "utf8" });
+    const r = spawnSync(gitBash() ?? "sh", ["-c", command], { cwd: repo.dir, env: { ...env, ...opts.extraEnv }, input: opts.stdin ?? JSON.stringify(input), encoding: "utf8" });
     expect(r.status).toBe(0);
     if (!r.stdout.trim()) return null;
     const out = JSON.parse(r.stdout).hookSpecificOutput;
@@ -35,7 +36,7 @@ function setup() {
   /** Feeds the PostToolUse hook a cheapag tool's result, as MCP content blocks. */
   const result = (text: string, prompt = "p1", tool_name = "mcp__plugin_cheapag_cheapag__delegate") => {
     const input = { session_id: "s1", prompt_id: prompt, cwd: repo.dir, hook_event_name: "PostToolUse", tool_name, tool_input: {}, tool_response: [{ type: "text", text }], tool_use_id: "t" };
-    const r = spawnSync("sh", ["-c", resultCommand], { cwd: repo.dir, env, input: JSON.stringify(input), encoding: "utf8" });
+    const r = spawnSync(gitBash() ?? "sh", ["-c", resultCommand], { cwd: repo.dir, env, input: JSON.stringify(input), encoding: "utf8" });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("");
   };
@@ -169,7 +170,7 @@ test("takeover sonnet (default): after a FAIL, only the Agent tool and cheapag's
   // the subagent's own calls carry agent_id: never denied, never counted
   for (let i = 0; i < 4; i++) expect(run(i % 2 ? "Edit" : "Bash", i % 2 ? { file_path: "a.ts", old_string: "a", new_string: "b" } : { command: "pytest -q" }, { agent: "ab9d" })).toBeNull();
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
-}, 20_000);
+}, slow(20_000));
 
 test("trust OK: after an OK whose checks passed, re-running tests is denied; other tools pass; tests=none and a new prompt are free; a later FAIL wins", () => {
   const { run, result } = setup();
@@ -185,4 +186,4 @@ test("trust OK: after an OK whose checks passed, re-running tests is denied; oth
   expect(run("Bash", { command: "npm test" }, { prompt: "p2" })).toBeNull();
   result(FAIL_BLOCK, "p2");
   expect(run("Read", read, { prompt: "p2" })).toMatch(/^The worker did not finish/);
-}, 20_000);
+}, slow(20_000));

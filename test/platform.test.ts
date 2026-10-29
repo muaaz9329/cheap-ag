@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { runCli, which } from "../src/platform.js";
+import { gitBash, runCli, which } from "../src/platform.js";
 
 let dir: string | undefined;
 afterEach(() => {
@@ -42,4 +42,41 @@ test("which returns undefined when nothing matches", () => {
 
 test("runCli returns undefined for a command that is not on the PATH", () => {
   expect(runCli("definitely-not-a-cheapag-test-command", [])).toBeUndefined();
+});
+
+// Git for Windows layout: git.exe in <Git>\cmd, bash.exe in <Git>\bin
+const gitInstall = (withBash = true) => {
+  const d = tempDir();
+  const cmd = join(d, "Git", "cmd");
+  const bin = join(d, "Git", "bin");
+  mkdirSync(cmd, { recursive: true });
+  writeFileSync(join(cmd, "git.exe"), "");
+  if (withBash) {
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "bash.exe"), "");
+  }
+  return { dir: d, bin, path: cmd };
+};
+
+test("gitBash is undefined off Windows", () => {
+  expect(gitBash("darwin", { PATH: "/usr/bin" })).toBeUndefined();
+});
+
+test("gitBash derives Git for Windows' bash.exe from git on the PATH", () => {
+  const { bin, path } = gitInstall();
+  expect(gitBash("win32", { PATH: path })).toBe(join(bin, "bash.exe"));
+});
+
+test("gitBash prefers CLAUDE_CODE_GIT_BASH_PATH when it exists", () => {
+  const { dir, bin, path } = gitInstall();
+  writeFileSync(join(dir, "custom-bash.exe"), "");
+  expect(gitBash("win32", { PATH: path, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "custom-bash.exe") })).toBe(join(dir, "custom-bash.exe"));
+  // a stale override that is not there falls back to the derived path
+  expect(gitBash("win32", { PATH: path, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "gone.exe") })).toBe(join(bin, "bash.exe"));
+});
+
+test("gitBash is undefined when git or its bash.exe is missing", () => {
+  const { path } = gitInstall(false);
+  expect(gitBash("win32", { PATH: path })).toBeUndefined();
+  expect(gitBash("win32", { PATH: join(tempDir(), "Git", "cmd") })).toBeUndefined();
 });

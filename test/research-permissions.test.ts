@@ -8,7 +8,7 @@ import { baselinePermission, researchRuleset } from "../src/permissions.js";
 import { killProcessGroup } from "../src/platform.js";
 import { RESEARCH_AGENT } from "../src/research.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
-import { hermeticHome, tempRepo } from "./harness.js";
+import { hermeticHome, slow, tempRepo } from "./harness.js";
 
 /**
  * The research worker is strictly read-only, as enforced by the *real* bundled OpenCode (scripted model, see
@@ -46,7 +46,7 @@ beforeAll(async () => {
     oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
   });
   client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
-}, 60_000);
+}, slow(60_000));
 
 afterAll(async () => {
   stop?.();
@@ -97,7 +97,7 @@ test("reads the main checkout, uncommitted edits included, and searches it", asy
   expect(await outcome("read", { filePath: join(repo.dir, "config") })).toBe("allowed");
   // exactly the read-only tools are offered to the model
   expect(llm.requests.filter((r) => r.tools).at(-1).tools.map((t: { function: { name: string } }) => t.function.name).sort()).toEqual(["bash", "glob", "grep", "read"]);
-}, 60_000);
+}, slow(60_000));
 
 test("can run the allowed test commands (to reproduce), but cannot edit, run anything else, ask questions, or read secrets and outside paths", async () => {
   expect(await outcome("bash", { command: "git status", description: "t" })).toBe("allowed");
@@ -122,7 +122,7 @@ test("can run the allowed test commands (to reproduce), but cannot edit, run any
   // the tree is exactly as it was
   expect(repo.git("status", "--porcelain", "--untracked-files=all")).toBe(status);
   expect(existsSync(join(repo.dir, "made.txt"))).toBe(false);
-}, 120_000);
+}, slow(120_000));
 
 test("secrets never reach the model through grep; .env.example stays readable", async () => {
   for (const args of [{ pattern: "SECRET" }, { pattern: "SECRET", include: ".env*" }]) {
@@ -134,4 +134,4 @@ test("secrets never reach the model through grep; .env.example stays readable", 
   const example = await call("read", { filePath: join(repo.dir, ".env.example") });
   expect(example.outcome).toBe("allowed");
   expect(example.output).toContain("put-yours-here");
-}, 60_000);
+}, slow(60_000));

@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { BRIEF_FORMAT, REPRO_RULE } from "../src/research.js";
+import { BRIEF_FORMAT, REPRO_RULE, refTokens } from "../src/research.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { callText, startServer, tempRepo, type Logins } from "./harness.js";
+import { callText, slow, startServer, tempRepo, type Logins } from "./harness.js";
 
 /** Research through the MCP seam, with the fake OpenCode. Read-only enforcement itself: research-permissions.test.ts. */
 
@@ -29,6 +29,13 @@ const block = (fields: string) => ({ text: `Found it.\n\`\`\`cheapag-research\n$
 const prompt = (head: string, words = 200) => `${head}\n${REPRO_RULE}\nAnswer in at most ${words} words.\n${BRIEF_FORMAT}`;
 
 const idOf = (text: string) => text.match(/^\w+ (r[0-9a-z]{4}) /)![1];
+
+test("the ref parser accepts Windows drive-letter and backslash paths, and POSIX ones", () => {
+  expect(refTokens("C:\\x\\src\\app.ts:1 and src/app.ts:2-3")).toEqual([
+    { path: "C:\\x\\src\\app.ts", from: "1", to: undefined },
+    { path: "src/app.ts", from: "2", to: "3" },
+  ]);
+});
 
 test("an unapproved repo gets CONSENT, naming the research model, before anything is created or sent", async () => {
   const { repo, fake, research } = await scenario({ allow: null });
@@ -182,7 +189,7 @@ test("runs while a delegate job is running, and notes that job as not yet landed
   const job = text.match(/note: 1 job not yet landed \((j\w{4})\)/)![1];
   expect(await callText(server.client, "jobs", { action: "cancel", job })).toMatch(/^CANCELLED /);
   expect(await delegated).toMatch(/^CANCELLED /);
-}, 30_000);
+}, slow(30_000));
 
 test("a scout brief: ranked files, a reproduction the worker ran, dead ends, notes", async () => {
   const { fake, research } = await scenario();

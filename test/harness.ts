@@ -7,6 +7,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 export const serverEntry = join(import.meta.dirname, "..", "dist", "index.js");
 
+/** Scales explicit per-test timeouts (vitest config can't reach these) for Windows CI's ~3x slowness. */
+export const slow = (ms: number) => (process.platform === "win32" ? ms * 3 : ms);
+
 /** Saved logins to seed, provider id → key, e.g. `{ openrouter: "sk-or-…" }`. */
 export type Logins = Record<string, string>;
 
@@ -15,7 +18,8 @@ export type Logins = Record<string, string>;
  * (test-only plumbing, ADR-0004). The env drops the developer's CHEAPAG_OPENCODE_URL and any leftover provider key vars.
  */
 export function hermeticHome(logins: Logins = {}) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "cheapag-home-")));
+  // realpathSync.native expands Windows 8.3 short names; same result on macOS
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-home-")));
   if (Object.keys(logins).length) {
     mkdirSync(join(home, "data", "opencode"), { recursive: true });
     const auth = Object.fromEntries(Object.entries(logins).map(([id, key]) => [id, { type: "api", key }]));
@@ -64,7 +68,8 @@ export async function startServer(opts: { cwd?: string; env?: Record<string, str
     pid: transport.pid!,
     close: async () => {
       await client.close();
-      rmSync(home, { recursive: true, force: true });
+      // Windows holds handles briefly after a process exits
+      rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -82,8 +87,8 @@ export type RepoState = "clean" | "dirty" | "untracked";
 
 /** A throwaway git repo with one commit, then left in the requested working-tree state. */
 export function tempRepo(state: RepoState = "clean") {
-  // realpath: macOS tmpdir is a /var -> /private/var symlink, and git reports the resolved path
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "cheapag-test-")));
+  // realpathSync.native: macOS tmpdir is a /var -> /private/var symlink, and git reports the resolved path; expands 8.3 names on Windows
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-test-")));
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "user.name=cheapag-test", "-c", "user.email=test@cheapag.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: dir, stdio: "pipe" }).toString();
 
@@ -97,7 +102,7 @@ export function tempRepo(state: RepoState = "clean") {
   if (state === "dirty") writeFileSync(join(dir, "README.md"), "# fixture\n\nedited\n");
   if (state === "untracked") writeFileSync(join(dir, "notes.txt"), "untracked\n");
 
-  return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 /** Every file in a checkout (but .git and .cheapag) with its bytes, plus git's view: index entries and status. Equal snapshots = an untouched tree. */

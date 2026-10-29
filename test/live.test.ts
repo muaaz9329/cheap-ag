@@ -5,7 +5,7 @@ import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { expect, onTestFinished, test } from "vitest";
 import { opencodeBinary } from "../src/opencode.js";
 import { killProcessGroup } from "../src/platform.js";
-import { callText, startServer, tempRepo } from "./harness.js";
+import { callText, slow, startServer, tempRepo } from "./harness.js";
 
 /**
  * Opt-in live checks against the real bundled OpenCode and a real model. They cost money:
@@ -58,7 +58,7 @@ live("a one-step delegate on OpenRouter lands OK, uncommitted", async () => {
   // a real model sometimes just stops after checking its work; the placeholder covers that, so this is logged, not
   // asserted. That `finish` is allowed at all is pinned in delegate.test.ts.
   console.log(`LIVE worker called finish: ${reported}`);
-}, 300_000);
+}, slow(300_000));
 
 live("abort on a real session: observed event sequence", async () => {
   const repo = tempRepo();
@@ -103,7 +103,7 @@ live("abort on a real session: observed event sequence", async () => {
   }
   console.log(`LIVE abort sequence: ${JSON.stringify(seen.filter((t, i) => t !== seen[i - 1] || !t.startsWith("message.part")))}`);
   expect(seen).toContain("session.idle");
-}, 120_000);
+}, slow(120_000));
 
 live("a worker question → BLOCKED; after a long wait a free-text reply resumes the same session and lands", async () => {
   const repo = tempRepo();
@@ -132,7 +132,7 @@ live("a worker question → BLOCKED; after a long wait a free-text reply resumes
   console.log(`LIVE after reply:\n${done}`);
   expect(done).toMatch(new RegExp(`^OK ${job} step=1 .* tests=pass `));
   expect(readFileSync(join(repo.dir, "greeting.txt"), "utf8").trim()).toBe("hello Grace");
-}, 300_000);
+}, slow(300_000));
 
 live("research answers from the main checkout with refs, read-only", async () => {
   const repo = tempRepo();
@@ -149,7 +149,7 @@ live("research answers from the main checkout with refs, read-only", async () =>
   expect(text).toMatch(/^(ANSWER|UNSURE) r[0-9a-z]{4} /);
   expect(text).toContain("src/auth.ts");
   expect(repo.git("status", "--porcelain", "--untracked-files=all")).toBe(before); // read-only (.cheapag is excluded)
-}, 300_000);
+}, slow(300_000));
 
 live("a landing conflict on a real model: one redo in the same session (worktree recreated) → OK redo=1, or CONFLICT", async () => {
   const repo = tempRepo(); // README.md is tracked: "# fixture"
@@ -182,4 +182,4 @@ live("a landing conflict on a real model: one redo in the same session (worktree
   console.log(`LIVE redo block:\n${text}`);
   expect(text).toMatch(/^(OK j[0-9a-z]{4} .* redo=1|CONFLICT j[0-9a-z]{4} )/);
   if (text.startsWith("CONFLICT")) expect(readFileSync(join(repo.dir, "README.md"), "utf8")).toBe("# Mine\n"); // untouched
-}, 300_000);
+}, slow(300_000));

@@ -6,7 +6,7 @@ import { opencodeBinary } from "../src/opencode.js";
 import { killProcessGroup } from "../src/platform.js";
 import { openSession } from "../src/worker.js";
 import { startFakeLlm } from "./fake-llm.js";
-import { hermeticHome, tempRepo } from "./harness.js";
+import { hermeticHome, slow, tempRepo } from "./harness.js";
 
 /**
  * Provider limits as the real bundled OpenCode reports them, read by Cheap Agent's own worker. The fake model stands in
@@ -42,7 +42,7 @@ beforeAll(async () => {
     oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
   });
   opencode = { url, password: "t", version: "" };
-}, 60_000);
+}, slow(60_000));
 
 afterAll(async () => {
   kill(); // SIGKILL: this server must never outlive the suite
@@ -79,7 +79,7 @@ test("a Go limit: the retry status is read at once, the session aborted, and a m
   // same session: the continued request carries the earlier prompt
   expect(JSON.stringify(tools().at(-1).messages)).toContain("do step 1");
   expect(s.totals().spend).toHaveProperty(`openrouter/${QWEN}`);
-}, 30_000);
+}, slow(30_000));
 
 test("a plain 429 (OpenRouter rate limit) is a retry status without a Go reason, and is stopped the same way", async () => {
   llm.script({ status: 429, body: { error: { message: "Rate limit exceeded: free-models-per-min", code: 429 } }, headers: { "retry-after": "600" } });
@@ -87,7 +87,7 @@ test("a plain 429 (OpenRouter rate limit) is a retry status without a Go reason,
   const limited = await s.run("do step 1");
   expect(limited.limit).toMatchObject({ model: `openrouter/${FLASH}`, reason: undefined });
   expect(limited.limit!.message).toMatch(/rate limit/i);
-}, 30_000);
+}, slow(30_000));
 
 test("a 402 (OpenRouter out of credits) is not retried: the run ends with the error and its HTTP status", async () => {
   llm.script({ status: 402, body: { error: { message: "Insufficient credits. Add more using https://openrouter.ai/settings/credits", code: 402 } } });
@@ -96,4 +96,4 @@ test("a 402 (OpenRouter out of credits) is not retried: the run ends with the er
   expect(failed.limit).toBeUndefined();
   expect(failed.httpStatus).toBe(402);
   expect(failed.error).toMatch(/Insufficient credits/);
-}, 30_000);
+}, slow(30_000));

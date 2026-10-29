@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { killProcessGroup } from "./platform.js";
+import { gitBash, killProcessGroup } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
 
@@ -34,8 +34,13 @@ export async function runVerify(cwd: string, cmds: string[], onStart: (cmd: stri
 function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyRun> {
   const started = Date.now();
   return new Promise((resolve) => {
-    // its own process group, so everything it spawned can be stopped with it; shell form: /bin/sh -c on POSIX, cmd.exe on Windows
-    const child = spawn(cmd, { shell: true, cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1", FORCE_COLOR: "0" } });
+    // checks are written in bash syntax; on Windows run them through Git Bash when we have it, else let Node pick the shell
+    const bash = process.platform === "win32" ? gitBash() : undefined;
+    const env = { ...process.env, CI: "1", FORCE_COLOR: "0" };
+    // its own process group, so everything it spawned can be stopped with it
+    const child = bash
+      ? spawn(bash, ["-c", cmd], { cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env })
+      : spawn(cmd, { shell: true, cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
     const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;
