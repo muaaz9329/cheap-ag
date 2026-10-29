@@ -217,10 +217,24 @@ export async function serve() {
   } catch {
     // not a repository, or a bad config (delegate reports that): nothing to clean
   }
-  process.on("exit", () => stopOpencode(true));
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit());
+  // CHEAPAG_DEBUG_SHUTDOWN=1 traces each shutdown point to stderr (CI logs); silent otherwise
+  const shutdownLog = (line: string) => {
+    if (process.env.CHEAPAG_DEBUG_SHUTDOWN === "1") process.stderr.write(`cheapag-shutdown: ${line}\n`);
+  };
+  process.on("exit", () => {
+    shutdownLog("exit handler, stopping opencode");
+    stopOpencode(true);
+  });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+    process.on(signal, () => {
+      shutdownLog(`signal ${signal}`);
+      process.exit();
+    });
   // Claude Code closing our stdin is the normal shutdown
-  process.stdin.on("end", () => process.exit());
+  process.stdin.on("end", () => {
+    shutdownLog("stdin end");
+    process.exit();
+  });
 
   await server.connect(new StdioServerTransport());
 }

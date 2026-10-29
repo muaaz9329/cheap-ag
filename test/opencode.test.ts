@@ -34,7 +34,8 @@ async function pingWith(env: Record<string, string>, logins: Record<string, stri
 function children(pid: number) {
   try {
     if (process.platform === "win32") {
-      const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}').ProcessId`]).toString().trim();
+      // opencode.exe only: the server can also have a conhost.exe child
+      const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid} AND Name='opencode.exe'").ProcessId`]).toString().trim();
       return out ? out.split(/\s+/).map(Number) : [];
     }
     return execFileSync("pgrep", ["-P", String(pid)]).toString().trim().split("\n").map(Number);
@@ -163,6 +164,24 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   await vi.waitFor(() => expect(gone(restartedPid)).toBe(true), { timeout: slow(5000) });
   await vi.waitFor(() => expect(gone(opencodePid)).toBe(true), { timeout: slow(5000) });
 }, slow(30_000));
+
+test("the server's normal shutdown stops OpenCode (stdin closed, no signal)", async () => {
+  const server = await startServer({ logins: { "opencode-go": "k" }, env: { CHEAPAG_DEBUG_SHUTDOWN: "1" } });
+  onTestFinished(server.close);
+  await callText(server.client, "ping");
+  const [oc] = children(server.pid);
+  expect(typeof oc).toBe("number");
+  const t0 = Date.now();
+  await server.close();
+  await vi.waitFor(() => expect(isAlive(server.pid)).toBe(false), { timeout: slow(10_000) });
+  console.error(`cheapag-test: server exited after ${Date.now() - t0} ms`);
+  try {
+    await vi.waitFor(() => expect(gone(oc)).toBe(true), { timeout: slow(10_000) });
+  } finally {
+    console.error(`cheapag-test: opencode ${oc} alive after shutdown: ${isAlive(oc) ? "yes" : "no"}`);
+  }
+  expect(gone(oc)).toBe(true);
+}, slow(60_000));
 
 test("the generated finish tool is valid JavaScript (a syntax error makes OpenCode drop it and the worker do nothing)", async () => {
   const { FINISH_TOOL_SOURCE } = await import("../src/opencode.js");
