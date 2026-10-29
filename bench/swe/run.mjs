@@ -60,8 +60,8 @@ else await singles();
 /** One fresh session per instance and arm; the strata are interleaved so a budget stop still leaves every difficulty covered. */
 async function singles() {
   const n = Number(opts.run ?? 1);
-  // a quick run's grading ids are unique per sweep (the harness keeps each run's logs); its checkouts are reused
-  const tag = opts.quick ? `q${sweep.id.replace(/\D/g, "").slice(0, 14)}` : `r${n}`;
+  // grading ids are unique per sweep unless --run names a rerun (the harness keeps each run's logs, so a reused id grades nothing); checkouts are reused
+  const tag = opts.quick ? `q${sweep.id.replace(/\D/g, "").slice(0, 14)}` : opts.run ? `r${n}` : `t${sweep.id.replace(/\D/g, "").slice(0, 14)}`;
   const pending = [];
   const chosen = all.filter((i) => !opts.instances || opts.instances.split(",").includes(i.instance_id));
   const strata = Map.groupBy(chosen, (i) => i.difficulty);
@@ -92,6 +92,8 @@ async function singles() {
  */
 async function longSessions() {
   const n = Number(opts.run ?? 1);
+  // grading ids are unique per sweep unless --run names a rerun (the harness keeps each run's logs, so a reused id grades nothing)
+  const tag = opts.run ? `r${n}` : `t${sweep.id.replace(/\D/g, "").slice(0, 14)}`;
   // --instances sets the sequence in its own order (ticket 24.3: the quick set's django instances)
   const seq = opts.instances
     ? opts.instances.split(",").map((id) => all.find((i) => i.instance_id === id) ?? fail(`unknown instance ${id}`))
@@ -104,7 +106,7 @@ async function longSessions() {
       if (k) reset(dir, inst, arm);
       const row = await session(inst, arm, dir, [problem(inst)], sessionId);
       sessionId = row.session_id ?? sessionId;
-      record({ ...row, ...sinceLast(row, before), run: n, long_session: k + 1, ...(await grade(inst, arm, `long${n}-${k + 1}`, dir)) });
+      record({ ...row, ...sinceLast(row, before), run: n, long_session: k + 1, ...(await grade(inst, arm, `long${tag}-${k + 1}`, dir)) });
       before = row;
     }
   }
@@ -287,6 +289,8 @@ async function gradeBatch(arm, runId, preds) {
   const graded = preds.filter((p) => p.model_patch.trim());
   for (const p of preds) if (!p.model_patch.trim()) out[p.instance_id] = { resolved: false, pass: false, patch_lines: 0, grade_detail: "empty patch" };
   if (!graded.length) return out;
+  // the harness skips any instance whose report already exists, so a reused id would silently grade the old run's reports
+  if (existsSync(join(here, "logs", "evaluation", runId))) fail(`grading run id ${runId} was used before; its old reports would be reused. Pass a new --run N.`);
   const file = join(runsDir, `${runId}.pred.jsonl`);
   writeFileSync(file, graded.map((p) => JSON.stringify(p)).join("\n") + "\n");
   const args = ["eval", "verified", "-p", file, ...graded.flatMap((p) => ["-i", p.instance_id]), "--run-id", runId, "-j", String(Math.min(graded.length, 7))];
