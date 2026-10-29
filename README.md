@@ -79,7 +79,12 @@ Then, in each project, once:
 - [Node.js](https://nodejs.org) 20+
 - An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com) or [OpenCode Go](https://opencode.ai)
 
-A few dollars lasts hundreds of tasks. It runs on macOS and Linux. Windows: beta, tested in CI but not yet by a Windows user; it needs Git for Windows (Git Bash) and Node 20+.
+A few dollars lasts hundreds of tasks. It runs on macOS and Linux.
+
+**Windows (beta):** tested in CI, not yet by a Windows user. You also need [Git for Windows](https://git-scm.com/downloads/win) (Git Bash). Known so far:
+- The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
+- If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
+- The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
 
 ## The numbers
 
@@ -107,6 +112,10 @@ Cheap Agent shines on the work in between: real features and real fixes in real 
 | Tests | 33 passing | **38 passing** |
 
 Opus wrote one task. The cheap model did the rest, tests included.
+
+## Built with itself
+
+Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent. Claude found the problems and wrote the plans. The cheap model wrote the code in 30 jobs for **$0.29 in total**, Sonnet helpers finished what it couldn't and read OpenCode's source to find the two Windows-only bugs, and the full test suite now passes on Linux and Windows.
 
 ## How it works
 
