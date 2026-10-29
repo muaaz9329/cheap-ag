@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f \"$r/.cheapag/hook.json\" ] || [ -f \"$r/.cheapag/hook/takeover\" ]; } && npx -y cheap-agent@1.1.1 hook guard; exit 0",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f \"$r/.cheapag/hook.json\" ] || [ -f \"$r/.cheapag/hook/takeover\" ]; } && npx -y cheap-agent@1.2.0 hook guard; exit 0",
             "timeout": 60
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y cheap-agent@1.1.1 hook result; exit 0",
+            "command": "npx -y cheap-agent@1.2.0 hook result; exit 0",
             "timeout": 60
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y cheap-agent@1.1.1 hook context",
+            "command": "npx -y cheap-agent@1.2.0 hook context",
             "timeout": 60
           }
         ]
