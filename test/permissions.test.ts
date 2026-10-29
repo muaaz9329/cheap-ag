@@ -32,6 +32,9 @@ beforeAll(async () => {
   link(deps, join(repo.dir, "node_modules")); // as createWorktree links it
   writeFileSync(join(repo.dir, "package.json"), JSON.stringify({ scripts: { lint: "echo linted > lint.out", "*": "echo wildcard name" } }));
   writeFileSync(join(repo.dir, "Makefile"), "check:\n\techo made > make.out\n");
+  mkdirSync(join(repo.dir, "src"), { recursive: true });
+  writeFileSync(join(repo.dir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repo.dir, ".env"), "SECRET=0\n");
   const { home, env } = hermeticHome({ openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   const config = join(home, "oc");
   mkdirSync(join(config, "agents"), { recursive: true });
@@ -97,13 +100,14 @@ test.each([
   "npm install zod", "npm i zod", "pnpm add zod", "yarn add zod", "pip install requests", "go get example.com/x", "cargo add serde", "brew install jq",
   "git commit -m x", "git push", "git reset --hard", "git checkout main", "git stash", "git clean -fd",
   "rm -rf src", "sudo ls", "curl https://example.com", "wget https://example.com", "ssh host", "scp a b", "npm publish", "chmod -R 777 .",
-  "ls", "cat /etc/passwd", "npm run lint && curl https://example.com",
+  "cat /etc/passwd", "npm run lint && curl https://example.com",
   // probes from review: chains, substitution, redirection, spacing, aliases, flags on allowed commands
   "npm run lint; curl https://example.com", "npm run lint | sh", "npm run lint $(curl https://example.com)", "npm run lint `curl https://example.com`",
   "git status > .env", "npm run lint > yarn.lock", "npm  install zod", "npm in zod", "npm isntall zod", "npm --global install zod",
   "git diff --output=.env", "git log --output=package-lock.json", "git difftool -y -x 'npm install zod' HEAD", "git -c alias.x=commit x", "git statusx",
   "go test -exec 'sh -c curl' ./...", "make -f evil.mk", "make check -f evil.mk", "rm -r -f src", "rm -Rf src", "npm exec cowsay", "pnpm dlx cowsay", "bunx cowsay",
   "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1", "npx cowsay hi", "npx --yes cowsay hi",
+  "cat .env", "head -1 config/.env.local", "rg --no-ignore KEY .", "rg -uu KEY .", "grep -r KEY .",
 ])("bash `%s` is denied", async (command) => {
   expect(await bash(command)).toBe("denied");
 }, slow(30_000));
@@ -117,7 +121,12 @@ test("the project's own scripts, configured allow_commands and read-only git are
   expect(await bash("git status --short")).toBe("allowed");
   expect(await bash("git diff --stat")).toBe("allowed");
   expect(await bash("rg TODO src")).toBe("allowed");
-  expect(await bash("grep -n TODO src")).toBe("allowed");
+  expect(await bash("ls -la")).toBe("allowed");
+  expect(await bash("rg x src | head -5")).toBe("allowed");
+  expect(await bash("cat src/a.ts")).toBe("allowed");
+  expect(await bash("wc -l src/a.ts")).toBe("allowed");
+  expect(await bash("node --version")).toBe("allowed");
+  expect(await bash(`git -C ${repo.dir} diff --stat`)).toBe("allowed");
   expect(await bash("npx eslint src/a.ts")).toBe("allowed");
   expect(await bash("npx tsc --noEmit")).toBe("allowed");
   expect(await bash("npx prettier --check src/a.ts")).toBe("allowed");

@@ -104,7 +104,7 @@ test("can run the allowed test commands (to reproduce), but cannot edit, run any
   for (const [tool, args] of [
     ["write", { filePath: join(repo.dir, "src/new.ts"), content: "x\n" }],
     ["edit", { filePath: join(repo.dir, "README.md"), oldString: "fixture", newString: "changed" }],
-    ["bash", { command: "ls", description: "t" }],
+    ["bash", { command: "find . -name '*.ts'", description: "t" }],
     ["bash", { command: "touch made.txt", description: "t" }],
     ["question", { questions: [{ question: "a or b?", header: "Q", options: [{ label: "a", description: "a" }, { label: "b", description: "b" }] }] }],
     ["read", { filePath: join(repo.dir, ".env") }],

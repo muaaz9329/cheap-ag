@@ -30,6 +30,8 @@ export const HARD_DENY = [
   // seen bypassing allowed prefixes against the real OpenCode: writes past the edit rules, or arbitrary programs
   "*>*", "git *--output*", "git *--ext-diff*", "go test*-exec*", "go test*-toolexec*", "cargo test*--config*",
   "npm exec*", "pnpm dlx*", "yarn dlx*", "bunx*",
+  // bash segments naming a .env file (the read tool's deny does not cover bash) and rg flags that read gitignored files
+  "* .env*", "*/.env*", "rg*--no-ignore*", "rg* -u*",
 ];
 
 const LOCKFILES = [
@@ -45,8 +47,14 @@ export const PROTECTED = [
   ...LOCKFILES.flatMap((f) => [f, `**/${f}`]),
 ];
 
-/** Always-allowed commands, each as typed and with arguments: read-only git and the common test runners. */
-const ALWAYS = ["git status", "git diff", "git log", "git show", "rg", "grep", "npx eslint", "npx tsc", "npx prettier", "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "bun test"];
+/** Always-allowed commands, each as typed and with arguments: read-only basics, git, and the common test runners. */
+const ALWAYS = [
+  "ls", "pwd", "cat", "head", "tail", "wc", "node --version", "node -v",
+  "git status", "git diff", "git log", "git show",
+  "git -C * diff", "git -C * status", "git -C * log", "git -C * show",
+  "git --no-pager diff", "git --no-pager status", "git --no-pager log", "git --no-pager show",
+  "rg", "npx eslint", "npx tsc", "npx prettier", "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "bun test",
+];
 
 const allow = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "allow" });
 const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "deny" });

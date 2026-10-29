@@ -58,6 +58,15 @@ test("an inline task runs as a one-step job without a plan file, and lands OK", 
   expect(await call({ task: "  " })).toBe("FAIL reason: task is empty: say what to change, in which files, and how to check it");
 });
 
+test("a plan under .cheapag/ FAILs clearly before any job", async () => {
+  const { repo, delegate } = await scenario(null);
+  mkdirSync(join(repo.dir, ".cheapag", "plans"), { recursive: true });
+  writeFileSync(join(repo.dir, ".cheapag", "plans", "p.md"), PLAN);
+  expect(await delegate("1", undefined, ".cheapag/plans/p.md")).toBe(
+    "FAIL reason: plan .cheapag/plans/p.md is under .cheapag/, Cheap Agent's state folder, which workers cannot see; save plans under .plan/");
+  expect(existsSync(join(repo.dir, ".cheapag", "jobs"))).toBe(false);
+});
+
 test("brief: a research id or text reaches the worker's prompt; an unknown id FAILs before any job", async () => {
   const done: Action[] = [{ edit: "src/inline.ts", content: "export const inline = 1;\n" }, { finish: { summary: "added", risks: [], review: [], missing: [] } }];
   const { repo, fake, server } = await scenarioWithServer(done);

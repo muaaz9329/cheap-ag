@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
-import { parsePlan } from "../src/plan.js";
+import { parsePlan, selectGroups } from "../src/plan.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { startServer, tempRepo } from "./harness.js";
 
@@ -60,6 +60,14 @@ test("step ids accept s1 and step-2 forms and still reject duplicates after norm
   const plan = (...ids: string[]) => `# P\n${ids.map((id) => `## ${id}\nfiles: a.txt\ndone-when: done\n`).join("")}`;
   expect(parsePlan(plan("s1", "step-2")).steps.map((s) => s.id)).toEqual(["1", "2"]);
   expect(() => parsePlan(plan("1", "s1"))).toThrow("duplicate step id 1");
+});
+
+test("the steps argument takes the heading id forms; a target under .cheapag/ is refused", () => {
+  const plan = (files = "a.txt") => `# P\n## 1 a\nfiles: ${files}\ndone-when: done\n## 2 b\nfiles: b.txt\ndone-when: done\n`;
+  expect(selectGroups(parsePlan(plan()), "s1,step-2").map((g) => g.label)).toEqual(["1", "2"]);
+  expect(selectGroups(parsePlan(plan()), "step1-s2").map((g) => g.label)).toEqual(["1-2"]);
+  expect(() => parsePlan(plan("a.txt, .cheapag/plans/x.md"))).toThrow(
+    "line 3: step 1 files: .cheapag/plans/x.md is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo");
 });
 
 test("a step listing three or more changes is rejected; two numbered or any bullets pass", () => {

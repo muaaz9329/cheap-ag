@@ -16,7 +16,7 @@ export function parsePlan(source: string): Plan {
   const lines = source.split(/\r?\n/);
   let title: string | undefined;
   const context: string[] = [];
-  const steps: (PlanStep & { line: number; doLine?: number })[] = [];
+  const steps: (PlanStep & { line: number; doLine?: number; filesLine?: number })[] = [];
   let field: string | undefined;
 
   lines.forEach((line, i) => {
@@ -46,6 +46,7 @@ export function parsePlan(source: string): Plan {
     if (kv) {
       field = kv[1];
       if (field === "do") step.doLine = i + 1;
+      if (field === "files") step.filesLine = i + 1;
       step.fields[field] = kv[2].trim();
     } else if (/^ {2,}\S/.test(line) && field) {
       step.fields[field] += `\n${line.trim()}`;
@@ -61,6 +62,8 @@ export function parsePlan(source: string): Plan {
     if (missing.length) throw new Error(`step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`);
     const d = step.fields.difficulty;
     if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty)) throw new Error(`step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`);
+    const hidden = step.fields.files.split(/[,\n]/).map((f) => f.trim().replace(/^\.\//, "")).find((f) => f.split("/")[0] === ".cheapag");
+    if (hidden) throw new Error(`line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`);
     const changes = countChanges(step.fields.do ?? "");
     if (changes >= 3) throw new Error(`line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them)`);
   }
@@ -97,7 +100,8 @@ export function selectGroups(plan: Plan, spec: string): Group[] {
   const seen = new Set<string>();
   const groups = spec.split(",").map((raw) => {
     const part = raw.trim();
-    const m = part.match(/^(\d+[a-z]?)(?:\s*-\s*(\d+[a-z]?))?$/);
+    // same id forms as headings: s1, step1, step-1 normalise to the digits
+    const m = part.match(/^(?:step-?|s)?(\d+[a-z]?)(?:\s*-\s*(?:step-?|s)?(\d+[a-z]?))?$/);
     if (!m) throw new Error(`steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)`);
     const [from, to] = [index(m[1]), index(m[2] ?? m[1])];
     if (to < from) throw new Error(`steps "${spec}": range ${part} runs backwards`);
