@@ -79,7 +79,7 @@ Then, in each project, once:
 - [Node.js](https://nodejs.org) 20+
 - An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com) or [OpenCode Go](https://opencode.ai)
 
-A few dollars lasts hundreds of tasks. It runs on macOS and Linux; on Windows, use WSL.
+A few dollars lasts hundreds of tasks. It runs on macOS and Linux. Windows: beta, tested in CI but not yet by a Windows user; it needs Git for Windows (Git Bash) and Node 20+.
 
 ## The numbers
 

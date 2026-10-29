@@ -40,10 +40,10 @@ export async function research(
   if ("block" in gate) return gate.block;
   const scope: string[] = [];
   for (const path of (input.paths ?? "").split(",").map((p) => p.trim()).filter(Boolean)) {
-    const rel = relative(root, join(root, path));
+    const rel = normalisePath(relative(root, join(root, path)));
     if (isAbsolute(path) || rel === ".." || rel.startsWith("../")) return failBlock(`path ${path} must be inside the repository, relative to its root`);
     if (!existsSync(join(root, path))) return failBlock(`path ${path} not found`);
-    if (rel) scope.push(normalisePath(rel)); // "." is the whole repo: no scope
+    if (rel) scope.push(rel); // "." is the whole repo: no scope
   }
   let config: Config;
   try {

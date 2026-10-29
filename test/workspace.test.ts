@@ -196,12 +196,3 @@ test("delegating during an in-progress merge is refused before any job starts", 
   expect(fake.recorded.sessions).toEqual([]);
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees"))).toBe(false);
 });
-
-test("on native Windows every tool answers with the unsupported-platform FAIL", async () => {
-  // the server believes it runs on win32
-  const pretend = `--import=data:text/javascript,Object.defineProperty(process,"platform",{value:"win32"})`;
-  const server = await startServer({ nodeArgs: [pretend], logins: { "opencode-go": "k" } });
-  onTestFinished(server.close);
-  expect(await callText(server.client, "ping")).toBe("FAIL reason: Windows not supported yet; use WSL");
-  expect(await callText(server.client, "delegate", { plan: "p.md", steps: "1" })).toBe("FAIL reason: Windows not supported yet; use WSL");
-});

@@ -1154,8 +1154,9 @@ function reviewRanges(review: string[], base: string) {
 }
 
 const inside = (root: string, path: string) => {
-  const rel = relative(root, path);
-  return rel !== "" && !rel.startsWith(`..${"/"}`) && rel !== ".." && !isAbsolute(rel);
+  // normalised: relative() gives "..\\x" on Windows
+  const rel = normalisePath(relative(root, path));
+  return rel !== "" && !rel.startsWith("../") && rel !== ".." && !isAbsolute(rel);
 };
 
 /**

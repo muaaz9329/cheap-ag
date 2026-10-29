@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, presetHere, readConsent, routeMoved } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
 import { blockedFor, records } from "./jobs.js";
-import { isAlive, isSupported, UNSUPPORTED_REASON } from "./platform.js";
+import { isAlive } from "./platform.js";
 import { renderJob } from "./report.js";
 import { spendWindows } from "./routing.js";
 import { projectRoot } from "./workspace.js";
@@ -19,10 +19,6 @@ const RECENT = 5;
  */
 export function status(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
-  if (!isSupported()) {
-    out(`✗ ${UNSUPPORTED_REASON}`);
-    return 1;
-  }
   if (args.length) {
     out("✗ usage: cheapag status");
     return 1;

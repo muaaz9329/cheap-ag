@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { loadConfig } from "./config.js";
 import { projectRoot } from "./workspace.js";
 
@@ -205,7 +205,7 @@ function check(input: Input): string | undefined {
 }
 
 /** Plans live in .plan/ and are how Claude delegates, so the guard never blocks them. */
-const isPlan = (root: string, file: string) => file.startsWith(join(root, ".plan") + "/");
+const isPlan = (root: string, file: string) => file.startsWith(join(root, ".plan") + sep);
 
 /** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
 function bashCheck(cwd: string, command: string): string | undefined {
@@ -213,7 +213,7 @@ function bashCheck(cwd: string, command: string): string | undefined {
   if (!existsSync(flag(root))) return;
   const targets: string[] = [];
   for (const re of BASH_WRITES) for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);
-  const inRepo = (p: string) => { const abs = resolve(cwd, p); return abs.startsWith(root + "/") && !isPlan(root, abs); };
+  const inRepo = (p: string) => { const abs = resolve(cwd, p); return abs.startsWith(root + sep) && !isPlan(root, abs); };
   const written = targets.filter((p) => p !== "/dev/null" && inRepo(p));
   if (written.length) return `Bash writing ${written[0]}: ${REDIRECT}`;
   if (BASH_INPLACE.test(command)) return `Bash in-place edit (sed/perl -i): ${REDIRECT}`;

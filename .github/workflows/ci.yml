@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Smoke test the packaged CLI
+        shell: bash
+        run: |
+          npm pack
+          tmp="$(mktemp -d)"
+          npm install --prefix "$tmp" ./cheap-agent-*.tgz
+          out="$("$tmp/node_modules/.bin/cheapag" status)"
+          echo "$out"
+          echo "$out" | grep -q cheapag
+      - name: Live tests when an API key is present
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CHEAPAG_LIVE: 1
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "no API key, skipping live tests"
+            exit 0
+          fi
+          npx vitest run test/live.test.ts

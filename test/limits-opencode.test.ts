@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, onTestFinished, test } from "vitest";
 import { opencodeBinary } from "../src/opencode.js";
+import { killProcessGroup } from "../src/platform.js";
 import { openSession } from "../src/worker.js";
 import { startFakeLlm } from "./fake-llm.js";
 import { hermeticHome, tempRepo } from "./harness.js";
@@ -34,13 +35,7 @@ beforeAll(async () => {
     env: { ...env, OPENCODE_SERVER_PASSWORD: "t", OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
   });
   oc.stderr.resume();
-  kill = () => {
-    try {
-      process.kill(-oc.pid!, "SIGKILL");
-    } catch {
-      // gone
-    }
-  };
+  kill = () => killProcessGroup(oc.pid, "SIGKILL");
   process.once("exit", kill);
   const url = await new Promise<string>((resolve, reject) => {
     oc.stdout.on("data", (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]));

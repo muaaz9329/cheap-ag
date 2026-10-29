@@ -1,6 +1,5 @@
 import { consentGate, describe, writeConsent, type Consent } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
-import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
 import { modelName, routeModels } from "./routing.js";
 import { projectRoot } from "./workspace.js";
 
@@ -13,10 +12,6 @@ const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]
  */
 export function allow(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
-  if (!isSupported()) {
-    out(`✗ ${UNSUPPORTED_REASON}`);
-    return 1;
-  }
   let consent: Omit<Consent, "provider" | "approvedAt">;
   if (!args.length) consent = { mode: "all" };
   else if (args.length === 1 && args[0] === "--zdr-only") consent = { mode: "zdr-only" };

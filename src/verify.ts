@@ -34,8 +34,8 @@ export async function runVerify(cwd: string, cmds: string[], onStart: (cmd: stri
 function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyRun> {
   const started = Date.now();
   return new Promise((resolve) => {
-    // its own process group, so everything it spawned can be stopped with it
-    const child = spawn("sh", ["-c", cmd], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1", FORCE_COLOR: "0" } });
+    // its own process group, so everything it spawned can be stopped with it; shell form: /bin/sh -c on POSIX, cmd.exe on Windows
+    const child = spawn(cmd, { shell: true, cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CI: "1", FORCE_COLOR: "0" } });
     const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;

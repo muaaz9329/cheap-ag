@@ -5,6 +5,7 @@ import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { expect, onTestFinished, test } from "vitest";
 import { consentGate, writeConsent } from "../src/consent.js";
 import { opencodeBinary } from "../src/opencode.js";
+import { killProcessGroup } from "../src/platform.js";
 import { startFakeLlm } from "./fake-llm.js";
 import { hermeticHome, tempRepo } from "./harness.js";
 
@@ -37,13 +38,7 @@ test.each([
     env: { ...env, OPENCODE_SERVER_PASSWORD: "t", OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
   });
   oc.stderr.resume();
-  const kill = () => {
-    try {
-        process.kill(-oc.pid!, "SIGKILL");
-      } catch {
-        // gone
-      }
-    };
+  const kill = () => killProcessGroup(oc.pid, "SIGKILL");
     process.once("exit", kill);
     try {
     const url = await new Promise<string>((resolve, reject) => {

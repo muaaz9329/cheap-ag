@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { expect, onTestFinished, test } from "vitest";
 import { opencodeBinary } from "../src/opencode.js";
+import { killProcessGroup } from "../src/platform.js";
 import { callText, startServer, tempRepo } from "./harness.js";
 
 /**
@@ -72,13 +73,7 @@ live("abort on a real session: observed event sequence", async () => {
     // same hermetic credential store the server uses
     env: { ...process.env, XDG_DATA_HOME: join(server.home, "data"), OPENCODE_SERVER_PASSWORD: "live", OPENCODE_CONFIG_DIR: join(repo.dir, ".cheapag", "opencode"), OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
   });
-  onTestFinished(() => {
-    try {
-      process.kill(-opencode.pid!, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  });
+  onTestFinished(() => killProcessGroup(opencode.pid, "SIGKILL"));
   const url = await new Promise<string>((resolve, reject) => {
     opencode.stdout.on("data", (d) => {
       const m = String(d).match(/(http:\/\/\S+)/);

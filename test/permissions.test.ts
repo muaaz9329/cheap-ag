@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { opencodeBinary, SECRETS_PLUGIN } from "../src/opencode.js";
 import { baselinePermission, projectScripts, workerRuleset } from "../src/permissions.js";
+import { killProcessGroup, link } from "../src/platform.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
 import { hermeticHome, tempRepo } from "./harness.js";
 
@@ -27,7 +28,7 @@ beforeAll(async () => {
   deps = join(deps, `cheapag-deps-${process.pid}-${Date.now()}`);
   mkdirSync(join(deps, "dep"), { recursive: true });
   writeFileSync(join(deps, "dep", "index.js"), "module.exports = 1;\n");
-  symlinkSync(deps, join(repo.dir, "node_modules"), "dir"); // as createWorktree links it
+  link(deps, join(repo.dir, "node_modules")); // as createWorktree links it
   writeFileSync(join(repo.dir, "package.json"), JSON.stringify({ scripts: { lint: "echo linted > lint.out", "*": "echo wildcard name" } }));
   writeFileSync(join(repo.dir, "Makefile"), "check:\n\techo made > make.out\n");
   const { home, env } = hermeticHome({ openrouter: "sk-or-v1-fakefakefakefakefakefake" });
@@ -42,13 +43,7 @@ beforeAll(async () => {
     env: { ...env, OPENCODE_SERVER_PASSWORD: "t", OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_PERMISSION: JSON.stringify(baselinePermission()) },
   });
   oc.stderr.resume(); // never let a full pipe stall the server
-  stop = () => {
-    try {
-      process.kill(-oc.pid!, "SIGKILL");
-    } catch {
-      // gone
-    }
-  };
+  stop = () => killProcessGroup(oc.pid, "SIGKILL");
   process.once("exit", stop); // an interrupted run must not orphan the server's process group
   const url = await new Promise<string>((resolve, reject) => {
     oc.stdout.on("data", (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]));

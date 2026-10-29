@@ -10,7 +10,6 @@ import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
 import { delegate, jobs, landJobs, recoverJobs, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
 import { PLAN_FORMAT } from "./plan.js";
-import { isSupported, UNSUPPORTED } from "./platform.js";
 import { failBlock } from "./report.js";
 import { MAX_WORDS, research } from "./research.js";
 import { DIFFICULTIES } from "./routing.js";
@@ -69,9 +68,6 @@ export async function serve() {
     const hint = gitignoreHint(process.cwd());
     return hint ? `${text}\n\n${hint}` : text;
   };
-  /** Answers every tool with the unsupported-platform FAIL on native Windows (spec A18). */
-  const supported = <A extends unknown[]>(handler: (...args: A) => Promise<ReturnType<typeof safeText>>) =>
-    (...args: A) => (isSupported() ? handler(...args) : Promise.resolve(safeText(UNSUPPORTED)));
   /** Worker progress as MCP progress notifications to the calling request, when it asked for them. */
   const progressTo = (extra: { _meta?: { progressToken?: string | number }; sendNotification: (n: ServerNotification) => Promise<void> }) =>
     (progress: number, message: string) => {
@@ -82,7 +78,7 @@ export async function serve() {
   server.registerTool(
     "ping",
     { description: "Check that the Cheap Agent server is running and report its version." },
-    supported(async () => {
+    async () => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
@@ -91,7 +87,7 @@ export async function serve() {
       } catch (err) {
         return safeText(`FAIL reason: ${(err as Error).message}`);
       }
-    }),
+    },
   );
 
   server.registerTool(
@@ -113,7 +109,7 @@ export async function serve() {
       },
       _meta: ALWAYS_LOAD,
     },
-    supported(async (input, extra) => {
+    async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
@@ -121,7 +117,7 @@ export async function serve() {
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
-    }),
+    },
   );
 
   server.registerTool(
@@ -136,7 +132,7 @@ export async function serve() {
       },
       _meta: ALWAYS_LOAD,
     },
-    supported(async (input, extra) => {
+    async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
@@ -144,7 +140,7 @@ export async function serve() {
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
-    }),
+    },
   );
 
   server.registerTool(
@@ -157,14 +153,14 @@ export async function serve() {
         answer: z.string().max(500).describe('An option letter (a-d), or a short free-text answer; for several numbered questions, one answer each: "1a, 2b" or "1a, 2: use redis"'),
       },
     },
-    supported(async (input, extra) => {
+    async (input, extra) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
         return safeText(withHint(await reply(input, progressTo(extra))));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
-    }),
+    },
   );
 
   server.registerTool(
@@ -176,14 +172,14 @@ export async function serve() {
         job: z.string().optional().describe("Job id, e.g. j7f3a (show, wait, cancel), or batch id, e.g. b4k1x (wait)"),
       },
     },
-    supported(async (input, extra) => {
+    async (input, extra) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
         return safeText(withHint(await jobs(input, progressTo(extra))));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
-    }),
+    },
   );
 
   server.registerTool(
@@ -196,7 +192,7 @@ export async function serve() {
         action: z.enum(["apply", "discard"]).describe("apply: land the job's changes; discard: delete its worktree"),
       },
     },
-    supported(async (input, extra) => {
+    async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
@@ -205,7 +201,7 @@ export async function serve() {
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
-    }),
+    },
   );
 
   // jobs a previous server left running or blocked can never finish now

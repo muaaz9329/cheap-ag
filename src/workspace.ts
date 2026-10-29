@@ -1,21 +1,25 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { isAlive, link, normalisePath, removeLink } from "./platform.js";
 
 /** Workspace (ADR-0003): baseline, worktree per job, diff, and landing; the only writer to the user's tree. */
 
 export type Changed = { status: string; path: string; add: number; del: number };
 
+// Git for Windows refuses paths over 260 chars unless long paths are on; the flag is a no-op elsewhere
+const GIT_ARGS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
+
 export function git(cwd: string, args: string[], env?: Record<string, string>) {
-  return execFileSync("git", args, { cwd, stdio: "pipe", env: env && { ...process.env, ...env }, maxBuffer: 256 * 1024 * 1024 }).toString();
+  return execFileSync("git", [...GIT_ARGS, ...args], { cwd, stdio: "pipe", env: env && { ...process.env, ...env }, maxBuffer: 256 * 1024 * 1024 }).toString();
 }
 
 /** The repository root containing `cwd`; throws when it is not a git repository. */
 export function projectRoot(cwd: string) {
   try {
-    return git(cwd, ["rev-parse", "--show-toplevel"]).trim();
+    // resolved: git prints forward slashes on Windows (C:/x/y); path.* gives the platform's own separators
+    return resolve(git(cwd, ["rev-parse", "--show-toplevel"]).trim());
   } catch {
     throw new Error(`${cwd} is not inside a git repository`);
   }
@@ -238,7 +242,7 @@ export function land(root: string, job: string, patch: string, paths: string[]):
 
 /** git apply's verdict lives in stderr even when it exits 0. */
 function applyOutput(root: string, args: string[], env: Record<string, string>, patch: string) {
-  const r = spawnSync("git", args, { cwd: root, env: { ...process.env, ...env }, input: patch, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", [...GIT_ARGS, ...args], { cwd: root, env: { ...process.env, ...env }, input: patch, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   return { failed: r.status !== 0, output: `${r.stdout}${r.stderr}` };
 }
 
@@ -259,7 +263,7 @@ export function reapply(worktree: Worktree, patch: string) {
 
 /** Paths whose changes still add conflict marker lines; run after `worktreeDiff`, which stages the worktree. */
 export function leftoverMarkers(worktree: Worktree) {
-  const r = spawnSync("git", ["diff", "--cached", "--check", worktree.base], { cwd: worktree.path, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", [...GIT_ARGS, "diff", "--cached", "--check", worktree.base], { cwd: worktree.path, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   return [...new Set([...r.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm)].map((m) => m[1]))];
 }
 

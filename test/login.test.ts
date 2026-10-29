@@ -1,11 +1,13 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
+import { installPaths, writePlugin } from "../src/install.js";
+import { normalisePath } from "../src/platform.js";
 import { PRESETS } from "../src/routing.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { hermeticHome, serverEntry, type Logins } from "./harness.js";
+import { hermeticHome, serverEntry, tempRepo, type Logins } from "./harness.js";
 
 const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
 
@@ -15,6 +17,9 @@ const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
  * `claude` is a stub on PATH (`registered` decides what `claude mcp get cheapag` says), or absent.
  * The worker-models question gets `preset` (default: Enter) unless `args` passes --preset; `config` is the user config before.
  */
+// the terminal-driven tests need python3 and a pty, which Windows lacks; the launcher and win32 generation tests still run there
+const tty = test.skipIf(process.platform === "win32");
+
 async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object; plugin?: "installed" | "fails"; cmd?: string[] }) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
@@ -36,6 +41,23 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
     const fails = opts.plugin === "fails" ? `if [ "$1 $2" = "plugin install" ]; then echo "Plugin not found" >&2; exit 1; fi\n` : "";
     writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${calls}"\nif [ "$1 $2" = "mcp get" ]; then ${get}; fi\n${listed}${fails}exit 0\n`);
     chmodSync(join(bin, "claude"), 0o755);
+    if (process.platform === "win32") {
+      // claude.cmd with the same branches; goto labels because parentheses in the echoed text would break an if block
+      const cmd = [
+        "@echo off",
+        `>>"${calls}" echo %*`,
+        `if "%1 %2"=="mcp get" goto get`,
+        ...(opts.plugin === "installed" ? [`if "%1 %2"=="plugin list" echo   cheapag@cheapag`, `if "%1 %2 %3"=="plugin marketplace list" echo   cheapag`] : []),
+        ...(opts.plugin === "fails" ? [`if "%1 %2"=="plugin install" goto fail`] : []),
+        "exit /b 0",
+        ":get",
+        ...(scope ? ["echo cheapag:", `echo   Scope: ${scope}`, "exit /b 0"] : ["exit /b 1"]),
+        ":fail",
+        "echo Plugin not found 1>&2",
+        "exit /b 1",
+      ];
+      writeFileSync(join(bin, "claude.cmd"), cmd.join("\r\n") + "\r\n");
+    }
   }
   const steps = [
     { expect: "Provider", send: "2\r" },
@@ -61,7 +83,7 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
     config: existsSync(config) ? JSON.parse(readFileSync(config, "utf8")) : undefined,
     fake,
     marketplace: join(home, "config", "cheapag", "marketplace"),
-    launcher: join(home, "config", "cheapag", "bin", "cheapag"),
+    launcher: join(home, "config", "cheapag", "bin", "cheapag.cjs"),
   };
 }
 
@@ -78,7 +100,7 @@ const ADD = `mcp add -s user cheapag -- ${process.execPath} ${serverEntry}`;
 /** The plugin steps on a machine without it (ticket 31). */
 const PLUGIN = (marketplace: string) => ["plugin marketplace list", "plugin list", `plugin marketplace add ${marketplace}`, "plugin install cheapag@cheapag"];
 
-test("login saves the key through the bundled OpenCode, live-checks it, and registers at user scope on yes", async () => {
+tty("login saves the key through the bundled OpenCode, live-checks it, and registers at user scope on yes", async () => {
   const r = await runLogin({ claude: "unregistered", register: "y" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.saved).toEqual(["openrouter"]);
@@ -95,7 +117,7 @@ test("login saves the key through the bundled OpenCode, live-checks it, and regi
   expect(r.config).toEqual({ models: PRESETS.openrouter.balanced });
 }, 90_000);
 
-test("picking strongest writes its models to the user config, and the live check runs its implement model", async () => {
+tty("picking strongest writes its models to the user config, and the live check runs its implement model", async () => {
   const r = await runLogin({ claude: "registered", preset: "strongest" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.config).toEqual({ models: PRESETS.openrouter.strongest });
@@ -103,14 +125,14 @@ test("picking strongest writes its models to the user config, and the live check
   expect(r.output).toContain("✓ openrouter/z-ai/glm-5.3 answered");
 }, 90_000);
 
-test("re-running login offers the current preset; Enter keeps it and the config's other keys", async () => {
+tty("re-running login offers the current preset; Enter keeps it and the config's other keys", async () => {
   const r = await runLogin({ claude: "registered", config: { test_cmd: "make check", models: PRESETS.openrouter.strongest } });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("strongest [strongest]");
   expect(r.config).toEqual({ test_cmd: "make check", models: PRESETS.openrouter.strongest });
 }, 90_000);
 
-test("--preset sets the models without asking; an answer that is no preset changes nothing", async () => {
+tty("--preset sets the models without asking; an answer that is no preset changes nothing", async () => {
   const r = await runLogin({ claude: "registered", args: ["--preset", "cheapest"] });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).not.toContain("Worker models: cheapest / balanced");
@@ -141,24 +163,24 @@ test("without a terminal, login sets the preset for the saved provider: the flag
   }
 });
 
-test("registration uses a node symlink on PATH (e.g. Homebrew's bin) over the versioned binary path", async () => {
+test.skipIf(process.platform === "win32")("registration uses a node symlink on PATH (e.g. Homebrew's bin) over the versioned binary path", async () => {
   const { home } = hermeticHome();
   const stable = join(home, "stable");
   mkdirSync(stable);
   symlinkSync(process.execPath, join(stable, "node"));
   const r = await runLogin({ claude: "unregistered", register: "y", path: [stable] });
   expect(r.claudeCalls.slice(0, 2)).toEqual(["mcp get cheapag", `mcp add -s user cheapag -- ${join(stable, "node")} ${serverEntry}`]);
-  expect(readFileSync(r.launcher, "utf8")).toContain(`exec '${join(stable, "node")}' '${serverEntry}' "$@"`);
+  expect(readFileSync(r.launcher, "utf8")).toContain(JSON.stringify(serverEntry));
 }, 90_000);
 
-test("answering no prints the exact command instead of running it", async () => {
+tty("answering no prints the exact command instead of running it", async () => {
   const r = await runLogin({ claude: "unregistered", register: "n" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain(`Not registered. To add it later, run:\n  claude ${ADD}`);
   expect(r.claudeCalls).toEqual(["mcp get cheapag"]);
 }, 90_000);
 
-test("an existing registration is detected and kept without asking; the plugin is still installed", async () => {
+tty("an existing registration is detected and kept without asking; the plugin is still installed", async () => {
   const r = await runLogin({ claude: "registered" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("✓ cheapag is already registered with Claude Code\n");
@@ -166,27 +188,28 @@ test("an existing registration is detected and kept without asking; the plugin i
   expect(r.claudeCalls).toEqual(["mcp get cheapag", ...PLUGIN(r.marketplace)]);
 }, 90_000);
 
-test("the plugin is generated from the package: hooks and commands call the launcher, no .mcp.json, its own marketplace", async () => {
+tty("the plugin is generated from the package: hooks and commands call the launcher, no .mcp.json, its own marketplace", async () => {
   const r = await runLogin({ claude: "registered" });
   const plugin = join(r.marketplace, "cheapag");
   const hooks = readFileSync(join(plugin, "hooks", "hooks.json"), "utf8");
   expect(hooks).not.toContain("npx -y");
-  expect(hooks).toContain(`${r.launcher} hook guard`);
-  expect(hooks).toContain(`${r.launcher} hook result`);
-  expect(hooks).toContain(`${r.launcher} hook context`);
-  expect(readFileSync(join(plugin, "skills", "allow", "SKILL.md"), "utf8")).toContain(`allowed-tools: Bash(${r.launcher} allow) Bash(${r.launcher} allow *)`);
+  expect(hooks).toContain(`node '${r.launcher}' hook guard`);
+  expect(hooks).toContain(`node '${r.launcher}' hook result`);
+  expect(hooks).toContain(`node '${r.launcher}' hook context`);
+  expect(readFileSync(join(plugin, "skills", "allow", "SKILL.md"), "utf8")).toContain(`allowed-tools: Bash(node '${r.launcher}' allow) Bash(node '${r.launcher}' allow *)`);
   expect(existsSync(join(plugin, ".mcp.json"))).toBe(false); // the server is registered at user scope instead
   expect(JSON.parse(readFileSync(join(r.marketplace, ".claude-plugin", "marketplace.json"), "utf8"))).toMatchObject({ name: "cheapag", plugins: [{ name: "cheapag", source: "./cheapag" }] });
   // the launcher runs this install, falling back to the pinned npm version
   const launcher = readFileSync(r.launcher, "utf8");
-  expect(launcher).toMatch(/^#!\/bin\/sh\n/);
-  expect(launcher).toContain(`[ -f '${serverEntry}' ] && exec '${process.execPath}' '${serverEntry}' "$@"`);
-  expect(launcher).toMatch(/\nexec npx -y cheap-agent@\d+\.\d+\.\d+ "\$@"\n$/);
-  const context = await promisify(execFile)(r.launcher, ["hook", "context"], { encoding: "utf8" });
+  expect(launcher).toContain(JSON.stringify(serverEntry));
+  expect(launcher).toMatch(/npx -y cheap-agent@\d+\.\d+\.\d+/);
+  expect(launcher).toContain('process.argv[2] === "hook" && process.argv[3] === "guard"');
+  expect(launcher).toContain("pathToFileURL");
+  const context = await promisify(execFile)(process.execPath, [r.launcher, "hook", "context"], { encoding: "utf8" });
   expect(context.stdout).toContain('"hookEventName":"SessionStart"');
 }, 90_000);
 
-test("re-running setup updates the plugin it installed; a failed plugin step prints the commands to run", async () => {
+tty("re-running setup updates the plugin it installed; a failed plugin step prints the commands to run", async () => {
   const again = await runLogin({ claude: "registered", plugin: "installed" });
   expect(again.claudeCalls).toEqual(["mcp get cheapag", "plugin marketplace list", "plugin list", "plugin marketplace update cheapag", "plugin update cheapag@cheapag"]);
   const failed = await runLogin({ claude: "registered", plugin: "fails" });
@@ -195,25 +218,25 @@ test("re-running setup updates the plugin it installed; a failed plugin step pri
   expect(failed.output).toContain("add the plugin with the commands above");
 }, 120_000);
 
-test("npx cheap-agent with no arguments in a terminal runs setup (Claude Code starts the server with a piped stdin)", async () => {
+tty("npx cheap-agent with no arguments in a terminal runs setup (Claude Code starts the server with a piped stdin)", async () => {
   const r = await runLogin({ claude: "registered", cmd: [process.execPath, serverEntry] });
   expect(r.output).toContain("Cheap Agent login");
   expect(r.exit).toBe("EXIT 0");
 }, 90_000);
 
-test("a registration at another scope does not count: login still offers the user-scope add", async () => {
+tty("a registration at another scope does not count: login still offers the user-scope add", async () => {
   const r = await runLogin({ claude: "local", register: "y" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.claudeCalls.slice(0, 2)).toEqual(["mcp get cheapag", ADD]);
 }, 90_000);
 
-test("without the claude CLI, login prints the command to run", async () => {
+tty("without the claude CLI, login prints the command to run", async () => {
   const r = await runLogin({ claude: "absent" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain(`Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  claude ${ADD}`);
 }, 90_000);
 
-test("a failed live check explains the fix, keeps the saved login, and does not offer registration", async () => {
+tty("a failed live check explains the fix, keeps the saved login, and does not offer registration", async () => {
   const r = await runLogin({ claude: "unregistered", check: [{ error: { name: "APIError", message: "401 Missing Authentication header" } }] });
   expect(r.exit).toBe("EXIT 1");
   expect(r.output).toContain("✗ the key was rejected (401 Missing Authentication header); run npx cheap-agent login again with the right key");
@@ -221,7 +244,7 @@ test("a failed live check explains the fix, keeps the saved login, and does not 
   expect(r.claudeCalls).toEqual([]);
 }, 90_000);
 
-test.each([
+tty.each([
   ["no credit", "402 Insufficient credits", "✗ the account has no credit (402 Insufficient credits); top it up, then run npx cheap-agent login again"],
   ["an unavailable model", "404 No endpoints found for deepseek/deepseek-v4.1-flash", "✗ openrouter/deepseek/deepseek-v4.1-flash is unavailable to this account (404 No endpoints found for deepseek/deepseek-v4.1-flash); run npx cheap-agent login and pick another provider"],
 ] as const)("a live check failing on %s says why and what to do", async (_, message, expected) => {
@@ -237,10 +260,60 @@ test("login refuses a non-interactive stdin instead of hanging", async () => {
   expect(r.stdout).toBe("✗ npx cheap-agent login needs an interactive terminal (the key is typed into a hidden prompt)\n");
 });
 
-test("re-running login adds a provider; the earlier one keeps precedence and that is said", async () => {
+tty("re-running login adds a provider; the earlier one keeps precedence and that is said", async () => {
   const r = await runLogin({ claude: "registered", logins: { "opencode-go": "g" } });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("Currently using: OpenCode Go.");
   expect(r.output).toContain("Note: OpenCode Go is also saved and is used first.");
   expect(r.saved.sort()).toEqual(["opencode-go", "openrouter"]);
 }, 90_000);
+
+test("writePlugin on win32 emits double-quoted, forward-slash commands with no sh gate", () => {
+  const { home, env } = hermeticHome();
+  onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
+  let launcher: string, marketplace: string;
+  try {
+    launcher = installPaths().launcher;
+    marketplace = writePlugin(serverEntry, process.execPath, "win32");
+  } finally {
+    process.env.XDG_CONFIG_HOME = prev;
+  }
+  const ref = `node "${normalisePath(launcher)}"`;
+  const hooks = JSON.parse(readFileSync(join(marketplace, "cheapag", "hooks", "hooks.json"), "utf8"));
+  expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`${ref} hook guard`); // no `r=$(git…)` prefix: the launcher gates
+  expect(hooks.hooks.PostToolUse[0].hooks[0].command).toBe(`${ref} hook result`);
+  expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`${ref} hook context`);
+  const allow = readFileSync(join(marketplace, "cheapag", "skills", "allow", "SKILL.md"), "utf8");
+  expect(allow).toContain(`allowed-tools: Bash(${ref} allow) Bash(${ref} allow *)`);
+  expect(allow).toContain(`!\`${ref} allow $ARGUMENTS\``);
+  expect(allow).not.toContain("npx -y");
+});
+
+test("the launcher gates the guard hook itself: nothing without the repo flag, a deny decision with it", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const { home, env } = hermeticHome();
+  onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
+  let launcher: string;
+  try {
+    launcher = installPaths().launcher;
+    writePlugin(serverEntry, process.execPath);
+  } finally {
+    process.env.XDG_CONFIG_HOME = prev;
+  }
+  const big = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+  const input = JSON.stringify({ session_id: "s1", prompt_id: "p1", cwd: repo.dir, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: "a.txt", old_string: "x", new_string: big }, tool_use_id: "t" });
+  const off = spawnSync(process.execPath, [launcher, "hook", "guard"], { cwd: repo.dir, env, input, encoding: "utf8" });
+  expect(off.status).toBe(0);
+  expect(off.stdout.trim()).toBe(""); // no flag: the launcher exits before importing the guard
+
+  mkdirSync(join(repo.dir, ".cheapag"), { recursive: true });
+  writeFileSync(join(repo.dir, ".cheapag", "hook.json"), JSON.stringify({ on: true }) + "\n");
+  const on = spawnSync(process.execPath, [launcher, "hook", "guard"], { cwd: repo.dir, env, input, encoding: "utf8" });
+  expect(on.status).toBe(0);
+  expect(JSON.parse(on.stdout).hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" }); // the real guard ran through the import
+});

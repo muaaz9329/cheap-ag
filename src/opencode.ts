@@ -206,6 +206,8 @@ function spawnServer(configDir: string, password: string) {
     // detached: its own process group, so stopOpencode() also takes down anything it spawned
     const proc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
       detached: true,
+      // a detached console child would open a window on Windows
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,

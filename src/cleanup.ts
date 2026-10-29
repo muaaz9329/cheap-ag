@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { redact } from "./credentials.js";
 import { recoverJobs } from "./jobs.js";
-import { isAlive, isSupported, removeLink, UNSUPPORTED_REASON } from "./platform.js";
+import { isAlive, removeLink } from "./platform.js";
 import { git, projectRoot } from "./workspace.js";
 
 /**
@@ -116,10 +116,6 @@ export function cleanProject(cwd: string, all = false) {
 /** `cheapag clean [--all]`: non-interactive, so the plugin's `/cheapag:clean` can wrap it; prints what went and what stayed. */
 export function clean(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
-  if (!isSupported()) {
-    out(`✗ ${UNSUPPORTED_REASON}`);
-    return 1;
-  }
   if (args.length > 1 || (args.length && args[0] !== "--all")) {
     out("✗ usage: cheapag clean [--all]   (--all: remove everything not in flight)");
     return 1;

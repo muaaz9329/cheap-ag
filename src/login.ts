@@ -2,12 +2,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, userConfigFile } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
-import { isSupported, UNSUPPORTED_REASON } from "./platform.js";
+import { runCli } from "./platform.js";
 import { installPlugin, stableNode } from "./install.js";
 import { fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig } from "./routing.js";
 import { runSession } from "./worker.js";
@@ -27,10 +27,6 @@ const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).incl
 
 export async function login(args: string[] = []): Promise<number> {
   const out = (line = "") => process.stdout.write(redact(line) + "\n");
-  if (!isSupported()) {
-    out(`✗ ${UNSUPPORTED_REASON}`);
-    return 1;
-  }
   const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
   if (args.length && flag === undefined) {
     out(`✗ usage: cheapag login [--preset ${CHOICES.join("|")}]`);
@@ -175,8 +171,8 @@ function explain(message: string, model: string) {
 async function register(out: (line?: string) => void) {
   const command = serverCommand();
   const manual = `claude mcp add -s user cheapag -- ${command.map(quote).join(" ")}`;
-  const existing = spawnSync("claude", ["mcp", "get", "cheapag"], { encoding: "utf8" });
-  if (existing.error) {
+  const existing = runCli("claude", ["mcp", "get", "cheapag"], { encoding: "utf8" });
+  if (!existing) {
     out(`Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  ${manual}`);
     return;
   }
@@ -191,9 +187,9 @@ async function register(out: (line?: string) => void) {
     out(`Not registered. To add it later, run:\n  ${manual}`);
     return;
   }
-  const added = spawnSync("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], { encoding: "utf8" });
-  if (added.status !== 0) {
-    out(`✗ claude mcp add failed (${(added.stderr || added.stdout).trim().split("\n")[0]}). Run it yourself:\n  ${manual}`);
+  const added = runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], { encoding: "utf8" });
+  if (!added || added.status !== 0) {
+    out(`✗ claude mcp add failed (${((added?.stderr || added?.stdout) ?? "").trim().split("\n")[0]}). Run it yourself:\n  ${manual}`);
     return;
   }
   out("✓ Added cheapag to Claude Code for all your projects");
@@ -210,10 +206,12 @@ function finish(out: (line?: string) => void, plugin: boolean) {
 /** How Claude Code should start this installed package: npx when run from npx's cache, else this exact file. */
 function serverCommand() {
   const entry = realpathSync(process.argv[1]);
-  return entry.includes("/_npx/") ? ["npx", "-y", `cheap-agent@${version}`] : [stableNode(), entry];
+  return entry.split(sep).includes("_npx") ? ["npx", "-y", `cheap-agent@${version}`] : [stableNode(), entry];
 }
 
-const quote = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
+// double quotes on Windows: cmd and PowerShell don't treat single quotes as quoting
+const quote = (arg: string) =>
+  /^[\w@%+=:,./-]+$/.test(arg) ? arg : process.platform === "win32" ? `"${arg.replace(/"/g, '\\"')}"` : `'${arg.replace(/'/g, `'\\''`)}'`;
 
 /** One question on a fresh readline, closed before anything else (OpenCode's login) reads the terminal. */
 async function ask(question: string) {
