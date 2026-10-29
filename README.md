@@ -6,6 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/cheap-agent?style=flat-square&color=111111&label=npm" alt="npm">
+  <img src="https://img.shields.io/npm/dt/cheap-agent?style=flat-square&color=111111&label=downloads" alt="npm downloads">
   <img src="https://img.shields.io/badge/for-Claude%20Code-111111?style=flat-square" alt="For Claude Code">
   <img src="https://img.shields.io/badge/cheap%20model-%C2%BD%C2%A2%20a%20task-111111?style=flat-square" alt="Cheap model: half a cent a task">
   <img src="https://img.shields.io/badge/tested%20on-SWE--bench%20Verified-111111?style=flat-square" alt="Tested on SWE-bench Verified">
@@ -82,11 +83,11 @@ A few dollars lasts hundreds of tasks. It runs on macOS and Linux; on Windows, u
 
 ## The numbers
 
+Tested on [SWE-bench Verified](https://www.swebench.com): real bugs from real open-source projects, graded by the official harness. Same prompts in Claude Code with Opus 5.5, with and without Cheap Agent.
+
 <p align="center">
   <img src="assets/chart.svg" width="880" alt="Opus tokens, Claude Code alone versus with Cheap Agent. Adding a feature: 154k vs 57k, 63% less, both pass all tests. 7 everyday bug fixes: 1.6M vs 655k, 59% less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M vs 1.0M, 67% less, 5 of 9 solved vs 7 of 9, with a Sonnet helper doing the leftovers.">
 </p>
-
-Measured in Claude Code with Opus 5.5: the same agent and the same prompts, with and without Cheap Agent. The bug fixes are real issues from real open-source projects ([SWE-bench Verified](https://www.swebench.com)), graded by the official harness.
 
 **What I won't hide:**
 - On the very hardest bugs it solved 5 of 9 where plain Opus solved 7.
@@ -105,7 +106,7 @@ Cheap Agent shines on the work in between: real features and real fixes in real 
 | Who wrote the code | Opus | a cheap model, for **$0.005** |
 | Tests | 33 passing | **38 passing** |
 
-Opus read the request, wrote one task and read a ten-line result. That's all it did. The cheap model explored the code, wrote a test that failed, made it pass, and handed back a change that works. Same feature, a third of the Opus bill.
+Opus wrote one task. The cheap model did the rest, tests included.
 
 ## How it works
 
