@@ -5,21 +5,22 @@
     .s { fill: #c3c2b7; font-size: 14px; }
     .row { fill: #f0efec; font-size: 16px; font-weight: 700; }
     .note { fill: #8f8e88; font-size: 13px; }
+    .inb { fill: #10240f; font-size: 13px; font-weight: 700; }
     .in { fill: #f0efec; font-size: 13px; font-weight: 600; }
-    .big { fill: #3987e5; font-size: 34px; font-weight: 800; }
+    .big { fill: #66BB6A; font-size: 34px; font-weight: 800; }
     .less { fill: #c3c2b7; font-size: 13px; }
   </style>
   <rect width="880" height="420" rx="18" fill="#1a1a19"/>
   <text x="32" y="46" class="t">How much Opus each job burned</text>
-  <text x="32" y="70" class="s">Gray: Claude Code alone. Blue: with Cheap Agent. Shorter blue = more of your plan left.</text>
+  <text x="32" y="70" class="s">Gray: Claude Code alone. Green: with Cheap Agent. Shorter green = more of your plan left.</text>
 
-  <!-- bars start at x=32; the gray bar is 620px; blue is its share of that -->
+  <!-- bars start at x=32; the gray bar is 620px; green is its share of that -->
   <text x="32" y="118" class="row">Add a feature</text>
   <text x="152" y="118" class="note">both pass all their tests</text>
   <rect x="32" y="128" width="620" height="24" rx="5" fill="#4a4a47"/>
   <text x="44" y="145" class="in">Alone · 154k</text>
-  <rect x="32" y="156" width="229" height="24" rx="5" fill="#3987e5"/>
-  <text x="44" y="173" class="in">Cheap Agent · 57k</text>
+  <rect x="32" y="156" width="229" height="24" rx="5" fill="#66BB6A"/>
+  <text x="44" y="173" class="inb">Cheap Agent · 57k</text>
   <text x="848" y="160" class="big" text-anchor="end">63%</text>
   <text x="848" y="178" class="less" text-anchor="end">less Opus</text>
 
@@ -27,8 +28,8 @@
   <text x="200" y="228" class="note">7/7 solved by both</text>
   <rect x="32" y="238" width="620" height="24" rx="5" fill="#4a4a47"/>
   <text x="44" y="255" class="in">Alone · 1.6M</text>
-  <rect x="32" y="266" width="254" height="24" rx="5" fill="#3987e5"/>
-  <text x="44" y="283" class="in">Cheap Agent · 655k</text>
+  <rect x="32" y="266" width="254" height="24" rx="5" fill="#66BB6A"/>
+  <text x="44" y="283" class="inb">Cheap Agent · 655k</text>
   <text x="848" y="270" class="big" text-anchor="end">59%</text>
   <text x="848" y="288" class="less" text-anchor="end">less Opus</text>
 
@@ -36,8 +37,8 @@
   <text x="208" y="338" class="note">5/9 solved vs 7/9 alone · a Sonnet helper did the leftovers</text>
   <rect x="32" y="348" width="620" height="24" rx="5" fill="#4a4a47"/>
   <text x="44" y="365" class="in">Alone · 3.0M</text>
-  <rect x="32" y="376" width="205" height="24" rx="5" fill="#3987e5"/>
-  <text x="44" y="393" class="in">Cheap Agent · 1.0M</text>
+  <rect x="32" y="376" width="205" height="24" rx="5" fill="#66BB6A"/>
+  <text x="44" y="393" class="inb">Cheap Agent · 1.0M</text>
   <text x="848" y="380" class="big" text-anchor="end">67%</text>
   <text x="848" y="398" class="less" text-anchor="end">less Opus</text>
 </svg>

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-label="Same feature, same prompt: Claude Code alone used 154k Opus tokens in 5 turns; with Cheap Agent 57k Opus tokens in 2 turns, 63% fewer, and the cheap model cost half a cent. Both versions pass all their tests.">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1f2a3a"/>
+      <stop offset="0" stop-color="#1c2a1e"/>
       <stop offset="1" stop-color="#1a1a19"/>
     </linearGradient>
   </defs>
@@ -9,7 +9,7 @@
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
     .k { fill: #c3c2b7; font-size: 15px; letter-spacing: .06em; }
     .big { fill: #f0efec; font-size: 64px; font-weight: 800; letter-spacing: -.02em; }
-    .acc { fill: #3987e5; }
+    .acc { fill: #66BB6A; }
     .lab { fill: #c3c2b7; font-size: 16px; }
     .foot { fill: #8f8e88; font-size: 13px; }
   </style>
