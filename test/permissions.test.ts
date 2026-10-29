@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
@@ -53,13 +53,6 @@ beforeAll(async () => {
   const t = Date.now();
   await bash("git status");
   console.error(`cheapag-test: first worker bash call took ${Date.now() - t} ms (${process.platform})`);
-  if (process.platform === "win32") {
-    const logDir = join(home, "data", "opencode", "log");
-    if (existsSync(logDir)) {
-      const newest = readdirSync(logDir).map((f) => join(logDir, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
-      if (newest) console.error(`cheapag-test: opencode log tail:\n${readFileSync(newest, "utf8").split("\n").slice(-80).join("\n")}`);
-    }
-  }
 }, slow(180_000));
 
 afterAll(async () => {

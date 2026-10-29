@@ -10,24 +10,14 @@ export const serverEntry = join(import.meta.dirname, "..", "dist", "index.js");
 /** Scales explicit per-test timeouts (vitest config can't reach these) for Windows CI's ~3x slowness. */
 export const slow = (ms: number) => (process.platform === "win32" ? ms * 3 : ms);
 
-/** Removes a temp dir, retrying on Windows; on EBUSY there, dumps the processes still holding it. */
+/** Removes a temp dir, retrying on Windows; on EBUSY there, warns and leaves it behind. */
 export function removeDir(dir: string) {
   try {
     rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   } catch (err) {
     if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EBUSY") {
-      let handles = "";
-      try {
-        handles = execFileSync("handle64.exe", ["-accepteula", "-nobanner", dir], { stdio: "pipe", timeout: 30000 }).toString();
-      } catch {}
-      console.error(`cheapag-test: handles under ${dir}:\n${handles}`);
-      let holders = "";
-      try {
-        holders = execFileSync("powershell.exe", ["-NoProfile", "-Command",
-          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'opencode|bash|^sh|rg|git' } | Select-Object ProcessId,ParentProcessId,Name,CreationDate,CommandLine | Format-List | Out-String -Width 400`
-        ]).toString();
-      } catch {}
-      console.error(`cheapag-test: EBUSY on ${dir}; processes:\n${holders}`);
+      console.warn(`cheapag-test: left ${dir} behind (Windows: still in use by OpenCode)`);
+      return;
     }
     throw err;
   }
