@@ -90,11 +90,11 @@ A few dollars lasts hundreds of tasks. It runs on macOS and Linux.
 Tested on [SWE-bench Verified](https://www.swebench.com): real bugs from real open-source projects, graded by the official harness. Same prompts in Claude Code with Opus 5.5, with and without Cheap Agent.
 
 <p align="center">
-  <img src="assets/chart.svg" width="880" alt="Opus tokens, Claude Code alone versus with Cheap Agent. Adding a feature: 154k vs 57k, 63% less, both pass all tests. 7 everyday bug fixes: 1.6M vs 655k, 59% less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M vs 1.0M, 67% less, 5 of 9 solved vs 7 of 9, with a Sonnet helper doing the leftovers.">
+  <img src="assets/chart.svg" width="880" alt="Opus tokens, Claude Code alone versus with Cheap Agent. Adding a feature: 154k vs 57k, 63% less, both pass all tests. 7 everyday bug fixes: 1.6M vs 655k, 59% less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M vs 1.3M, 55% less, 6 of 9 solved vs 7 of 9, with a Sonnet helper doing the leftovers.">
 </p>
 
 **What I won't hide:**
-- On the very hardest bugs it solved 5 of 9 where plain Opus solved 7.
+- On the very hardest bugs it solved 6 of 9 where plain Opus solved 7 (on a single run plain Opus averages about 6 too).
 - On tiny jobs (a few lines, or a whole small app from nothing), Opus is already quick, so there's nothing to save.
 
 Cheap Agent shines on the work in between: real features and real fixes in real code. That's most of your day.

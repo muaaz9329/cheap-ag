@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" role="img" aria-label="Opus tokens used, Claude Code alone versus with Cheap Agent. Adding a feature: 154k versus 57k, 63 percent less, both pass all tests. 7 everyday bug fixes: 1.6M versus 655k, 59 percent less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M versus 1.0M, 67 percent less, 5 of 9 solved versus 7 of 9, with a Sonnet helper finishing what the cheap model could not.">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" role="img" aria-label="Opus tokens used, Claude Code alone versus with Cheap Agent. Adding a feature: 154k versus 57k, 63 percent less, both pass all tests. 7 everyday bug fixes: 1.6M versus 655k, 59 percent less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M versus 1.3M, 55 percent less, 6 of 9 solved versus 7 of 9, with a Sonnet helper finishing what the cheap model could not.">
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
     .t { fill: #f0efec; font-size: 20px; font-weight: 700; }
@@ -34,11 +34,11 @@
   <text x="848" y="288" class="less" text-anchor="end">less Opus</text>
 
   <text x="32" y="338" class="row">9 of the hardest bugs</text>
-  <text x="208" y="338" class="note">5/9 solved vs 7/9 alone · a Sonnet helper did the leftovers</text>
+  <text x="208" y="338" class="note">6/9 solved vs 7/9 alone · a Sonnet helper did the leftovers</text>
   <rect x="32" y="348" width="620" height="24" rx="5" fill="#4a4a47"/>
   <text x="44" y="365" class="in">Alone · 3.0M</text>
-  <rect x="32" y="376" width="205" height="24" rx="5" fill="#66BB6A"/>
-  <text x="44" y="393" class="inb">Cheap Agent · 1.0M</text>
-  <text x="848" y="380" class="big" text-anchor="end">67%</text>
+  <rect x="32" y="376" width="279" height="24" rx="5" fill="#66BB6A"/>
+  <text x="44" y="393" class="inb">Cheap Agent · 1.3M</text>
+  <text x="848" y="380" class="big" text-anchor="end">55%</text>
   <text x="848" y="398" class="less" text-anchor="end">less Opus</text>
 </svg>
