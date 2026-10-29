@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
@@ -477,6 +477,12 @@ function runGroup(g: GroupRun) {
           // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
           for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
             if (!failing) break;
+            // the check could not run (missing tool, broken Node): no edit fixes that, so fixes and the escalation would only burn turns
+            const env = envFailure(failing.run);
+            if (env) {
+              tried.push(`${tag}env: the check could not run (${env})`);
+              break;
+            }
             overTurns(); // a fix needs at least one more turn
             if (stopped as Stop | undefined) break; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
             const esc = attempt === "esc";
@@ -512,11 +518,14 @@ function runGroup(g: GroupRun) {
         if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
         return result;
       };
-      let result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : contextPack(plan, steps, input.note, input.brief, input.source));
+      // an absolute repo path typed in a task would point the worker outside its worktree
+      const rootRe = new RegExp([...new Set([root, realpathSync(root)])].map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g"); // one pass: the worktree path contains the root
+      const inWorktree = (text: string) => text.replace(rootRe, () => worktree!.path);
+      let result = await work(g.fix ? fixPrompt(plan, steps, g.fix) : inWorktree(contextPack(plan, steps, input.note, input.brief, input.source)));
       write("finish.json", report);
       // ticket 33: a turn cap during verify/fixes no longer loses the escalation. With a diff and a failing check it
       // still runs once on the escalation model, on its own smaller budget; a cap reached here ends the job as before.
-      const escSkip = escalated || !failing || !cmds.length || !worktree || !session ? "not now" : escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
+      const escSkip = escalated || !failing || envFailure(failing.run) || !cmds.length || !worktree || !session ? "not now" : escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
       if (stopped?.cap === "turns" && !escSkip && worktreeDiff(worktree!).changed.length) {
         escalated = true;
         turnBase = session!.totals().turns;

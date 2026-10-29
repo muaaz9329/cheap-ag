@@ -165,7 +165,6 @@ test("takeover sonnet (default): after a FAIL, only the Agent tool, read-only to
   expect(reason).toMatch(/^The worker did not finish this step: hand it to your Agent tool with model: sonnet \(the task, the user's words, the block's found:, test=, error: and worktree\)/);
   expect(reason).toContain('takeover: "self"');
   expect(run("Bash", { command: "./swebench-test.sh x" })).toMatch(/^The worker did not finish/);
-  expect(run("Agent", { model: "sonnet", prompt: "finish it" })).toBeNull();
   expect(run("mcp__cheapag__land", { job: "jab12" })).toBeNull();
   // reads and read-only Bash are how the reader inspects the diff before handing it over
   expect(run("Read", read)).toBeNull();
@@ -178,10 +177,40 @@ test("takeover sonnet (default): after a FAIL, only the Agent tool, read-only to
   expect(run("Bash", { command: "npm test" })).toMatch(/^The worker did not finish/);
   expect(run("Bash", { command: "echo x > f" })).toMatch(/^The worker did not finish/);
   expect(run("Bash", { command: "cat a && npm test" })).toMatch(/^The worker did not finish/);
+  // the hand-off clears the FAIL: once Claude calls the Agent, writing is its own business again
+  expect(run("Agent", { model: "sonnet", prompt: "finish it" })).toBeNull();
+  expect(run("Bash", { command: "echo x > f" })).toBeNull();
+  expect(run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" })).toBeNull();
   // the subagent's own calls carry agent_id: never denied, never counted
   for (let i = 0; i < 4; i++) expect(run(i % 2 ? "Edit" : "Bash", i % 2 ? { file_path: "a.ts", old_string: "a", new_string: "b" } : { command: "pytest -q" }, { agent: "ab9d" })).toBeNull();
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
 }, slow(20_000));
+
+test("takeover sonnet: cd/env prefixes and git's -C/--no-pager/-c options stay reads; edits outside the repo pass; an env FAIL blocks nothing", () => {
+  const { run, result, repo } = setup();
+  result(FAIL_BLOCK);
+  expect(run("Bash", { command: "cd /repo && git status" })).toBeNull();
+  expect(run("Bash", { command: "git -C /repo diff -- a.ts" })).toBeNull();
+  expect(run("Bash", { command: "git --no-pager log" })).toBeNull();
+  expect(run("Bash", { command: "git -c core.pager=cat status" })).toBeNull();
+  expect(run("Bash", { command: "X=1 git log" })).toBeNull();
+  // a write or a test still starts it, even behind cd
+  expect(run("Bash", { command: "cd /repo && npm test" })).toMatch(/^The worker did not finish/);
+  expect(run("Bash", { command: "cd /repo && echo x > f" })).toMatch(/^The worker did not finish/);
+  // edits resolve against the repo: inside is denied, outside is not
+  expect(run("Write", { file_path: join(repo.dir, "inside.ts"), content: "x" })).toMatch(/^The worker did not finish/);
+  expect(run("Write", { file_path: "/tmp/outside.ts", content: "x" })).toBeNull();
+  expect(run("NotebookEdit", { notebook_path: "/tmp/n.ipynb" })).toBeNull();
+  // an OK the worker applied or discarded clears the earlier FAIL even without a check
+  result("OK j1 discarded");
+  expect(run("Bash", { command: "npm test" })).toBeNull();
+});
+
+test("takeover: an env-kind FAIL leaves the guard off (nothing for the taker to finish)", () => {
+  const { run, result } = setup();
+  result("FAIL j1 step=1 files=0 +0/-0 tests=fail turns=3 cost=$0.001 check=env\nreason: command not found");
+  expect(run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" })).toBeNull();
+});
 
 test("trust OK: after an OK whose checks passed, re-running tests is denied; other tools pass; tests=none and a new prompt are free; a later FAIL wins", () => {
   const { run, result } = setup();

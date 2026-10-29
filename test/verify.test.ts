@@ -200,3 +200,14 @@ test("checkAllows expands a compound check into the segments OpenCode checks, en
   ]);
   expect(checkAllows("export X=1 npm test")).toEqual(["export X=1 npm test", "npm test"]);
 });
+
+test("a check that cannot run (command not found) stops after one worker run: no fixes, no escalation", async () => {
+  const { text, record, prompts } = await scenario([RIGHT("done")], "`definitely-not-a-tool --version` passes");
+  const head = text.split("\n")[0];
+  expect(head).toMatch(/^FAIL /);
+  expect(head).not.toMatch(/ (fix|esc)=/);
+  expect(text).toContain("environment:");
+  expect(text).toMatch(/env: the check could not run \(exit 127: command not found\)/);
+  expect(record.check).toBe("env");
+  expect(prompts).toHaveLength(1);
+});

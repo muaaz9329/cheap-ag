@@ -18,14 +18,16 @@ const BASH_CODE_WRITES = /\b(?:python3?|node)\s+-[ce]\b[\s\S]*(?:open\([^)]*["']
 // the plugin's server and a `cheapag login` registration give the tool different prefixes, so name both
 const REDIRECT = "write a plan step and use the cheapag server's delegate tool (mcp__plugin_cheapag_cheapag__delegate, or mcp__cheapag__delegate) instead.";
 const CHEAPAG_TOOL = /^mcp__(?:plugin_cheapag_)?cheapag__/;
-// a job block whose first word means the worker did not finish the step (the server's FAIL/PARTIAL/TIMEOUT)
-const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /m;
+// a job block's first word means the worker did not finish the step (the server's FAIL/PARTIAL/TIMEOUT)
+const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /;
 // an OK whose checks passed in the worker's worktree (ticket 30: re-running them caught nothing)
 const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
 // shortcut: the usual runners only; add the repo's test_cmd if Claude re-runs tests through a custom script
 const TEST_CMD = /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 // sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
+// edits outside the repo cannot touch the worker's worktree, so the taker may make them (the Sonnet branch only)
+const OUTSIDE_EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const READ_PARTS = ["git diff", "git log", "git show", "git status", "cat", "head", "tail", "ls", "grep", "rg", "wc", "find", "pwd", "echo"];
 
 /** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
@@ -123,8 +125,13 @@ function budget(input: Input): string | undefined {
   if (state.prompt !== input.prompt_id) return; // a new user prompt starts fresh
   const config = loadConfig(root);
   if (state.notDone && config.takeover === "sonnet") {
-    if (input.tool_name === "Agent" || input.tool_name === "Task") return;
+    if (input.tool_name === "Agent" || input.tool_name === "Task") {
+      // the hand-off is happening: one per FAIL, so the guard is off once the taker takes over
+      writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
+      return;
+    }
     if (READ_TOOLS.has(input.tool_name ?? "")) return;
+    if (OUTSIDE_EDITS.has(input.tool_name ?? "") && outside(root, input.cwd, input.tool_input)) return;
     const command = input.tool_input?.command;
     if (input.tool_name === "Bash" && typeof command === "string" && readOnly(command)) return;
     return `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
@@ -148,8 +155,10 @@ function result(): number {
     const input: Input = JSON.parse(readFileSync(0, "utf8"));
     if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string") return 0;
     const out = text(input.tool_response);
-    const notDone = NOT_DONE.test(out), okPassed = OK_PASSED.test(out);
-    if (!notDone && !okPassed) return 0;
+    const notDone = didNotFinish(out), okPassed = OK_PASSED.test(out);
+    // the worker's own `land applied` finished the block: drop the take-over even when the check never ran
+    const cleared = /^OK j\w+ (applied|discarded)\b/m.test(out);
+    if (!notDone && !okPassed && !cleared) return 0;
     const root = projectRoot(input.cwd);
     const file = stateFile(root, input.session_id);
     let state: PromptState = { prompt: input.prompt_id, calls: 0 };
@@ -160,7 +169,7 @@ function result(): number {
       // first cheapag result of the session
     }
     mkdirSync(join(root, ".cheapag", "hook"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ ...state, ...(notDone && { notDone }), ...(okPassed && { okPassed }) } satisfies PromptState));
+    writeFileSync(file, JSON.stringify({ ...state, ...(notDone && { notDone }), ...(okPassed && { okPassed }), ...(cleared && { notDone: undefined }) } satisfies PromptState));
     // shortcut: the marker is never removed, so a repo that once had a cheapag result runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
     writeFileSync(marker(root), "");
   } catch {
@@ -219,7 +228,33 @@ function readOnly(command: string): boolean {
   if (TEST_CMD.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command)) return false;
   if (BASH_WRITES.some((re) => command.match(re))) return false;
   const parts = command.split(/&&|\|\||;|\|/).map((p) => p.trim()).filter(Boolean);
-  return parts.length > 0 && parts.every((p) => READ_PARTS.some((r) => p === r || p.startsWith(r + " ")));
+  return parts.length > 0 && parts.every(readPart);
+}
+
+/**
+ * One `&&`/`;`/`|` part is a read when a reader still starts it once env prefixes and `cd` are dropped:
+ * `X=1 git log` and `cd /repo` change no file, and `git -C <dir> diff` reads like `git diff`.
+ */
+function readPart(part: string): boolean {
+  const p = stripGitOptions(part.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")).trim();
+  if (p === "cd" || p.startsWith("cd ") || p.startsWith("export ")) return true;
+  return READ_PARTS.some((r) => p === r || p.startsWith(r + " "));
+}
+
+/** Drops git's directory/pager options (`-C <dir>`, `--no-pager`, `-c k=v`) so the verb starts the part. */
+const stripGitOptions = (part: string) => part.replace(/^git\s+(?:(?:-C\s+\S+|--no-pager|-c\s+\S+)\s+)+/, "git ");
+
+/** The first line says the worker did not finish, unless an env-kind FAIL could not run its check at all: nothing to take over. */
+function didNotFinish(out: string): boolean {
+  return out.split("\n").some((line) => NOT_DONE.test(line) && !(line.startsWith("FAIL ") && /\bcheck=env\b/.test(line)));
+}
+
+/** An edit path resolves outside the repo, so it cannot touch the worker's worktree. */
+function outside(root: string, cwd: string, tool: Record<string, unknown> | undefined): boolean {
+  const p = tool?.file_path ?? tool?.notebook_path;
+  if (typeof p !== "string") return false;
+  const abs = resolve(cwd, p);
+  return abs !== root && !abs.startsWith(root + sep);
 }
 
 /** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */

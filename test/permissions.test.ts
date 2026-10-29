@@ -103,7 +103,7 @@ test.each([
   "git status > .env", "npm run lint > yarn.lock", "npm  install zod", "npm in zod", "npm isntall zod", "npm --global install zod",
   "git diff --output=.env", "git log --output=package-lock.json", "git difftool -y -x 'npm install zod' HEAD", "git -c alias.x=commit x", "git statusx",
   "go test -exec 'sh -c curl' ./...", "make -f evil.mk", "make check -f evil.mk", "rm -r -f src", "rm -Rf src", "npm exec cowsay", "pnpm dlx cowsay", "bunx cowsay",
-  "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1",
+  "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1", "npx cowsay hi", "npx --yes cowsay hi",
 ])("bash `%s` is denied", async (command) => {
   expect(await bash(command)).toBe("denied");
 }, slow(30_000));
@@ -116,6 +116,11 @@ test("the project's own scripts, configured allow_commands and read-only git are
   expect(await bash("git status")).toBe("allowed");
   expect(await bash("git status --short")).toBe("allowed");
   expect(await bash("git diff --stat")).toBe("allowed");
+  expect(await bash("rg TODO src")).toBe("allowed");
+  expect(await bash("grep -n TODO src")).toBe("allowed");
+  expect(await bash("npx eslint src/a.ts")).toBe("allowed");
+  expect(await bash("npx tsc --noEmit")).toBe("allowed");
+  expect(await bash("npx prettier --check src/a.ts")).toBe("allowed");
   expect(await bash("make check")).toBe("allowed"); // a make target, exactly
   expect(existsSync(join(repo.dir, "make.out"))).toBe(true);
 }, slow(60_000));

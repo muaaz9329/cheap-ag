@@ -154,7 +154,7 @@ test("a single step runs in a worktree and lands OK, uncommitted, with the resul
 test.each([
   ["an unknown step id", PLAN, "9", "FAIL reason: plan .plan/hello.md: step 9 not found (plan steps: 1)"],
   ["an unknown id in a group list", PLAN, "1,9", "FAIL reason: plan .plan/hello.md: step 9 not found (plan steps: 1)"],
-  ["a malformed steps string", PLAN, "1;2", 'FAIL reason: plan .plan/hello.md: steps "1;2": "1;2" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4"'],
+  ["a malformed steps string", PLAN, "1;2", 'FAIL reason: plan .plan/hello.md: steps "1;2": "1;2" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)'],
   ["a step in two groups", PLAN, "1,1", 'FAIL reason: plan .plan/hello.md: steps "1,1": step 1 is in more than one group'],
   ["a plan path outside the repo", PLAN, "1", null],
   ["a step missing done-when", "# T\n## 1 a\nfiles: a.ts\n", "1", `FAIL reason: plan .plan/hello.md: step 1 (line 2): missing done-when:\n${PLAN_FORMAT}`],

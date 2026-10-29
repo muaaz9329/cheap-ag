@@ -46,7 +46,7 @@ export const PROTECTED = [
 ];
 
 /** Always-allowed commands, each as typed and with arguments: read-only git and the common test runners. */
-const ALWAYS = ["git status", "git diff", "git log", "git show", "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "bun test"];
+const ALWAYS = ["git status", "git diff", "git log", "git show", "rg", "grep", "npx eslint", "npx tsc", "npx prettier", "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "bun test"];
 
 const allow = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "allow" });
 const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "deny" });

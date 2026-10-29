@@ -308,3 +308,12 @@ test("ticket 33: a turn cap during the fixes still escalates once, on its own bu
   expect(record(job)).toMatchObject({ status: "OK", landed: true, models: { escalated: true, final: "opencode-go/deepseek-v4-pro" } });
   expect(readFileSync(join(repo.dir, "src/hello.ts"), "utf8")).toBe("export const hello = 2;\n");
 });
+
+test("an absolute repo path typed in a task reaches the worker as the worktree path", async () => {
+  const { repo, fake, server } = await scenario({ scripts: [[{ finish: { summary: "ok", risks: [], review: [], missing: [] } }]] });
+  const text = await callText(server.client, "delegate", { task: `read ${repo.dir}/src/a.ts and report` });
+  const job = jobOf(text);
+  const prompt = (fake.recorded.prompts[0].parts[0] as { text: string }).text;
+  expect(prompt).toContain(`${join(repo.dir, ".cheapag", "worktrees", job)}/src/a.ts`);
+  expect(prompt.split(repo.dir).length - 1).toBe(prompt.split(join(repo.dir, ".cheapag", "worktrees", job)).length - 1); // every repo.dir is the worktree's prefix
+});

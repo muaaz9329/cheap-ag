@@ -98,7 +98,7 @@ export function selectGroups(plan: Plan, spec: string): Group[] {
   const groups = spec.split(",").map((raw) => {
     const part = raw.trim();
     const m = part.match(/^(\d+[a-z]?)(?:\s*-\s*(\d+[a-z]?))?$/);
-    if (!m) throw new Error(`steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4"`);
+    if (!m) throw new Error(`steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)`);
     const [from, to] = [index(m[1]), index(m[2] ?? m[1])];
     if (to < from) throw new Error(`steps "${spec}": range ${part} runs backwards`);
     const steps = plan.steps.slice(from, to + 1);

@@ -100,7 +100,7 @@ export async function research(
     const halt = new AbortController();
     const stop = (why: NonNullable<typeof stopped>) => {
       stopped ??= why;
-      halt.abort();
+      if (why.cap !== "turns") halt.abort(); // a turn cap lets the turn end: partialAnswer() needs a live session (as src/jobs.ts)
     };
     const timer = setTimeout(() => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }), limits.max_minutes * 60_000);
     const session: Session = await openSession({

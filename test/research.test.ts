@@ -244,14 +244,24 @@ test("a claimed reproduction the worker never ran is marked unverified and drops
 test("a turn cap recovers what the worker read: one no-tool prompt, rendered as ANSWER status=partial; other failures stay FAIL", async () => {
   const { repo, fake, research } = await scenario();
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_turns: 2 } }));
-  fake.script({ tool: "read" }, { tool: "grep" }, { wait: 60_000 });
+  fake.script({ tool: "read" }, { tool: "grep" });
   fake.script(block("status: partial\nconfidence: medium\nrefs: src/auth.ts:18-22\nanswer:\nSo far: validation looks to be in src/auth.ts:18-22."));
   const text = await research({ question: "where is JWT validated?" });
   expect(text).toMatch(/^ANSWER r\w{4} files_read=1 turns=2 cost=\$0.000 status=partial\nfiles: src\/auth.ts:18-22\nnotes:\nSo far: /);
   expect(text).toContain("\nreason: turn cap (2) reached\n");
   expect(fake.recorded.prompts[1].parts).toMatchObject([{ text: expect.stringContaining("status: partial") }]);
+  expect(fake.recorded.aborts).toEqual([]); // an aborted session answers "" (field report round 2)
 
   // a partial reply that does not parse is the old FAIL
-  fake.script({ tool: "read" }, { tool: "grep" }, { wait: 60_000 });
+  fake.script({ tool: "read" }, { tool: "grep" });
   expect(await research({ question: "q" })).toMatch(/^FAIL r\w{4} .*\nreason: turn cap \(2\) reached\n/);
+});
+
+test("a cost cap still aborts the session (only the turn cap leaves it live for the partial prompt)", async () => {
+  const { repo, fake, research } = await scenario();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_cost_usd: 0.01 } }));
+  fake.script({ usage: { cost: 0.02 } }, { wait: 60_000 });
+  expect(await research({ question: "q" })).toMatch(/^BUDGET r\w{4} .*\nreason: job cap \(\$0.01\) reached\n/);
+  expect(fake.recorded.aborts).toHaveLength(1);
+  expect(fake.recorded.prompts).toHaveLength(1); // no partial prompt
 });
