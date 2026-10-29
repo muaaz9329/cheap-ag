@@ -31,6 +31,55 @@ But that's exactly what happens every time Opus writes your code: the most expen
 
 **Cheap Agent fixes the org chart.** Opus plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
 
+## Why I built this
+
+The idea: get **$200-plan usage out of the $100 Claude plan**, and **$50–70 worth out of the $20 plan**, with a few dollars of DeepSeek doing the typing.
+
+I've met a lot of students, mostly in developing countries, who really want Opus for the hard problems and simply can't afford $100 a month. I wanted to find something that helps them.
+
+This is a small effort from my side. It won't make Opus ten times cheaper. But stretching the plan you already pay for is something, and something is better than nothing.
+
+## Install
+
+**Easiest:** paste this into Claude Code. It asks what you want, then gives you one command to run.
+
+```text
+Set up Cheap Agent (npm: cheap-agent) for me.
+1. Ask me: which provider (OpenRouter recommended, DeepSeek or OpenCode Go), and which
+   models (balanced is the default; cheapest, strongest, or my own provider/model).
+2. Check that node is 20+ and the claude CLI is installed.
+3. If I picked my own model, save {"models":{"implement":"<model>"}} in
+   ~/.config/cheapag/config.json, keeping what else is there.
+4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice,
+   or custom>, and which number to pick for my provider (1 OpenCode Go, 2 OpenRouter,
+   3 DeepSeek). I run it and type my API key there. Never ask for my key.
+5. When I say done, check `claude mcp list` shows cheapag, then tell me to run
+   /cheapag:allow in a new Claude Code session in my project.
+```
+
+**Or do it yourself:**
+
+```bash
+npx cheap-agent
+```
+
+Pick a provider (**OpenRouter** if unsure), press Enter for the recommended models, paste your API key. It checks the key works, then adds itself to Claude Code for every project.
+
+Then, in each project, once:
+
+```
+/cheapag:allow
+```
+
+**That's it.** Ask Claude for changes like you always do.
+
+**You need:**
+- [Claude Code](https://claude.com/claude-code)
+- [Node.js](https://nodejs.org) 20+
+- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com) or [OpenCode Go](https://opencode.ai)
+
+A few dollars lasts hundreds of tasks. It runs on macOS and Linux; on Windows, use WSL.
+
 ## The numbers
 
 <p align="center">
@@ -67,29 +116,6 @@ Opus read the request, wrote one task and read a ten-line result. That's all it 
 - **Every change is proven.** The cheap model must write a test that fails before its fix and passes after. Cheap Agent runs the tests itself; it doesn't take the model's word for it.
 - **Your project stays clean.** Work happens in a private copy (a git worktree). Only passing work lands, uncommitted, so you review the diff like any other.
 - **Opus stays in charge,** but it's held to it: Cheap Agent's hooks stop Opus from quietly redoing work that already passed, or doing a failed step itself when Sonnet can.
-
-## Install
-
-```bash
-npx cheap-agent
-```
-
-Pick a provider (**OpenRouter** if unsure), press Enter for the recommended models, paste your API key. It checks the key works, then adds itself to Claude Code for every project.
-
-Then, in each project, once:
-
-```
-/cheapag:allow
-```
-
-**That's it.** Ask Claude for changes like you always do.
-
-**You need:**
-- [Claude Code](https://claude.com/claude-code)
-- [Node.js](https://nodejs.org) 20+
-- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com) or [OpenCode Go](https://opencode.ai)
-
-A few dollars lasts hundreds of tasks. It runs on macOS and Linux; on Windows, use WSL.
 
 ## Commands
 
