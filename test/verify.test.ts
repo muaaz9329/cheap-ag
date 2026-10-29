@@ -129,7 +129,7 @@ test("the error tail keeps a failure line that mentions 'passed' and makes workt
   expect(text).toContain("\nerror: `node fail-abs.mjs`\n  TypeError: 3 arguments passed, expected 2\n    at src/hello.ts:4:1\n");
   const log = readFileSync(join(repo.dir, ".cheapag", "jobs", job, "verify.log"), "utf8");
   expect(log.match(/^\$ node fail-abs\.mjs$/gm)).toHaveLength(4);
-  expect(log).toContain(".cheapag/worktrees/"); // the raw output, untouched
+  expect(log).toMatch(/\.cheapag[\\/]worktrees[\\/]/); // the raw output, untouched
 });
 
 test("a malformed config file fails before any job starts, naming the file", async () => {

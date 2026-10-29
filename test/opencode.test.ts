@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
+import { isAlive } from "../src/platform.js";
 import { PRESETS } from "../src/routing.js";
 import { callText, slow, startServer } from "./harness.js";
 
@@ -32,9 +33,24 @@ async function pingWith(env: Record<string, string>, logins: Record<string, stri
 /** Pids whose parent is `pid`; empty when none. */
 function children(pid: number) {
   try {
+    if (process.platform === "win32") {
+      const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}').ProcessId`]).toString().trim();
+      return out ? out.split(/\s+/).map(Number) : [];
+    }
     return execFileSync("pgrep", ["-P", String(pid)]).toString().trim().split("\n").map(Number);
   } catch {
     return [];
+  }
+}
+
+/** Whether the whole process group is gone; on Windows there are no groups, so the pid alone decides. */
+function gone(pid: number) {
+  if (process.platform === "win32") return !isAlive(pid);
+  try {
+    execFileSync("pgrep", ["-g", String(pid)]); // throws when the group is empty
+    return false;
+  } catch {
+    return true;
   }
 }
 
@@ -143,8 +159,8 @@ test("boots the bundled OpenCode lazily on localhost, restarts it after a crash,
   expect(restartedPid).not.toBe(opencodePid);
 
   await server.close();
-  await vi.waitFor(() => expect(() => execFileSync("pgrep", ["-g", String(restartedPid)])).toThrow(), { timeout: 5000 });
-  await vi.waitFor(() => expect(() => execFileSync("pgrep", ["-g", String(opencodePid)])).toThrow(), { timeout: 5000 });
+  await vi.waitFor(() => expect(gone(restartedPid)).toBe(true), { timeout: slow(5000) });
+  await vi.waitFor(() => expect(gone(opencodePid)).toBe(true), { timeout: slow(5000) });
 }, slow(30_000));
 
 test("the generated finish tool is valid JavaScript (a syntax error makes OpenCode drop it and the worker do nothing)", async () => {

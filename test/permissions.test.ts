@@ -50,7 +50,10 @@ beforeAll(async () => {
     oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
   });
   client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
-}, slow(60_000));
+  const t = Date.now();
+  await bash("git status");
+  console.error(`cheapag-test: first worker bash call took ${Date.now() - t} ms (${process.platform})`);
+}, slow(180_000));
 
 afterAll(async () => {
   stop?.();

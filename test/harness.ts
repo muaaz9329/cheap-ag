@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -9,6 +9,25 @@ export const serverEntry = join(import.meta.dirname, "..", "dist", "index.js");
 
 /** Scales explicit per-test timeouts (vitest config can't reach these) for Windows CI's ~3x slowness. */
 export const slow = (ms: number) => (process.platform === "win32" ? ms * 3 : ms);
+
+/** Removes a temp dir, retrying on Windows; on EBUSY there, dumps the processes still holding it. */
+export function removeDir(dir: string) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+  } catch (err) {
+    if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EBUSY") {
+      const name = basename(dir);
+      let holders = "";
+      try {
+        holders = execFileSync("powershell.exe", ["-NoProfile", "-Command",
+          `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${name}*' -or $_.ExecutablePath -like '*${name}*' } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List | Out-String -Width 400`
+        ]).toString();
+      } catch {}
+      console.error(`cheapag-test: EBUSY on ${dir}; processes:\n${holders}`);
+    }
+    throw err;
+  }
+}
 
 /** Saved logins to seed, provider id → key, e.g. `{ openrouter: "sk-or-…" }`. */
 export type Logins = Record<string, string>;
@@ -69,7 +88,7 @@ export async function startServer(opts: { cwd?: string; env?: Record<string, str
     close: async () => {
       await client.close();
       // Windows holds handles briefly after a process exits
-      rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+      removeDir(home);
     },
   };
 }
@@ -102,7 +121,7 @@ export function tempRepo(state: RepoState = "clean") {
   if (state === "dirty") writeFileSync(join(dir, "README.md"), "# fixture\n\nedited\n");
   if (state === "untracked") writeFileSync(join(dir, "notes.txt"), "untracked\n");
 
-  return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }) };
+  return { dir, git, cleanup: () => removeDir(dir) };
 }
 
 /** Every file in a checkout (but .git and .cheapag) with its bytes, plus git's view: index entries and status. Equal snapshots = an untouched tree. */
