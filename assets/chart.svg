@@ -1,36 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330" role="img" aria-label="Opus tokens with Cheap Agent as a share of plain Claude Code: a feature in existing code 37 percent, both pass all tests; 7 everyday SWE-bench bug fixes 41 percent, 7 of 7 solved in both; 9 of the hardest SWE-bench bugs 33 percent plus Sonnet cleanup, 5 of 9 solved versus 7 of 9.">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" role="img" aria-label="Opus tokens used, Claude Code alone versus with Cheap Agent. Adding a feature: 154k versus 57k, 63 percent less, both pass all tests. 7 everyday bug fixes: 1.6M versus 655k, 59 percent less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M versus 1.0M, 67 percent less, 5 of 9 solved versus 7 of 9, with a Sonnet helper finishing what the cheap model could not.">
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-    .t { fill: #f0efec; font-size: 18px; font-weight: 700; }
-    .s { fill: #c3c2b7; font-size: 13px; }
-    .row { fill: #f0efec; font-size: 15px; font-weight: 600; }
-    .val { fill: #f0efec; font-size: 15px; font-weight: 700; }
-    .note { fill: #c3c2b7; font-size: 13px; }
-    .ax { fill: #8f8e88; font-size: 12px; }
+    .t { fill: #f0efec; font-size: 20px; font-weight: 700; }
+    .s { fill: #c3c2b7; font-size: 14px; }
+    .row { fill: #f0efec; font-size: 16px; font-weight: 700; }
+    .note { fill: #8f8e88; font-size: 13px; }
+    .in { fill: #f0efec; font-size: 13px; font-weight: 600; }
+    .big { fill: #3987e5; font-size: 34px; font-weight: 800; }
+    .less { fill: #c3c2b7; font-size: 13px; }
   </style>
-  <rect width="880" height="330" rx="18" fill="#1a1a19"/>
-  <text x="32" y="44" class="t">Opus tokens with Cheap Agent, as a share of plain Claude Code</text>
-  <text x="32" y="66" class="s">Lower is better. The dashed line is plain Claude Code doing the same tasks.</text>
+  <rect width="880" height="420" rx="18" fill="#1a1a19"/>
+  <text x="32" y="46" class="t">How much Opus each job burned</text>
+  <text x="32" y="70" class="s">Gray: Claude Code alone. Blue: with Cheap Agent. Shorter blue = more of your plan left.</text>
 
-  <!-- scale: 0% at x=300, 100% at x=780 (4.8px per %) -->
-  <line x1="300" y1="92" x2="300" y2="282" stroke="#3a3a38" stroke-width="1"/>
-  <line x1="780" y1="92" x2="780" y2="282" stroke="#8f8e88" stroke-width="1.5" stroke-dasharray="4 4"/>
-  <text x="780" y="302" class="ax" text-anchor="middle">100% · plain Claude Code</text>
-  <text x="300" y="302" class="ax" text-anchor="middle">0%</text>
+  <!-- bars start at x=32; the gray bar is 620px; blue is its share of that -->
+  <text x="32" y="118" class="row">Add a feature</text>
+  <text x="152" y="118" class="note">both pass all their tests</text>
+  <rect x="32" y="128" width="620" height="24" rx="5" fill="#4a4a47"/>
+  <text x="44" y="145" class="in">Alone · 154k</text>
+  <rect x="32" y="156" width="229" height="24" rx="5" fill="#3987e5"/>
+  <text x="44" y="173" class="in">Cheap Agent · 57k</text>
+  <text x="848" y="160" class="big" text-anchor="end">63%</text>
+  <text x="848" y="178" class="less" text-anchor="end">less Opus</text>
 
-  <text x="32" y="122" class="row">A feature in existing code</text>
-  <text x="32" y="141" class="note">both pass all their tests</text>
-  <path d="M300 110 h173.6 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-173.6 z" fill="#3987e5"/>
-  <text x="486" y="124" class="val">37%</text>
+  <text x="32" y="228" class="row">7 everyday bug fixes</text>
+  <text x="200" y="228" class="note">7/7 solved by both</text>
+  <rect x="32" y="238" width="620" height="24" rx="5" fill="#4a4a47"/>
+  <text x="44" y="255" class="in">Alone · 1.6M</text>
+  <rect x="32" y="266" width="254" height="24" rx="5" fill="#3987e5"/>
+  <text x="44" y="283" class="in">Cheap Agent · 655k</text>
+  <text x="848" y="270" class="big" text-anchor="end">59%</text>
+  <text x="848" y="288" class="less" text-anchor="end">less Opus</text>
 
-  <text x="32" y="182" class="row">Everyday bug fixes</text>
-  <text x="32" y="201" class="note">7 SWE-bench tasks · 7/7 solved, same as plain</text>
-  <path d="M300 170 h192.8 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-192.8 z" fill="#3987e5"/>
-  <text x="505" y="184" class="val">41%</text>
-
-  <text x="32" y="242" class="row">The hardest bugs</text>
-  <text x="32" y="261" class="note">9 SWE-bench tasks · 5/9 solved vs 7/9 plain</text>
-  <path d="M300 230 h154.4 a4 4 0 0 1 4 4 v10 a4 4 0 0 1 -4 4 h-154.4 z" fill="#3987e5"/>
-  <text x="467" y="244" class="val">33%</text>
-  <text x="510" y="244" class="note">+ Sonnet cleanup</text>
+  <text x="32" y="338" class="row">9 of the hardest bugs</text>
+  <text x="208" y="338" class="note">5/9 solved vs 7/9 alone · a Sonnet helper did the leftovers</text>
+  <rect x="32" y="348" width="620" height="24" rx="5" fill="#4a4a47"/>
+  <text x="44" y="365" class="in">Alone · 3.0M</text>
+  <rect x="32" y="376" width="205" height="24" rx="5" fill="#3987e5"/>
+  <text x="44" y="393" class="in">Cheap Agent · 1.0M</text>
+  <text x="848" y="380" class="big" text-anchor="end">67%</text>
+  <text x="848" y="398" class="less" text-anchor="end">less Opus</text>
 </svg>

@@ -34,7 +34,7 @@ But that's exactly what happens every time Opus writes your code: the most expen
 ## The numbers
 
 <p align="center">
-  <img src="assets/chart.svg" width="880" alt="Opus tokens with Cheap Agent as a share of plain Claude Code: a feature in existing code 37 percent, both pass all tests; 7 everyday SWE-bench bug fixes 41 percent, 7 of 7 solved in both; 9 of the hardest SWE-bench bugs 33 percent plus Sonnet cleanup, 5 of 9 solved versus 7 of 9.">
+  <img src="assets/chart.svg" width="880" alt="Opus tokens, Claude Code alone versus with Cheap Agent. Adding a feature: 154k vs 57k, 63% less, both pass all tests. 7 everyday bug fixes: 1.6M vs 655k, 59% less, 7 of 7 solved by both. 9 of the hardest bugs: 3.0M vs 1.0M, 67% less, 5 of 9 solved vs 7 of 9, with a Sonnet helper doing the leftovers.">
 </p>
 
 Measured in Claude Code with Opus 5.5: the same agent and the same prompts, with and without Cheap Agent. The bug fixes are real issues from real open-source projects ([SWE-bench Verified](https://www.swebench.com)), graded by the official harness.
