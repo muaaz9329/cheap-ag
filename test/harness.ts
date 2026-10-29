@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
+import { join, sep } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -16,11 +16,10 @@ export function removeDir(dir: string) {
     rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   } catch (err) {
     if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EBUSY") {
-      const name = basename(dir);
       let holders = "";
       try {
         holders = execFileSync("powershell.exe", ["-NoProfile", "-Command",
-          `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${name}*' -or $_.ExecutablePath -like '*${name}*' } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List | Out-String -Width 400`
+          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'opencode|bash|^sh|rg|node|git|conhost|esbuild' } | Select-Object ProcessId,ParentProcessId,Name,CreationDate,ExecutablePath,CommandLine | Format-List | Out-String -Width 400`
         ]).toString();
       } catch {}
       console.error(`cheapag-test: EBUSY on ${dir}; processes:\n${holders}`);
