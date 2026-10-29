@@ -61,3 +61,12 @@ test("step ids accept s1 and step-2 forms and still reject duplicates after norm
   expect(parsePlan(plan("s1", "step-2")).steps.map((s) => s.id)).toEqual(["1", "2"]);
   expect(() => parsePlan(plan("1", "s1"))).toThrow("duplicate step id 1");
 });
+
+test("a step listing three or more changes is rejected; two numbered or any bullets pass", () => {
+  const plan = (doText: string) => `# P\n## 4 x\nfiles: a.txt\ndo:${doText}\ndone-when: done\n`;
+  const split = "step 4 lists 3 changes; one change per step: split it into 4a, 4b, … (needs: orders them)";
+  expect(() => parsePlan(plan("\n  1. one\n  2. two\n  3. three"))).toThrow(`line 4: ${split}`);
+  expect(() => parsePlan(plan(" 1) stable identity; 2) debounce; 3) drop focus refetch"))).toThrow(`line 4: ${split}`);
+  expect(parsePlan(plan("\n  1. one\n  2. two")).steps).toHaveLength(1);
+  expect(parsePlan(plan("\n  - a\n  - b\n  - c\n  - d")).steps).toHaveLength(1);
+});

@@ -61,16 +61,9 @@ test("independent groups run concurrently in their own worktrees, land in step o
   expect(text).toBe([
     `BATCH ${batch} groups=2 OK=2 landed=2 integration=none cost=$0.000`,
     `OK ${j1.job} step=1 files=1 +1/-0 tests=none turns=2 cost=$0.000`,
-    "summary: wrote a.txt",
-    "changed:",
-    "  A a.txt +1",
-    `log: .cheapag/jobs/${j1.job}/`,
     "",
     `OK ${j2.job} step=2 files=1 +1/-0 tests=none turns=2 cost=$0.000`,
-    "summary: wrote b.txt",
-    "changed:",
-    "  A b.txt +1",
-    `log: .cheapag/jobs/${j2.job}/`,
+    `full blocks: jobs show ${j1.job}, ${j2.job}`,
   ].join("\n"));
   expect([j1.step, j2.step]).toEqual(["1", "2"]);
   expect(inRepo("a.txt") && inRepo("b.txt")).toBe(true);
@@ -129,7 +122,8 @@ test("a dependency that did not land OK: the dependent group is not started and 
   const jobs = jobsIn(text);
   expect(text.split("\n")[0]).toMatch(/^BATCH b[0-9a-z]{4} groups=3 FAIL=2 OK=1 landed=1 integration=none cost=\$0\.000$/);
   const two = jobs.find((j) => j.step === "2")!;
-  expect(text).toContain(`FAIL ${two.job} step=2 files=0 +0/-0 turns=0 cost=$0.000\nreason: needs 1 (FAIL)\nlog: .cheapag/jobs/${two.job}/`);
+  expect(text).toContain(`FAIL ${two.job} step=2 files=0 +0/-0 turns=0 cost=$0.000\nreason: needs 1 (FAIL)\n\n`);
+  expect(text).not.toContain(`.cheapag/jobs/${two.job}/`); // compact: no log line
   expect(fake.recorded.sessions).toHaveLength(2); // step 2 never got a session
   expect(inRepo("c.txt")).toBe(true);
   expect(inRepo("b.txt")).toBe(false);

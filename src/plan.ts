@@ -16,7 +16,7 @@ export function parsePlan(source: string): Plan {
   const lines = source.split(/\r?\n/);
   let title: string | undefined;
   const context: string[] = [];
-  const steps: (PlanStep & { line: number })[] = [];
+  const steps: (PlanStep & { line: number; doLine?: number })[] = [];
   let field: string | undefined;
 
   lines.forEach((line, i) => {
@@ -45,6 +45,7 @@ export function parsePlan(source: string): Plan {
     const kv = line.match(/^([a-z][a-z-]*):\s?(.*)$/);
     if (kv) {
       field = kv[1];
+      if (field === "do") step.doLine = i + 1;
       step.fields[field] = kv[2].trim();
     } else if (/^ {2,}\S/.test(line) && field) {
       step.fields[field] += `\n${line.trim()}`;
@@ -60,8 +61,24 @@ export function parsePlan(source: string): Plan {
     if (missing.length) throw new Error(`step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`);
     const d = step.fields.difficulty;
     if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty)) throw new Error(`step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`);
+    const changes = countChanges(step.fields.do ?? "");
+    if (changes >= 3) throw new Error(`line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them)`);
   }
   return { title, context: context.join("\n").trim(), steps: steps.map(({ line, ...step }) => ({ ...step, text: step.text.trim() })) };
+}
+
+const MARK = "(?:\\d+[.)]|\\(\\d+\\)|[a-z][.)])";
+const LEAD = new RegExp(`^${MARK}\\s`);
+const INLINE = new RegExp(`[.;:] ${MARK}\\s`, "g");
+
+/** Numbered/lettered items in a `do:` text, at line start or inline after `.`, `;` or `:`; bullets are not counted. */
+function countChanges(text: string): number {
+  let n = 0;
+  for (const line of text.split("\n")) {
+    if (/^[-*] /.test(line)) continue;
+    n += +LEAD.test(line) + (line.match(INLINE)?.length ?? 0);
+  }
+  return n;
 }
 
 /** One job's worth of steps, run in order in one session. `label` is how Claude wrote it ("3", "3-5"). */

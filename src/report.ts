@@ -109,6 +109,12 @@ const STATUS_SECTIONS: Record<Exclude<JobStatus, "RUNNING">, Section[]> = {
   TIMEOUT: ["found", "reason", "missing", "worktree"],
   BUDGET: ["found", "reason", "worktree"],
 };
+// ticket 34: a batch block shows a settled job's action sections only (OK keeps risks:); every other status renders as today
+const COMPACT_SECTIONS: Partial<Record<Exclude<JobStatus, "RUNNING">, Section[]>> = {
+  OK: [],
+  PARTIAL: ["found", "missing", "worktree"],
+  FAIL: ["error", "found", "tried", "reason", "worktree"],
+};
 // D6 urgency; CANCELLED is not ranked by the spec and sits with BUDGET/TIMEOUT
 const URGENCY: JobStatus[] = ["BLOCKED", "CONFLICT", "FAIL", "BUDGET", "TIMEOUT", "CANCELLED", "PARTIAL", "RUNNING", "OK"];
 const rank = (s: JobStatus) => (s === "TIMEOUT" || s === "CANCELLED" ? URGENCY.indexOf("BUDGET") : URGENCY.indexOf(s));
@@ -126,13 +132,13 @@ const FULL: Cuts = { changed: 15, tried: Infinity, risks: 5, review: 5, error: I
 export const failBlock = (reason: string) => `FAIL reason: ${reason}`;
 
 /** A job block within `budget` tokens (chars/4), cutting in D9 order only while over it. Never cut: headline, question/options, conflict, reason, worktree, log. */
-export function renderJob(r: JobRecord, budget = BUDGET_TOKENS) {
+export function renderJob(r: JobRecord, budget = BUDGET_TOKENS, compact = false) {
   if (r.status === "RUNNING") return fit(`RUNNING ${r.job} step=${r.steps} turns=${r.usage.turns}`);
   let cuts = FULL;
-  let text = layout(r, cuts);
+  let text = layout(r, cuts, compact);
   const over = () => text.length / 4 > budget;
   const cut = (c: Partial<Cuts>) => {
-    if (over()) text = layout(r, (cuts = { ...cuts, ...c }));
+    if (over()) text = layout(r, (cuts = { ...cuts, ...c }), compact);
   };
   cut({ changed: 5 });
   cut({ tried: 1 });
@@ -143,9 +149,12 @@ export function renderJob(r: JobRecord, budget = BUDGET_TOKENS) {
   return text;
 }
 
-function layout(r: JobRecord, c: Cuts) {
-  const sections = STATUS_SECTIONS[r.status as Exclude<JobStatus, "RUNNING">];
+function layout(r: JobRecord, c: Cuts, compact = false) {
+  const status = r.status as Exclude<JobStatus, "RUNNING">;
+  const compacted = compact && status in COMPACT_SECTIONS;
+  const sections = compacted ? COMPACT_SECTIONS[status]! : STATUS_SECTIONS[status];
   const has = (s: Section) => sections.includes(s);
+  // ticket 34: a compacted batch block drops summary/changed/review/log (OK's risks: survive)
   const add = r.changed.reduce((n, x) => n + x.add, 0);
   const del = r.changed.reduce((n, x) => n + x.del, 0);
   const lines = [
@@ -158,16 +167,16 @@ function layout(r: JobRecord, c: Cuts) {
   ];
   const keep = new Set<string>(); // question/options lines are never elided
   // a worker with no summary has nothing to put there: `found:` leads instead
-  const lead = r.summary === NO_SUMMARY && has("found") && r.found;
+  const lead = !compacted && r.summary === NO_SUMMARY && has("found") && r.found;
   if (lead) lines.push(...wrap(`found: ${oneLine(r.found!)}`));
-  if (r.summary && !lead) lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
+  if (!compacted && r.summary && !lead) lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
   // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
-  if (r.changed.length && r.status !== "BLOCKED") {
+  if (!compacted && r.changed.length && r.status !== "BLOCKED") {
     lines.push("changed:", ...r.changed.slice(0, c.changed).map((x) => `  ${x.status} ${x.path}${x.add ? ` +${x.add}` : ""}${x.del ? ` -${x.del}` : ""}`));
     if (r.changed.length > c.changed) lines.push(`  … +${r.changed.length - c.changed} more`);
   }
-  if (r.risks.length) lines.push("risks:", ...r.risks.slice(0, c.risks).map((x) => `  - ${clip(oneLine(x), 120)}`));
-  if (r.review.length) lines.push(`review: ${r.review.slice(0, c.review).map((v) => `${v.path}:${v.start}-${v.end}`).join(", ")}`);
+  if ((!compacted || r.status === "OK") && r.risks.length) lines.push("risks:", ...r.risks.slice(0, c.risks).map((x) => `  - ${clip(oneLine(x), 120)}`));
+  if (!compacted && r.review.length) lines.push(`review: ${r.review.slice(0, c.review).map((v) => `${v.path}:${v.start}-${v.end}`).join(", ")}`);
   const asked = r.questions ?? (r.question ? [r.question] : []);
   if (has("question")) asked.forEach((question, n) => {
     const q = [`question${asked.length > 1 ? ` ${n + 1}` : ""}: ${oneLine(question.text)}`];
@@ -188,7 +197,7 @@ function layout(r: JobRecord, c: Cuts) {
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (has("missing") && r.missing.length) lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
   if (has("worktree") && r.worktree) lines.push(`worktree: ${r.worktree}/`);
-  lines.push(`log: .cheapag/jobs/${r.job}/`);
+  if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map((l) => (keep.has(l) ? l.replaceAll("\t", "  ") : fit(l))).join("\n");
 }
 
@@ -233,14 +242,17 @@ export function renderBatch(b: BatchRecord, jobs: JobRecord[], fix?: JobRecord) 
   const chunks = fix ? [renderJob(fix)] : [];
   sorted.forEach((j, i) => {
     if (j.status === "RUNNING" && sorted[i - 1]?.status === "RUNNING") chunks[chunks.length - 1] += `\n${renderJob(j)}`;
-    else chunks.push(renderJob(j));
+    else chunks.push(renderJob(j, BUDGET_TOKENS, true));
   });
   const blocked = sorted.find((j) => j.status === "BLOCKED");
   const next = [
     blocked && `reply(job="${blocked.job}", ...)`,
     (b.integration === "running" || sorted.some((j) => j.status === "BLOCKED" || j.status === "RUNNING")) && `jobs(action="wait", job="${b.batch}")`,
   ].filter(Boolean).join(" then ");
-  return [head.map(fit).join("\n"), chunks.join("\n\n"), next && fit(`next: ${next}`)].filter(Boolean).join("\n");
+  // only blocks that were compacted have more to show
+  const settled = sorted.filter((j) => j.status in COMPACT_SECTIONS).map((j) => j.job);
+  const full = settled.length ? fit(`full blocks: jobs show ${settled.join(", ")}`) : "";
+  return [head.map(fit).join("\n"), chunks.join("\n\n"), full, next && fit(`next: ${next}`)].filter(Boolean).join("\n");
 }
 
 /** D5 CONSENT: no job is created. */

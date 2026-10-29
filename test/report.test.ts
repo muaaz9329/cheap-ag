@@ -355,7 +355,7 @@ describe("D6 batch blocks", () => {
     ));
   });
 
-  test("completed: note, OK blocks separated by blank lines, no next:", () => {
+  test("completed: note, OK headlines only (no summary/changed/review/log), full-blocks line, no next:", () => {
     const ok = (id: string, steps: string, summary: string, cost: number, review: JobRecord["review"] = []) =>
       job({ job: id, status: "OK", landed: true, steps, tests: "pass", summary, review, usage: { turns: 5, costUsd: cost } });
     expect(renderBatch(batch({ integration: "pass", notes: ["steps 2,3 serialized (src/api/login.ts)"] }), [
@@ -366,18 +366,40 @@ describe("D6 batch blocks", () => {
       "BATCH b4k1x groups=3 OK=3 landed=3 integration=pass cost=$0.027",
       "note: steps 2,3 serialized (src/api/login.ts)",
       "OK j6a90 step=2 files=0 +0/-0 tests=pass turns=5 cost=$0.010",
-      "summary: limiter runs before lockout on POST /api/login",
-      "review: src/api/login.ts:12-30",
-      "log: .cheapag/jobs/j6a90/",
       "",
       "OK j6a91 step=1 files=0 +0/-0 tests=pass turns=5 cost=$0.013",
-      "summary: sliding-window redis limiter with tests",
-      "log: .cheapag/jobs/j6a91/",
       "",
       "OK j6a92 step=3 files=0 +0/-0 tests=pass turns=5 cost=$0.004",
-      "summary: documented 429 + Retry-After under /api/login",
-      "log: .cheapag/jobs/j6a92/",
+      "full blocks: jobs show j6a90, j6a91, j6a92",
     ));
+  });
+
+  test("one OK (with risks) and one FAIL: action sections only, then full blocks; jobs show of the OK keeps its summary", () => {
+    const okJob = job({
+      job: "j1", status: "OK", landed: true, steps: "1", summary: "wrote it", risks: ["touches the cache key"], review: [{ path: "a.ts", start: 1, end: 2 }],
+      changed: [ch("M", "a.ts", 1)],
+    });
+    const failJob = job({
+      job: "j2", status: "FAIL", steps: "2", summary: "should not show", error: ["`npm test`", "  ✗ boom"], found: "got partway", tried: ["fix 1: x"], reason: "gave up",
+      worktree: ".cheapag/worktrees/j2", changed: [ch("M", "b.ts", 1)],
+    });
+    expect(renderBatch(batch({ groups: ["1", "2"] }), [okJob, failJob])).toBe(block(
+      "BATCH b4k1x groups=2 FAIL=1 OK=1 landed=1 integration=pending cost=$0.000",
+      "FAIL j2 step=2 files=1 +1/-0 turns=0 cost=$0.000",
+      "error: `npm test`",
+      "  ✗ boom",
+      "found: got partway",
+      "tried:",
+      "  - fix 1: x",
+      "reason: gave up",
+      "worktree: .cheapag/worktrees/j2/",
+      "",
+      "OK j1 step=1 files=1 +1/-0 turns=0 cost=$0.000",
+      "risks:",
+      "  - touches the cache key",
+      "full blocks: jobs show j2, j1",
+    ));
+    expect(renderJob(okJob)).toContain("summary: wrote it");
   });
 
   test("wait=false: RUNNING only", () => {
@@ -427,10 +449,9 @@ describe("D6 batch blocks", () => {
       "log: .cheapag/jobs/j9f00/",
       "",
       "OK j1 step=1 files=0 +0/-0 tests=none turns=2 cost=$0.001",
-      "log: .cheapag/jobs/j1/",
       "",
       "OK j2 step=2 files=0 +0/-0 tests=none turns=2 cost=$0.001",
-      "log: .cheapag/jobs/j2/",
+      "full blocks: jobs show j1, j2",
     ));
   });
 
@@ -442,7 +463,7 @@ describe("D6 batch blocks", () => {
         "RUNNING j9f00 step=1 turns=3",
         "",
         "OK j1 step=1 files=0 +0/-0 turns=0 cost=$0.000",
-        "log: .cheapag/jobs/j1/",
+        "full blocks: jobs show j1",
         'next: jobs(action="wait", job="b4k1x")',
       ));
     expect(renderBatch(batch({ groups: ["1"], integration: "none" }), [ok]).split("\n")[0]).toBe("BATCH b4k1x groups=1 OK=1 landed=1 integration=none cost=$0.000");
