@@ -39,7 +39,7 @@ But that's exactly what happens every time Opus writes your code: the most expen
 
 Measured in Claude Code with Opus 5.5: the same agent and the same prompts, with and without Cheap Agent. The bug fixes are real issues from real open-source projects ([SWE-bench Verified](https://www.swebench.com)), graded by the official harness.
 
-**What we won't hide:**
+**What I won't hide:**
 - On the very hardest bugs it solved 5 of 9 where plain Opus solved 7.
 - On tiny jobs (a few lines, or a whole small app from nothing), Opus is already quick, so there's nothing to save.
 
@@ -116,7 +116,7 @@ Optional. Put a `cheapag.json` in a project:
 On its own, no. With a written task from Opus, a test it has to pass, and a referee that runs that test, yes, most of the time. When it isn't, it says so and Sonnet takes over.
 
 **Does Claude check the work?**
-The tests check the work, and Cheap Agent runs them. Opus checking every passing change cost three times the tokens and caught nothing in our runs, so it trusts a pass. You still review the diff before you commit.
+The tests check the work, and Cheap Agent runs them. Opus checking every passing change cost three times the tokens and caught nothing in my runs, so it trusts a pass. You still review the diff before you commit.
 
 **Where does my code go?**
 To the provider you picked, only after you run `/cheapag:allow` in that project, which also shows exactly which models will see it. Your API key stays on your machine, in a hidden prompt and a local credential store, never in chat.
