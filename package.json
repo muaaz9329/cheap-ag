@@ -1,6 +1,6 @@
 {
   "name": "cheap-agent",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Cut your Claude Code usage: Claude plans, a cheap model writes the code. One command to install.",
   "license": "Elastic-2.0",
   "author": "muaaz9329",

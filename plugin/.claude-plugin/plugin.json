@@ -1,7 +1,7 @@
 {
   "name": "cheapag",
   "displayName": "Cheap Agent",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Claude plans and reviews while a cheaper model implements: the cheapag MCP server, the plan-writing skill, status, allow, hook and clean commands, and an opt-in edit guard.",
   "author": { "name": "muaaz9329" },
   "keywords": ["delegation", "opencode", "mcp", "cost"]
