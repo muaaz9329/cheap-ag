@@ -3,9 +3,9 @@ name: clean
 description: Remove Cheap Agent's old worktrees and job logs now; --all removes everything not in flight.
 argument-hint: "[--all]"
 disable-model-invocation: true
-allowed-tools: Bash(npx -y cheap-agent@1.2.3 clean) Bash(npx -y cheap-agent@1.2.3 clean *)
+allowed-tools: Bash(npx -y cheap-agent@1.2.4 clean) Bash(npx -y cheap-agent@1.2.4 clean *)
 ---
 
-!`npx -y cheap-agent@1.2.3 clean $ARGUMENTS`
+!`npx -y cheap-agent@1.2.4 clean $ARGUMENTS`
 
 Report the result above to the user in one or two lines.
