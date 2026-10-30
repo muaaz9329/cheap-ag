@@ -2,7 +2,7 @@
   "name": "cheap-agent",
   "version": "1.2.3",
   "description": "Cut your Claude Code usage: Claude plans, a cheap model writes the code. One command to install.",
-  "license": "Elastic-2.0",
+  "license": "MIT",
   "author": "muaaz9329",
   "homepage": "https://github.com/muaaz9329/cheap-ag#readme",
   "repository": {

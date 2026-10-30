@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/for-Claude%20Code-111111?style=flat-square" alt="For Claude Code">
   <img src="https://img.shields.io/badge/cheap%20model-%C2%BD%C2%A2%20a%20task-111111?style=flat-square" alt="Cheap model: half a cent a task">
   <img src="https://img.shields.io/badge/tested%20on-SWE--bench%20Verified-111111?style=flat-square" alt="Tested on SWE-bench Verified">
-  <img src="https://img.shields.io/badge/license-Elastic%202.0-111111?style=flat-square" alt="Elastic License 2.0">
+  <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT License">
 </p>
 
 <p align="center">
@@ -166,8 +166,8 @@ Never. Changes land uncommitted. Your git, your call.
 **Why not just use Sonnet for everything?**
 Sonnet still costs real usage on every line it types. The cheap model types for half a cent. Sonnet only gets called when the cheap model is stuck.
 
-**Can I sell it as a service?**
-No. Use it, change it, share it, at any company, for free. Just don't host it and sell it ([Elastic License 2.0](./LICENSE)).
+**Can I use it at work, or build on it?**
+Yes. It's MIT licensed: use it, change it, share it, at any company, for free ([MIT License](./LICENSE)).
 
 **Why "Cheap Agent"?**
 Because your plan isn't.
