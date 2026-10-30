@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { BRIEF_FORMAT, REPRO_RULE, refTokens } from "../src/research.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { callText, slow, startServer, tempRepo, type Logins } from "./harness.js";
+import { callText, removeDir, slow, startServer, tempRepo, type Logins } from "./harness.js";
 
 /** Research through the MCP seam, with the fake OpenCode. Read-only enforcement itself: research-permissions.test.ts. */
 
@@ -264,4 +266,20 @@ test("a cost cap still aborts the session (only the turn cap leaves it live for 
   expect(await research({ question: "q" })).toMatch(/^BUDGET r\w{4} .*\nreason: job cap \(\$0.01\) reached\n/);
   expect(fake.recorded.aborts).toHaveLength(1);
   expect(fake.recorded.prompts).toHaveLength(1); // no partial prompt
+});
+
+test("a repository with no commits yet is refused before anything runs", async () => {
+  // tempRepo always commits, so build the bare-init repo inline
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-test-")));
+  onTestFinished(() => removeDir(dir));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  writeFileSync(join(dir, "README.md"), "# fixture\n"); // files, but no commit
+  const fake = await startFakeOpencode();
+  onTestFinished(fake.close);
+  const server = await startServer({ cwd: dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: [] });
+  onTestFinished(server.close);
+  const text = await callText(server.client, "research", { question: "where is auth?" });
+  expect(text).toBe('FAIL reason: this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"');
+  expect(fake.recorded.sessions).toEqual([]);
+  expect(existsSync(join(dir, ".cheapag", "jobs"))).toBe(false);
 });

@@ -11,7 +11,7 @@ import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
-import { createWorktree, git, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
+import { createWorktree, git, hasCommits, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
 import { checkAllows } from "./verify.js";
 
 /**
@@ -63,6 +63,7 @@ export async function research(
   } catch (err) {
     return failBlock((err as Error).message);
   }
+  if (!hasCommits(root)) return failBlock(`this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"`);
   const { limits } = config;
   const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
 

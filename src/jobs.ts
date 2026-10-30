@@ -12,7 +12,7 @@ import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted,
 import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
-  conflictPaths, createWorktree, git, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
+  conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
@@ -133,6 +133,7 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   } catch (err) {
     return failBlock((err as Error).message);
   }
+  if (!hasCommits(root)) return failBlock(`this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then delegate again: git add -A && git commit -m "start"`);
   const busy = operationInProgress(root);
   if (busy) return failBlock(`${busy} in the working tree; finish or abort it, then delegate again`);
 

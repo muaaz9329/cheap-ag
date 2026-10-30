@@ -25,6 +25,11 @@ export function projectRoot(cwd: string) {
   }
 }
 
+/** Whether the repository has at least one commit: a fresh `git init` has none, so HEAD cannot be resolved. */
+export function hasCommits(root: string) {
+  return spawnSync("git", [...GIT_ARGS, "rev-parse", "--verify", "--quiet", "HEAD"], { cwd: root, stdio: "pipe" }).status === 0;
+}
+
 /** What a job's worktree was started from; `base` is the tree its diff (and so its landing) is measured against. */
 export type Worktree = { path: string; head: string; stash: string | null; base: string; links: string[]; linked: string[] };
 

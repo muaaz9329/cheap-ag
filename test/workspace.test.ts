@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { callText, startServer, tempRepo } from "./harness.js";
+import { callText, removeDir, startServer, tempRepo } from "./harness.js";
 
 const REPORT = { summary: "did it", risks: [], review: [], missing: [] };
 const execGit = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir }).toString();
@@ -227,4 +228,22 @@ test("delegating during an in-progress merge is refused before any job starts", 
   expect(text).toBe("FAIL reason: a merge is in progress in the working tree; finish or abort it, then delegate again");
   expect(fake.recorded.sessions).toEqual([]);
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees"))).toBe(false);
+});
+
+test("a repository with no commits yet is refused before any job starts", async () => {
+  // tempRepo always commits, so build the bare-init repo inline
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-test-")));
+  onTestFinished(() => removeDir(dir));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  writeFileSync(join(dir, "README.md"), "# fixture\n"); // files, but no commit
+  mkdirSync(join(dir, ".plan"), { recursive: true });
+  writeFileSync(join(dir, ".plan", "p.md"), plan("out.txt exists"));
+  const fake = await startFakeOpencode();
+  onTestFinished(fake.close);
+  const server = await startServer({ cwd: dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: [] });
+  onTestFinished(server.close);
+  const text = await callText(server.client, "delegate", { plan: ".plan/p.md", steps: "1" });
+  expect(text).toBe('FAIL reason: this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then delegate again: git add -A && git commit -m "start"');
+  expect(fake.recorded.sessions).toEqual([]);
+  expect(existsSync(join(dir, ".cheapag", "jobs"))).toBe(false);
 });
