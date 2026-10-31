@@ -43,6 +43,8 @@ I've met a lot of students, mostly in developing countries, who really want Opus
 
 This is a small effort from my side. It won't make Opus ten times cheaper. But stretching the plan you already pay for is something, and something is better than nothing.
 
+📖 The full story (why I built it, how it works step by step, and the SWE-bench numbers): **[Cheap Agent: how I made my Claude plan last 2.2–2.7x longer](https://muaazkhan.me/blog/cheap-agent)**
+
 ## Install
 
 **Easiest:** paste this into Claude Code. It asks what you want, then gives you one command to run.
