@@ -1,5 +1,52 @@
-.DS_Store
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build output
 dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets (API keys live here, never commit)
+.env
+.env.*
+!.env.example
+
+# cheapAg runtime state: job logs, worker worktrees, transcripts
 .cheapag/
+
+# Local planning docs
+/tasks/
+
+# Logs
 *.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Local Claude Code settings (per-developer)
+.claude/settings.local.json
+
+# Benchmark run dirs and results are local
+bench/.runs/
+bench/results.jsonl
+bench/dashboard.html
+
+# Launch video renders and recorded takes (large binaries)
+docs/launch/video/out/
+docs/launch/video/public/takes/
+
+# Launch kit and video project: local only
+docs/launch/

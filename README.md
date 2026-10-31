@@ -49,14 +49,14 @@ This is a small effort from my side. It won't make Opus ten times cheaper. But s
 
 ```text
 Set up Cheap Agent (npm: cheap-agent) for me.
-1. Ask me: which provider (OpenRouter recommended, DeepSeek or OpenCode Go), and which
+1. Ask me: which provider (OpenRouter recommended, DeepSeek, OpenCode Go or Command Code), and which
    models (balanced is the default; cheapest, strongest, or my own provider/model).
 2. Check that node is 20+ and the claude CLI is installed.
 3. If I picked my own model, save {"models":{"implement":"<model>"}} in
    ~/.config/cheapag/config.json, keeping what else is there.
 4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice,
    or custom>, and which number to pick for my provider (1 OpenCode Go, 2 OpenRouter,
-   3 DeepSeek). I run it and type my API key there. Never ask for my key.
+   3 DeepSeek, 4 Command Code). I run it and type my API key there. Never ask for my key.
 5. When I say done, check `claude mcp list` shows cheapag, then tell me to run
    /cheapag:allow in a new Claude Code session in my project.
 ```
@@ -80,7 +80,7 @@ Then, in each project, once:
 **You need:**
 - [Claude Code](https://claude.com/claude-code)
 - [Node.js](https://nodejs.org) 20+
-- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com) or [OpenCode Go](https://opencode.ai)
+- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com), [OpenCode Go](https://opencode.ai) or [Command Code](https://commandcode.ai) (needs a plan with API access)
 
 A few dollars lasts hundreds of tasks. It runs on macOS and Linux.
 

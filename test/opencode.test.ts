@@ -131,6 +131,34 @@ test("an OpenRouter key never reaches output or config; the config denies data c
   });
 });
 
+test("a Command Code key never reaches output or config; the config declares the OpenAI-compatible provider and pins every route model", async () => {
+  const key = "sk-commandcodeSECRET0123456789abcdef";
+  // a version check that echoes the key forces it into the error path
+  const server = await startServer({ env: { CHEAPAG_OPENCODE_URL: await fakeHealth(key) }, logins: { commandcode: key } });
+  onTestFinished(server.close);
+  const text = await callText(server.client, "ping");
+  expect(text).toBe("FAIL reason: opencode version [redacted], expected 1.19.0; reinstall cheap-agent");
+  const config = readFileSync(join(server.home, ".cheapag", "opencode", "opencode.json"), "utf8");
+  expect(config).not.toContain(key);
+  expect(config).not.toContain("apiKey");
+  expect(config).not.toContain("sk-");
+  expect(JSON.parse(config)).toEqual({
+    $schema: "https://opencode.ai/config.json",
+    small_model: "commandcode/deepseek/deepseek-v4.1-flash",
+    provider: {
+      commandcode: {
+        // not in OpenCode's catalog: declared as an OpenAI-compatible provider, with a model entry for every route model
+        npm: "@ai-sdk/openai-compatible",
+        name: "Command Code",
+        options: { baseURL: "https://api.commandcode.ai/provider/v1" },
+        models: Object.fromEntries(
+          ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro"].map((id) => [id, { name: id }]),
+        ),
+      },
+    },
+  });
+});
+
 test("boots the bundled OpenCode lazily on localhost, restarts it after a crash, and kills its process group on exit", async () => {
   // PATH without Homebrew & co: only the bundled binary can be found
   const PATH = [dirname(process.execPath), "/usr/bin", "/bin"].join(":");

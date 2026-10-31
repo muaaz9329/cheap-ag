@@ -5,7 +5,7 @@ import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from "./harness.js";
 import { loadConfig } from "../src/config.js";
 import { parsePlan } from "../src/plan.js";
-import { clock, fullRoute, modelName, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import { clock, fullRoute, modelName, PRESETS, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
 import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
@@ -271,4 +271,18 @@ test("consent covers the tier models: the CONSENT block names them; one the allo
   const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1", difficulty: "hard" });
   expect(text.split("\n")[0]).toMatch(/^OK .* cost=\$0\.000$/);
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" });
+});
+
+// ---- commandcode presets and role defaults ----
+
+test("commandcode presets: cheapest and balanced implement on Flash, strongest on V4 Pro; roles default Flash with V4 Pro escalation", () => {
+  const implement = (models: ModelsConfig) => modelName(fullRoute("commandcode", models).implement);
+  expect(implement(PRESETS.commandcode.cheapest)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
+  expect(implement(PRESETS.commandcode.balanced)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
+  expect(implement(PRESETS.commandcode.strongest)).toBe("commandcode/deepseek/deepseek-v4-pro");
+
+  const route = fullRoute("commandcode");
+  expect(modelName(route.implement)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
+  expect(modelName(route.research!)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
+  expect(modelName(route.escalation!)).toBe("commandcode/deepseek/deepseek-v4-pro");
 });
