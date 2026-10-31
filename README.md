@@ -184,7 +184,7 @@ PRs are welcome, and I'm more than happy to merge them. Setup, where things live
 
 ## Update or remove
 
-New versions are announced on the [Releases page](https://github.com/muaaz9329/cheap-ag/releases).
+New versions are announced on the [Releases page](https://github.com/muaaz9329/cheap-ag/releases). Cheap Agent also tells you when a session starts if a new minor or major version is out; set `CHEAPAG_NO_UPDATE_CHECK=1` to turn that off.
 
 **Update:**
 

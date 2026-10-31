@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
-import { loadConfig } from "./config.js";
+import { createRequire } from "node:module";
+import { dirname, join, resolve, sep } from "node:path";
+import { loadConfig, userConfigFile } from "./config.js";
 import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
@@ -38,7 +39,7 @@ const flag = (root: string) => join(root, ".cheapag", "hook.json");
  * shows its state. `cheapag hook guard` is the plugin's PreToolUse hook (spec E6); `cheapag hook result` its PostToolUse
  * hook on cheapag's own tools, which starts the take-over budget (ticket 29).
  */
-export function hook(args: string[]): number {
+export function hook(args: string[]): number | Promise<number> {
   if (args.length === 1 && args[0] === "guard") return guard();
   if (args.length === 1 && args[0] === "context") return context();
   if (args.length === 1 && args[0] === "result") return result();
@@ -76,9 +77,86 @@ export function hook(args: string[]): number {
  */
 export const SESSION_CONTEXT = `Cheap Agent is connected: send every code change to its delegate tool (task: "<what to change, which files, how to check>"); its server instructions have the rules.`;
 
-function context(): number {
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: SESSION_CONTEXT } }) + "\n");
+const { version: INSTALLED } = createRequire(import.meta.url)("../package.json") as { version: string };
+const UPDATE_URL = "https://registry.npmjs.org/cheap-agent/latest";
+// once a day is enough for a notice the user cannot act on mid-session (Claude Code's own check is the same shape)
+const DAY_MS = 24 * 60 * 60 * 1000;
+const updateCacheFile = () => join(dirname(userConfigFile()), "update-check.json");
+type UpdateCache = { checked?: number; latest?: string };
+
+/**
+ * The SessionStart output: the delegate pointer, plus a Claude-Code-style update notice when a new minor or major
+ * version is out. The version check never throws or prints: a registry that is slow, offline or broken just leaves the
+ * session's context byte-identical.
+ */
+async function context(): Promise<number> {
+  const latest = await newerVersion();
+  // The terminal notice is yellow, except in the desktop app, which renders no colours; there the sentence Claude
+  // reads in additionalContext is what surfaces the update.
+  const systemMessage = latest && colour(`Cheap Agent ${latest} is available (you have ${INSTALLED}). Update: npx cheap-agent@latest`);
+  const additionalContext = latest
+    ? `${SESSION_CONTEXT} Cheap Agent ${latest} is available (the user has ${INSTALLED}): at the start of your first reply, tell the user in one line to update with \`npx cheap-agent@latest\`.`
+    : SESSION_CONTEXT;
+  process.stdout.write(JSON.stringify({
+    ...(systemMessage && { systemMessage }),
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext },
+  }) + "\n");
   return 0;
+}
+
+/** Wraps the notice in yellow, except in the desktop app, which does not render terminal colours. */
+const colour = (text: string) => (process.env.CLAUDE_CODE_ENTRYPOINT === "claude-desktop" ? text : `\x1b[33m${text}\x1b[39m`);
+
+/** The newer version to announce, or undefined when the installed version is current (or the check is opted out). */
+async function newerVersion(): Promise<string | undefined> {
+  if (process.env.CHEAPAG_NO_UPDATE_CHECK === "1") return;
+  const latest = await latestVersion();
+  if (!latest || !majorOrMinorNewer(latest, INSTALLED)) return;
+  return latest;
+}
+
+/**
+ * The registry's latest version, cached next to the user config for a day. A fresh cache is used as-is with no network
+ * call; a stale one is refreshed with a 1.5 s timeout, and any failure still writes the new `checked` time (with the
+ * old latest) so an offline machine does not retry on every session.
+ */
+async function latestVersion(): Promise<string | undefined> {
+  const file = updateCacheFile();
+  let cache: UpdateCache = {};
+  try {
+    cache = JSON.parse(readFileSync(file, "utf8")) as UpdateCache;
+  } catch {
+    // no usable cache: check now
+  }
+  if (typeof cache.checked === "number" && Date.now() - cache.checked < DAY_MS) return cache.latest || undefined;
+  let latest = cache.latest || undefined;
+  try {
+    const res = await fetch(UPDATE_URL, { signal: AbortSignal.timeout(1500) });
+    const body = (await res.json()) as { version?: unknown };
+    if (typeof body.version === "string") latest = body.version;
+  } catch {
+    // offline, slow or malformed: keep the old latest (or none)
+  }
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ checked: Date.now(), latest: latest ?? "" }));
+  } catch {
+    // the notice must never break the session
+  }
+  return latest;
+}
+
+/** True when `release` is a newer major or minor than `installed`; a patch-only bump is ignored, as is any non x.y.z. */
+function majorOrMinorNewer(release: string, installed: string): boolean {
+  const [a, b] = [nums(release), nums(installed)];
+  if (!a || !b) return false;
+  return a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+}
+
+/** A version as numbers, only when it is exactly x.y.z; anything else (a tag, a range) is ignored. */
+function nums(v: string): readonly [number, number, number] | undefined {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
 }
 
 /**

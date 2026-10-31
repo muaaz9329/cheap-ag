@@ -1,7 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
+import { SESSION_CONTEXT } from "../src/hook.js";
 import { gitBash } from "../src/platform.js";
 import { hermeticHome, serverEntry, slow, tempRepo } from "./harness.js";
 
@@ -116,11 +117,59 @@ test("guard_lines comes from the repo's cheapag.json", () => {
 });
 
 test("context: the SessionStart hook prints a one-line pointer to delegate; the rules stay in the server instructions", () => {
-  const out = JSON.parse(execFileSync(process.execPath, [serverEntry, "hook", "context"], { encoding: "utf8" }));
+  // a fresh cache means the update check makes no network call
+  const out = contextOut({ checked: Date.now(), latest: version }, { CLAUDE_CODE_ENTRYPOINT: "cli" });
   expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
   expect(out.hookSpecificOutput.additionalContext).toContain("delegate tool");
   expect(out.hookSpecificOutput.additionalContext).toContain('task: "<what to change, which files, how to check>"');
   expect(out.hookSpecificOutput.additionalContext.length).toBeLessThan(250); // rewritten every session, after the cache breakpoint
+  expect(out.systemMessage).toBeUndefined();
+});
+
+/** Runs `hook context` hermetically, with a fresh cache the caller controls, so no test can touch the network or ~/.config. */
+function contextOut(cache: { checked: number; latest: string }, extraEnv: Record<string, string> = {}) {
+  const { home, env } = hermeticHome();
+  onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+  const dir = join(home, "config", "cheapag");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "update-check.json"), JSON.stringify(cache));
+  return JSON.parse(execFileSync(process.execPath, [serverEntry, "hook", "context"], { env: { ...env, ...extraEnv }, encoding: "utf8" }));
+}
+
+test("context: a newer minor or major version adds a yellow systemMessage and tells Claude to prompt the update", () => {
+  const [major, minor] = version.split(".").map(Number);
+  for (const latest of [`${major}.${minor + 1}.0`, `${major + 1}.0.0`]) {
+    const out = contextOut({ checked: Date.now(), latest }, { CLAUDE_CODE_ENTRYPOINT: "cli" });
+    expect(out.systemMessage).toBe(`\x1b[33mCheap Agent ${latest} is available (you have ${version}). Update: npx cheap-agent@latest\x1b[39m`);
+    expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(out.hookSpecificOutput.additionalContext).toContain(latest);
+    expect(out.hookSpecificOutput.additionalContext).toContain("npx cheap-agent@latest");
+    expect(out.hookSpecificOutput.additionalContext).toContain(`${SESSION_CONTEXT} Cheap Agent ${latest} `);
+  }
+});
+
+test("context: in the desktop app the systemMessage has no colour but Claude is still told about the update", () => {
+  const [major, minor] = version.split(".").map(Number);
+  const latest = `${major}.${minor + 1}.0`;
+  const out = contextOut({ checked: Date.now(), latest }, { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" });
+  expect(out.systemMessage).not.toContain("\x1b[");
+  expect(out.systemMessage).toBe(`Cheap Agent ${latest} is available (you have ${version}). Update: npx cheap-agent@latest`);
+  expect(out.hookSpecificOutput.additionalContext).toContain(latest);
+  expect(out.hookSpecificOutput.additionalContext).toContain("npx cheap-agent@latest");
+});
+
+test("context: a newer patch alone does not notify", () => {
+  const [major, minor, patch] = version.split(".").map(Number);
+  const out = contextOut({ checked: Date.now(), latest: `${major}.${minor}.${patch + 1}` }, { CLAUDE_CODE_ENTRYPOINT: "cli" });
+  expect(out.systemMessage).toBeUndefined();
+  expect(out.hookSpecificOutput.additionalContext).toBe(SESSION_CONTEXT);
+});
+
+test("context: CHEAPAG_NO_UPDATE_CHECK=1 skips the check even when the cache has a newer minor", () => {
+  const [major, minor] = version.split(".").map(Number);
+  const out = contextOut({ checked: Date.now(), latest: `${major}.${minor + 1}.0` }, { CHEAPAG_NO_UPDATE_CHECK: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
+  expect(out.systemMessage).toBeUndefined();
+  expect(out.hookSpecificOutput.additionalContext).toBe(SESSION_CONTEXT);
 });
 
 const FAIL_BLOCK = "FAIL jab12 step=1 files=0 +0/-0 tests=pass turns=12 cost=$0.003\nfound: django/db/models/query.py:only(), proxy model pk\nreason: no reproduction test by turn 12";
