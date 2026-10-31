@@ -131,11 +131,23 @@ export function writeConfigDir(dir: string, config: string) {
   writeFileSync(join(dir, "opencode.json"), config);
 }
 
+const COMMAND_CODE = {
+  npm: "@ai-sdk/openai-compatible",
+  name: "Command Code",
+  options: { baseURL: "https://api.commandcode.ai/provider/v1" },
+};
+
 /** The generated opencode.json for the route's models: their options (e.g. OpenRouter routing) and the small model. */
 function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
   const models = Object.fromEntries(routeModels(route).filter((m) => m.options).map((m) => [m.id, { options: m.options }]));
-  const providerConfig = Object.keys(models).length ? { models } : {};
+  const providerConfig: Record<string, unknown> = Object.keys(models).length ? { models } : {};
+  // Command Code is not in OpenCode's catalog: declare it as an OpenAI-compatible provider (the key still comes from the auth store)
+  if (provider.provider === "commandcode") {
+    Object.assign(providerConfig, COMMAND_CODE, {
+      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }])),
+    });
+  }
   const config = {
     $schema: "https://opencode.ai/config.json",
     // OpenCode otherwise sends title generation to its own default small model, i.e. another provider the user never chose;
