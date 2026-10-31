@@ -32,6 +32,8 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
     escalation: "z-ai/glm-5.3-flash",
   },
   deepseek: { implement: ["deepseek-flash"], research: ["deepseek-flash"], escalation: "deepseek-v4-pro" },
+  // Command Code's Provider API (OpenAI-compatible); ids from api.commandcode.ai/provider/v1/models (checked 2026-10-31)
+  commandcode: { implement: ["deepseek/deepseek-v4.1-flash"], research: ["deepseek/deepseek-v4.1-flash"], escalation: "deepseek/deepseek-v4-pro" },
 };
 
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
@@ -56,6 +58,12 @@ export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
     cheapest: { implement: "deepseek/deepseek-flash" },
     balanced: { implement: "deepseek/deepseek-flash" },
     strongest: { implement: "deepseek/deepseek-v4-pro" },
+  },
+  // Command Code serves DeepSeek only here: strongest implements on V4 Pro
+  commandcode: {
+    cheapest: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
+    balanced: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
+    strongest: { implement: "commandcode/deepseek/deepseek-v4-pro" },
   },
 };
 

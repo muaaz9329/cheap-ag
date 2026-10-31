@@ -9,6 +9,7 @@ export const PROVIDERS = [
   { id: "opencode-go", label: "OpenCode Go" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
+  { id: "commandcode", label: "Command Code" },
 ] as const;
 
 export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" };
