@@ -25,6 +25,10 @@
   <strong>Your Claude plan lasts longer. Your code still ships with tests.</strong>
 </p>
 
+<p align="center">
+  ⭐ Star it, and click <strong>Watch → Custom → Releases</strong> to hear when new versions ship.
+</p>
+
 ---
 
 You know the principal engineer. Twenty years in. Sees the whole system at once. Costs a fortune per hour.
@@ -174,7 +178,13 @@ Yes. It's MIT licensed: use it, change it, share it, at any company, for free ([
 **Why "Cheap Agent"?**
 Because your plan isn't.
 
+## Contributing
+
+PRs are welcome, and I'm more than happy to merge them. Setup, where things live, and how to add a provider are in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
 ## Update or remove
+
+New versions are announced on the [Releases page](https://github.com/muaaz9329/cheap-ag/releases).
 
 **Update:**
 
