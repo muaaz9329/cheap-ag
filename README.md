@@ -51,6 +51,8 @@ This is a small effort from my side. It won't make Opus ten times cheaper. But s
 
 ## Install
 
+For the experimental Codex desktop/CLI integration, see [Codex setup and isolation](#codex-setup-and-isolation). The instructions below are for Claude Code.
+
 **Easiest:** paste this into Claude Code. It asks what you want, then gives you one command to run.
 
 ```text
@@ -94,6 +96,70 @@ A few dollars lasts hundreds of tasks. It runs on macOS and Linux.
 - The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
 - If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
 - The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
+
+## Codex setup and isolation
+
+**Experimental:** this source adds a `cheapcode` MCP launcher for Codex desktop and CLI. Automated tests cover the launcher, consent, storage isolation and simulated worker edits. Interactive Codex sessions and paid provider requests still need end-to-end testing. The Claude benchmarks below do not measure Codex savings.
+
+### What changed, and why
+
+- Added `cheapcode` alongside `cheapag`, sharing the existing worker, provider routing, checks and landing engine. Fixes to that engine apply to both integrations.
+- Gave Codex its own credentials, configuration, consent, logs, worktrees, locks, spend ledger, cache and temporary files, so it does not reuse Claude's approval or overwrite its runtime state.
+- Added Codex-specific MCP instructions that preserve the host's review and approval requirements. Codex does not install Claude hooks, read Claude session transcripts or request Claude's Sonnet subagents.
+- Kept the existing Claude entry point and installation flow. Workers exclude untracked state folders from both integrations when copying the project and cannot edit either integration's configuration file.
+
+### Build and connect
+
+Use a checkout containing this change; the released npm package may not include it yet. From that checkout, with Node.js 20.11+ and Git installed:
+
+```sh
+npm ci
+npm run build
+npm install --global .
+cheapcode login
+```
+
+Login opens the bundled OpenCode provider-login flow. Choose one of Cheap Agent's supported providers: OpenRouter, DeepSeek, OpenCode Go or Command Code. Enter the key in your terminal, never in chat. This login is separate from Claude's login; it does not install a Claude plugin. Model defaults are shared with the existing engine; `--preset` is a Claude installer option and is not supported by `cheapcode login`.
+
+In the project you want Codex to work on, add the following to `.codex/config.toml`, preserving existing settings. Replace both example paths with absolute paths for your machine:
+
+```toml
+[mcp_servers.cheapcode]
+command = "node"
+args = ["/absolute/path/to/cheap-ag/dist/codex.js"]
+cwd = "/absolute/path/to/your-project"
+tool_timeout_sec = 1800
+```
+
+On Windows, use forward slashes in TOML paths, for example `C:/projects/cheap-ag/dist/codex.js`. `cwd` must point to the target Git repository, not the plugin's source checkout. Project configuration requires a trusted project. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp) for configuration and trust details.
+
+Restart the Codex session after configuring the server. Ask it to call `cheapcode`'s `ping` tool, then request a small research or code task. When shown the consent message, review the provider and retention details and run the appropriate command **yourself**, from the target repository:
+
+```sh
+cheapcode allow
+# Or restrict the allowed models:
+cheapcode allow --zdr-only
+cheapcode allow --models provider/model
+```
+
+These are alternative consent choices. `--zdr-only` may leave no usable models for a provider. An OK worker edit lands uncommitted; review the diff and run relevant checks before committing it. `cheapcode status` shows this integration's state, and `cheapcode clean --all` removes eligible jobs and worktrees while preserving consent.
+
+### Separate paths
+
+`CHEAPCODE_HOME` defaults to `~/.cheapcode` (on Windows, the user's home directory). If overridden, it must be an absolute, dedicated directory. Set the same value for terminal commands and in `[mcp_servers.cheapcode.env]`; otherwise the terminal and MCP server will use different logins.
+
+| Data | Claude entry point | Codex entry point |
+| --- | --- | --- |
+| Project settings | `cheapag.json` | `cheapcode.json` |
+| Project runtime state | `.cheapag/` | `.cheapcode/` |
+| User settings | `$XDG_CONFIG_HOME/cheapag/config.json`, default `~/.config/cheapag/config.json` | `$CHEAPCODE_HOME/config/cheapcode/config.json` |
+| Provider logins | `$XDG_DATA_HOME/opencode/auth.json`, default `~/.local/share/opencode/auth.json` | `$CHEAPCODE_HOME/data/opencode/auth.json` |
+| Spend ledger | `$XDG_STATE_HOME/cheapag/spend.jsonl`, default `~/.local/state/cheapag/spend.jsonl` | `$CHEAPCODE_HOME/state/cheapcode/spend.jsonl` |
+| Engine data, cache and temporary files | Existing OpenCode/XDG locations | Under `$CHEAPCODE_HOME/{data,config,cache,state,tmp}` |
+
+`cheapcode.json` accepts the existing configuration schema. Claude-only host settings (`hard_tasks`, `takeover`, `limits.takeover_calls`) do not configure Codex's host behavior. Codex resets inherited OpenCode and `CHEAPAG_*` overrides, and disables OpenCode's project configuration and external Claude/agent skill loading. It does not migrate existing credentials or settings. Its runtime folder contains its own `.gitignore` after consent; always review staged files before committing.
+
+**Separate runtime files do not make simultaneous edits to one checkout safe.** The integrations have independent landing locks. If both will run at once, use two independent Git clones of the project being edited, for example `project-claude` and `project-codex`, and point each host at its own clone. Git worktrees still share Git metadata. Separate clones are not required merely to keep settings separate. Provider quotas and billing remain shared if both logins use the same provider account; their local spend ledgers do not combine usage.
 
 ## The numbers
 

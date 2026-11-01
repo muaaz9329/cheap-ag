@@ -1,3 +1,4 @@
+import { stateDir, codex, allowCommand } from "./runtime.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
@@ -15,7 +16,7 @@ export type ConsentMode = "all" | "zdr-only" | "models";
 /** `route`: the models the CONSENT block listed when all or zero-retention was given; a preset or `models` change that alters it asks again. */
 export type Consent = { mode: ConsentMode; provider: Provider["provider"]; models?: string[]; route?: string[]; approvedAt: string };
 
-const file = (root: string) => join(root, ".cheapag", "consent.json");
+const file = (root: string) => join(root, stateDir, "consent.json");
 
 /** The repo's consent, or undefined when there is none (a damaged record counts as none; `cheapag allow` rewrites it). */
 export function readConsent(root: string): Consent | undefined {
@@ -31,7 +32,8 @@ export function readConsent(root: string): Consent | undefined {
 }
 
 export function writeConsent(root: string, consent: Consent) {
-  mkdirSync(join(root, ".cheapag"), { recursive: true });
+  mkdirSync(join(root, stateDir), { recursive: true });
+  if (codex && !existsSync(join(root, stateDir, ".gitignore"))) writeFileSync(join(root, stateDir, ".gitignore"), "*\n");
   // an explicit model list bounds the recipients by itself; the other modes are tied to the route they were shown
   const route = consent.mode === "models" ? undefined : routeNames(fullRoute(consent.provider, configuredModels(root)));
   writeFileSync(file(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
@@ -92,7 +94,7 @@ export function consentGate(root: string, provider: Provider["provider"]): { blo
   const zdr = consent.mode === "zdr-only" && provider === "openrouter";
   const pick = (ms: (WorkerModel | undefined)[]) => ms.filter((m): m is WorkerModel => !!m && allowed(provider, consent, m)).map((m) => (zdr ? withZdr(m) : m));
   const [implement, ...fallbacks] = pick([full.implement, ...full.fallbacks, full.escalation]);
-  if (!implement) return { block: failBlock(`no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`) };
+  if (!implement) return { block: failBlock(`no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with ${allowCommand}`) };
   const [escalation] = pick([full.escalation]);
   const others = (m: WorkerModel) => modelName(m) !== modelName(implement) && modelName(m) !== modelName(escalation ?? implement);
   // research with nothing of its own allowed runs on the implement chain
@@ -137,6 +139,8 @@ function consentBlock(root: string, provider: Provider["provider"], full: Route)
     repo: basename(root),
     send: `code from this repo → ${providerLabel(provider)}: ${ids}`,
     retention: retentionLine,
-    approve: "ask the user to run /cheapag:allow (all) or /cheapag:allow --zdr-only (terminal: npx cheap-agent allow [--zdr-only | --models a,b]); never approve yourself",
+    approve: codex
+      ? "ask the user to run cheapcode allow [--zdr-only | --models a,b] in their terminal; never approve yourself"
+      : "ask the user to run /cheapag:allow (all) or /cheapag:allow --zdr-only (terminal: npx cheap-agent allow [--zdr-only | --models a,b]); never approve yourself",
   });
 }

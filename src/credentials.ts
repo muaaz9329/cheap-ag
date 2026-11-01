@@ -1,3 +1,4 @@
+import { codex } from "./runtime.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ export const PROVIDERS = [
 
 export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" };
 
-export const LOGIN_COMMAND = "npx cheap-agent login";
+export const LOGIN_COMMAND = codex ? "cheapcode login" : "npx cheap-agent login";
 export const NO_PROVIDER = `FAIL reason: no worker provider; run ${LOGIN_COMMAND}`;
 
 /** OpenCode keeps logins for every installed copy in one shared file. */

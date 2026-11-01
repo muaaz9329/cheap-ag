@@ -1,3 +1,4 @@
+import { appName, codex } from "./runtime.js";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credenti
 import { modelName, routeModels } from "./routing.js";
 import { projectRoot } from "./workspace.js";
 
-const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]";
+const USAGE = `usage: ${appName} allow [--zdr-only | --models <provider/model,…>]`;
 
 /**
  * `cheapag allow`: the developer's opt-in for the current repo (spec: Consent). Non-interactive, so the plugin's
@@ -44,7 +45,7 @@ export function allow(args: string[]): number {
   if ("block" in gate) out(`! ${gate.block}`);
   else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
   // .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
-  if (spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0) {
+  if (!codex && spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0) {
     mkdirSync(join(root, ".git", "info"), { recursive: true });
     appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
     out("✓ .cheapag/ added to .git/info/exclude (local, never committed)");

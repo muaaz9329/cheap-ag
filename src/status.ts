@@ -1,3 +1,4 @@
+import { appName, allowCommand, codex } from "./runtime.js";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -20,11 +21,11 @@ const RECENT = 5;
 export function status(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
   if (args.length) {
-    out("✗ usage: cheapag status");
+    out(`✗ usage: ${appName} status`);
     return 1;
   }
   const provider = detectProvider()?.provider;
-  out(`cheapag ${version} provider=${provider ? `${provider} preset=${presetHere(provider)}` : `none (run ${LOGIN_COMMAND})`}`);
+  out(`${appName} ${version} provider=${provider ? `${provider} preset=${presetHere(provider)}` : `none (run ${LOGIN_COMMAND})`}`);
 
   let root: string | undefined;
   try {
@@ -34,9 +35,9 @@ export function status(args: string[]): number {
   }
   if (root) {
     const consent = readConsent(root);
-    out(`consent: ${!consent ? "not given; run /cheapag:allow"
-      : consent.provider !== provider ? `given for ${providerLabel(consent.provider)}, not the current provider; run /cheapag:allow`
-      : routeMoved(root, consent) ? "given for other worker models (preset or models changed); run /cheapag:allow"
+    out(`consent: ${!consent ? `not given; run ${allowCommand}`
+      : consent.provider !== provider ? `given for ${providerLabel(consent.provider)}, not the current provider; run ${allowCommand}`
+      : routeMoved(root, consent) ? `given for other worker models (preset or models changed); run ${allowCommand}`
       : `${describe(consent)} (since ${consent.approvedAt.slice(0, 10)})`}`);
     const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
     const inFlight = (r: (typeof all)[number]) => r.status === "RUNNING" || r.status === "BLOCKED";
@@ -49,7 +50,7 @@ export function status(args: string[]): number {
     out(rest.length ? "recent:" : "recent: none");
     rest.slice(0, RECENT).forEach((r) => out(headline(r)));
     if (rest.length > RECENT) out(`  … +${rest.length - RECENT} older (jobs list)`);
-    const last = lastSession(root);
+    const last = codex ? undefined : lastSession(root);
     if (last) {
       out(`claude prefix: ${(last.prefix / 1000).toFixed(1)}k tokens on the first turn of the last session here (${last.at.slice(0, 10)}); see "What it costs to keep in context" in the plugin README`);
       out(`claude cache: ${last.requests} requests, ${Math.round(last.hitRate * 100)}% of input from cache${last.ttl ? `, ${last.ttl} TTL` : ""}`);

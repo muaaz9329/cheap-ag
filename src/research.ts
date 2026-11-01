@@ -1,3 +1,4 @@
+import { stateDir } from "./runtime.js";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, basename, join, relative } from "node:path";
@@ -290,7 +291,7 @@ function capWords(text: string, max: number) {
 function newResearch(root: string) {
   for (;;) {
     const id = `r${randomBytes(4).readUInt32BE().toString(36).slice(-4).padStart(4, "0")}`;
-    const dir = join(root, ".cheapag", "jobs", id);
+    const dir = join(root, stateDir, "jobs", id);
     if (existsSync(dir)) continue;
     mkdirSync(dir, { recursive: true });
     return { id, dir };

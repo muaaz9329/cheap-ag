@@ -43,9 +43,10 @@ export function hermeticHome(logins: Logins = {}) {
 
 /** The CLI env for a hermetic home, e.g. a running server's, to run `allow` or `login` beside it. */
 export function homeEnv(home: string) {
-  const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
+  const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, CHEAPCODE_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
   return {
     ...inherited,
+    CHEAPCODE_HOME: home,
     XDG_DATA_HOME: join(home, "data"),
     XDG_CONFIG_HOME: join(home, "config"),
     XDG_CACHE_HOME: join(home, "cache"),
@@ -54,8 +55,8 @@ export function homeEnv(home: string) {
 }
 
 /** Runs the real `cheapag allow <args>` in `cwd`, the way the developer opts a repo in; returns its output. */
-export function allowRepo(cwd: string, env: Record<string, string>, args: string[] = []) {
-  return execFileSync(process.execPath, [serverEntry, "allow", ...args], { cwd, env, stdio: "pipe" }).toString();
+export function allowRepo(cwd: string, env: Record<string, string>, args: string[] = [], entry = serverEntry) {
+  return execFileSync(process.execPath, [entry, "allow", ...args], { cwd, env, stdio: "pipe" }).toString();
 }
 
 /**
@@ -63,12 +64,12 @@ export function allowRepo(cwd: string, env: Record<string, string>, args: string
  * Hermetic (see `hermeticHome`); `cwd` defaults to that home, so `.cheapag/` never lands in this repo.
  * `allow` first opts the cwd's repo in through the real CLI (`[]` = all models), as the developer would.
  */
-export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[]; allow?: string[] } = {}) {
+export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[]; entry?: string; allow?: string[] } = {}) {
   const { home, env } = hermeticHome(opts.logins);
-  if (opts.allow) allowRepo(opts.cwd ?? home, { ...env, ...opts.env }, opts.allow);
+  if (opts.allow) allowRepo(opts.cwd ?? home, { ...env, ...opts.env }, opts.allow, opts.entry);
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [...(opts.nodeArgs ?? []), serverEntry],
+    args: [...(opts.nodeArgs ?? []), opts.entry ?? serverEntry],
     cwd: opts.cwd ?? home,
     env: { ...env, ...opts.env },
     stderr: "inherit",

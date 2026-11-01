@@ -24,7 +24,8 @@
   ],
   "type": "module",
   "bin": {
-    "cheapag": "dist/index.js"
+    "cheapag": "dist/index.js",
+    "cheapcode": "dist/codex.js"
   },
   "files": [
     "dist",
