@@ -1,6 +1,6 @@
 {
   "name": "cheap-agent",
-  "description": "Cheap Agent: Claude plans and reviews while a cheaper model implements, over MCP.",
+  "description": "Cheap Agent: your frontier model plans and reviews while a cheaper model implements, over MCP.",
   "owner": { "name": "muaaz9329" },
   "plugins": [
     {

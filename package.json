@@ -1,7 +1,7 @@
 {
   "name": "cheap-agent",
   "version": "1.2.7",
-  "description": "Cut your Claude Code usage: Claude plans, a cheap model writes the code. One command to install.",
+  "description": "Make your Claude Code or Codex plan last longer: your frontier model plans, a cheap model writes the code. One command to install.",
   "license": "MIT",
   "author": "muaaz9329",
   "homepage": "https://github.com/muaaz9329/cheap-ag#readme",
@@ -20,7 +20,9 @@
     "deepseek",
     "openrouter",
     "cost",
-    "delegation"
+    "delegation",
+    "codex",
+    "openai-codex"
   ],
   "type": "module",
   "bin": {
