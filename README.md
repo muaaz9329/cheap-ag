@@ -29,26 +29,6 @@
   ⭐ Star it, and click <strong>Watch → Custom → Releases</strong> to hear when new versions ship.
 </p>
 
----
-
-You know the principal engineer. Twenty years in. Sees the whole system at once. Costs a fortune per hour.
-
-You would never pay them to type out a CSV exporter.
-
-But that's exactly what happens every time your frontier model (Claude Opus, GPT-6 Astra or Sol) writes your code: the most expensive model you have, reading files, typing boilerplate, re-running tests, burning through your plan.
-
-**Cheap Agent fixes the org chart.** Your frontier model plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
-
-## Why I built this
-
-The idea: get **$200-plan usage out of the $100 Claude plan**, and **$50–70 worth out of the $20 plan**, with a few dollars of DeepSeek doing the typing.
-
-I've met a lot of students, mostly in developing countries, who really want Opus for the hard problems and simply can't afford $100 a month. I wanted to find something that helps them.
-
-This is a small effort from my side. It won't make Opus ten times cheaper. But stretching the plan you already pay for is something, and something is better than nothing.
-
-📖 The full story (why I built it, how it works step by step, and the SWE-bench numbers): **[Cheap Agent: how I made my Claude plan last 2.2–2.7x longer](https://muaazkhan.me/blog/cheap-agent)**
-
 ## Install
 
 Works in Claude Code and Codex. One login covers both.
@@ -125,6 +105,26 @@ A few dollars lasts hundreds of tasks. It runs on macOS, Linux and Windows.
 - If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
 - The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
 
+---
+
+You know the principal engineer. Twenty years in. Sees the whole system at once. Costs a fortune per hour.
+
+You would never pay them to type out a CSV exporter.
+
+But that's exactly what happens every time your frontier model (Claude Opus, GPT-6 Astra or Sol) writes your code: the most expensive model you have, reading files, typing boilerplate, re-running tests, burning through your plan.
+
+**Cheap Agent fixes the org chart.** Your frontier model plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
+
+## Why I built this
+
+The idea: get **$200-plan usage out of the $100 Claude plan**, and **$50–70 worth out of the $20 plan**, with a few dollars of DeepSeek doing the typing.
+
+I've met a lot of students, mostly in developing countries, who really want Opus for the hard problems and simply can't afford $100 a month. I wanted to find something that helps them.
+
+This is a small effort from my side. It won't make Opus ten times cheaper. But stretching the plan you already pay for is something, and something is better than nothing.
+
+📖 The full story (why I built it, how it works step by step, and the SWE-bench numbers): **[Cheap Agent: how I made my Claude plan last 2.2–2.7x longer](https://muaazkhan.me/blog/cheap-agent)**
+
 ## The numbers
 
 Tested on [SWE-bench Verified](https://www.swebench.com): real bugs from real open-source projects, graded by the official harness. Same prompts in Claude Code with Opus 5.5, with and without Cheap Agent.
@@ -168,15 +168,14 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `/cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
-| `/cheapag:status` | Recent jobs, and what the cheap model has cost you. |
-| `/cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
-| `/cheapag:clean` | Tidy up old job folders. |
+| Claude Code | Codex | What it does |
+|---|---|---|
+| `/cheapag:allow` | `$cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
+| `/cheapag:status` | `$cheapag:status` | Recent jobs, and what the cheap model has cost you. |
+| `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
+| `/cheapag:clean` | `$cheapag:clean` | Tidy up old job folders. |
 
-To watch the worker live while Claude Code or Codex waits, run `npx cheap-agent watch` in a second terminal.
-In Codex, type `$` instead of `/`: `$cheapag:allow`, `$cheapag:status`, and so on.
+While a job runs, Claude Code shows the worker's latest step under the tool call, and Codex shows it each time it checks in (about every 15 seconds). To follow every step in a second terminal, run `npx cheap-agent watch`.
 
 ## Settings
 
