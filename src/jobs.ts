@@ -16,6 +16,7 @@ import {
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
+import { toolTarget } from "./watch.js";
 
 /** Jobs: runs each group of plan steps as one job, start to landing, under per-job caps (several groups make a batch); lists, shows and cancels jobs. */
 
@@ -190,6 +191,7 @@ function runGroup(g: GroupRun) {
   const requested = modelName(route.implement);
   const startedAt = new Date();
   write("request.json", { ...input, steps: stepIds, batch: g.batch, model: modelName(model), difficulty, startedAt });
+  const elapsed = () => Math.round((Date.now() - startedAt.getTime()) / 1000);
 
   const escalation = route.escalation;
   // the job's model, then its allowed fallbacks: a provider limit moves the session on to the next one
@@ -298,7 +300,7 @@ function runGroup(g: GroupRun) {
 
   /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
   const verify = async () => {
-    const runs = await runVerify(worktree!.path, cmds, (cmd) => progress(session!.totals().turns, `verify: ${cmd}`), kill.signal);
+    const runs = await runVerify(worktree!.path, cmds, (cmd) => progress(session!.totals().turns, `step ${g.group.label} · verify ${cmd} · ${elapsed()}s`), kill.signal);
     checked = true;
     verified.push(...runs);
     // the full output stays on disk; Claude only ever sees the tail
@@ -460,7 +462,8 @@ function runGroup(g: GroupRun) {
           if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
             const part = event.properties.part;
             if (part.state.status === "completed" || part.state.status === "error") {
-              progress(turns, `turn ${turns}: ${part.tool}`);
+              const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
+              progress(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
               if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
               // finishing on the last allowed turn is fine
               if (part.tool !== "finish") {

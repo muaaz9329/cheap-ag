@@ -146,7 +146,10 @@ test("a single step runs in a worktree and lands OK, uncommitted, with the resul
   expect(prompt.endsWith("\n\nNote: keep it short")).toBe(true);
 
   // one progress notification per worker turn
-  expect(progress).toEqual(["turn 1: write", "turn 2: edit", "turn 3: finish"]);
+  expect(progress).toHaveLength(3);
+  expect(progress[0]).toMatch(/^step 1 · turn 1 · write \S+ · \d+s$/);
+  expect(progress[1]).toMatch(/^step 1 · turn 2 · edit \S+ · \d+s$/);
+  expect(progress[2]).toMatch(/^step 1 · turn 3 · finish · \d+s$/);
 
   const dir = join(repo.dir, ".cheapag", "jobs", job);
   expect(readdirSync(dir).sort()).toEqual(["diff.patch", "events.jsonl", "finish.json", "request.json", "result.json", "result.txt"]);
