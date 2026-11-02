@@ -25,7 +25,7 @@ const CHOICES = [...PRESET_NAMES, "custom"] as const;
 type Choice = (typeof CHOICES)[number];
 const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).includes(s);
 
-export async function login(args: string[] = []): Promise<number> {
+export async function login(args: string[] = [], { setup = false }: { setup?: boolean } = {}): Promise<number> {
   const out = (line = "") => process.stdout.write(redact(line) + "\n");
   const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
   if (args.length && flag === undefined) {
@@ -35,6 +35,16 @@ export async function login(args: string[] = []): Promise<number> {
   if (flag !== undefined && !isChoice(flag)) {
     out(`✗ "${flag}" is not a preset; use one of ${CHOICES.join(", ")}; nothing changed`);
     return 1;
+  }
+  // `npx cheap-agent` with a login already saved is just an update: no questions, no key prompt
+  if (setup && flag === undefined) {
+    const saved = detectProvider();
+    if (saved) {
+      out(`Cheap Agent ${version} · already set up with ${label(saved.provider)} (${currentPreset(saved.provider) ?? "custom"})`);
+      const code = await register(out, true);
+      out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
+      return code;
+    }
   }
   if (!process.stdin.isTTY) {
     const saved = detectProvider();
@@ -185,33 +195,67 @@ function explain(message: string, model: string) {
   return `live check failed: ${first}`;
 }
 
-/** Offers user-scope registration with Claude Code, then the plugin; prints the commands whenever it does not run them. */
-async function register(out: (line?: string) => void) {
+/**
+ * Offers user-scope registration with Claude Code, then the plugin; prints the commands whenever it does not run them.
+ * On an update, the plugin line says it was updated and the fresh-install closing line is left to the caller.
+ */
+async function register(out: (line?: string) => void, update = false): Promise<number> {
+  const done = () => {
+    const plugin = installPlugin(out, { update });
+    if (!update) finish(out, plugin);
+  };
   const command = serverCommand();
   const manual = `claude mcp add -s user cheapag -- ${command.map(quote).join(" ")}`;
+  const remove = "claude mcp remove cheapag -s user";
   const existing = runCli("claude", ["mcp", "get", "cheapag"], { encoding: "utf8" });
   if (!existing) {
     out(`Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  ${manual}`);
-    return;
+    return 0;
   }
   // only a user-scope entry counts: a local or project one doesn't cover "all your projects"
-  // shortcut: an existing user-scope entry is kept even if it points at an older install; re-register by hand after moving it
   if (existing.status === 0 && /Scope:\s*User/i.test(existing.stdout)) {
-    out("✓ cheapag is already registered with Claude Code");
-    finish(out, installPlugin(out));
-    return;
+    if (sameCommand(registeredCommand(existing.stdout), command)) {
+      out("✓ cheapag is already registered with Claude Code");
+      done();
+      return 0;
+    }
+    // an older version or path would keep running the old server: replace it without asking
+    const removed = runCli("claude", ["mcp", "remove", "cheapag", "-s", "user"], { encoding: "utf8" });
+    const added = removed?.status === 0 ? runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], { encoding: "utf8" }) : undefined;
+    if (removed?.status !== 0 || added?.status !== 0) {
+      const failed = removed?.status === 0 ? added : removed;
+      out(`✗ claude mcp update failed (${((failed?.stderr || failed?.stdout) ?? "").trim().split("\n")[0]}). Run it yourself:\n  ${remove}\n  ${manual}`);
+      done();
+      return 1;
+    }
+    out(`✓ Updated cheapag's server in Claude Code to ${version}`);
+    done();
+    return 0;
   }
   if (/^n/i.test(await ask("Add cheapag to Claude Code for all your projects? [Y/n] "))) {
     out(`Not registered. To add it later, run:\n  ${manual}`);
-    return;
+    return 0;
   }
   const added = runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], { encoding: "utf8" });
   if (!added || added.status !== 0) {
     out(`✗ claude mcp add failed (${((added?.stderr || added?.stdout) ?? "").trim().split("\n")[0]}). Run it yourself:\n  ${manual}`);
-    return;
+    return 1;
   }
   out("✓ Added cheapag to Claude Code for all your projects");
-  finish(out, installPlugin(out));
+  done();
+  return 0;
+}
+
+/** The executable and arguments `claude mcp get cheapag` reports for the entry, or undefined when it shows neither. */
+function registeredCommand(stdout: string): string[] | undefined {
+  const command = /^\s*Command:\s*(.*?)\s*$/m.exec(stdout)?.[1];
+  if (command === undefined) return undefined;
+  const args = /^\s*Args:\s*(.*?)\s*$/m.exec(stdout)?.[1];
+  return [command, ...(args ? args.split(/\s+/).filter(Boolean) : [])];
+}
+
+function sameCommand(existing: string[] | undefined, current: string[]) {
+  return existing !== undefined && existing.length === current.length && existing.every((arg, i) => arg === current[i]);
 }
 
 /** The last thing setup says: how to start. */
