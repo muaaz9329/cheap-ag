@@ -199,6 +199,11 @@ function runGroup(g: GroupRun) {
   let billing: JobRecord["billing"];
   // whoever is waiting on this job right now: delegate first, then each reply
   let progress = g.progress;
+  // the same line goes to progress.txt for anything watching the folder; best effort, with or without an MCP progress token
+  const tell: Progress = (turns, message) => {
+    try { writeWhole(join(dir, "progress.txt"), message + "\n"); } catch { /* never break the job */ }
+    progress(turns, message);
+  };
   let settle!: (text: string) => void;
   const nextOutcome = () => new Promise<string>((resolve) => (settle = resolve));
   const outcome = nextOutcome();
@@ -300,7 +305,7 @@ function runGroup(g: GroupRun) {
 
   /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
   const verify = async () => {
-    const runs = await runVerify(worktree!.path, cmds, (cmd) => progress(session!.totals().turns, `step ${g.group.label} · verify ${cmd} · ${elapsed()}s`), kill.signal);
+    const runs = await runVerify(worktree!.path, cmds, (cmd) => tell(session!.totals().turns, `step ${g.group.label} · verify ${cmd} · ${elapsed()}s`), kill.signal);
     checked = true;
     verified.push(...runs);
     // the full output stays on disk; Claude only ever sees the tail
@@ -463,7 +468,7 @@ function runGroup(g: GroupRun) {
             const part = event.properties.part;
             if (part.state.status === "completed" || part.state.status === "error") {
               const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
-              progress(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
+              tell(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
               if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
               // finishing on the last allowed turn is fine
               if (part.tool !== "finish") {
