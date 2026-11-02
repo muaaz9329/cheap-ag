@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 
@@ -33,7 +33,9 @@ test("marketplace lists the plugin from this repo, and the manifests agree on na
 
 test("the MCP entry and every command run exactly this package version, so the pin cannot drift", () => {
   expect(json(join(plugin, ".mcp.json"))).toEqual({ mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`] } } });
-  expect(json(join(plugin, "codex.mcp.json"))).toEqual({ mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`, "codex"] } } });
+  expect(json(join(plugin, "codex.mcp.json"))).toEqual({
+    mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`, "codex"], omit_tools_from: ["code_mode", "deferred"] } },
+  });
   const files = readdirSync(plugin, { recursive: true, withFileTypes: true }).filter((f) => f.isFile());
   const pins = files.flatMap((f) => readFileSync(join(f.parentPath, f.name), "utf8").match(/cheap-agent@[^\s`"')]+/g) ?? []);
   expect(pins.length).toBeGreaterThan(3);
@@ -90,4 +92,14 @@ test("the guard hooks: PreToolUse on every tool behind a shell test that skips n
 test("the Codex plugin loads the shared hooks file, since Codex ignores any other hooks path", () => {
   expect(json(join(plugin, ".codex-plugin", "plugin.json")).hooks).toBe("./hooks/hooks.json");
   expect(json(join(plugin, "hooks", "hooks.json")).hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook context`, timeout: expect.any(Number) }] }]);
+});
+
+test("the progress mod is Claude-only: named by the Claude manifest, never in the hooks file Codex reads", () => {
+  expect(json(join(plugin, ".claude-plugin", "plugin.json")).hooks).toBe("./hooks/mods.json");
+  const mods = json(join(plugin, "hooks", "mods.json"));
+  expect(mods.modules).toEqual(["./progress.ts"]);
+  expect(mods).not.toHaveProperty("hooks");
+  expect(existsSync(join(plugin, "hooks", "progress.ts"))).toBe(true);
+  // Codex reads hooks/hooks.json and silently ignores the whole file when it carries modules
+  expect(json(join(plugin, "hooks", "hooks.json"))).not.toHaveProperty("modules");
 });

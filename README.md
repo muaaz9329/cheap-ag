@@ -171,6 +171,8 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 | `/cheapag:hook on` | No more "I'll just do it myself": Claude *must* hand code changes to the cheap model. |
 | `/cheapag:clean` | Tidy up old job folders. |
 
+To watch the worker live while Claude Code or Codex waits, run `npx cheap-agent watch` in a second terminal.
+
 ## Settings
 
 Optional. Put a `cheapag.json` in a project:

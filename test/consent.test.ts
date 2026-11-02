@@ -134,7 +134,7 @@ test("OpenRouter zero-retention only adds its zdr routing preference to every mo
   expect(opencodeConfig(repo.dir).provider.openrouter.models["deepseek/deepseek-v4.1-flash"].options.provider.zdr).toBeUndefined();
   fake.script({ edit: "hello.txt", content: "hi\n" }, FINISH);
   expect(await delegate()).toMatch(/^OK /);
-  const zdr = { options: { provider: { data_collection: "deny", zdr: true } } };
+  const zdr = { options: { provider: { data_collection: "deny", sort: "throughput", zdr: true } } };
   expect(opencodeConfig(repo.dir).provider).toEqual({ openrouter: { models: Object.fromEntries(OPENROUTER_MODELS.map((id) => [id, zdr])) } });
 });
 

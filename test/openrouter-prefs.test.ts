@@ -14,8 +14,8 @@ import { hermeticHome, slow, tempRepo } from "./harness.js";
  * Cheap Agent's own consent code; the fake model stands in for OpenRouter's API so the request body can be read.
  */
 test.each([
-  ["all", { data_collection: "deny" }],
-  ["zdr-only", { data_collection: "deny", zdr: true }],
+  ["all", { data_collection: "deny", sort: "throughput" }],
+  ["zdr-only", { data_collection: "deny", sort: "throughput", zdr: true }],
 ] as const)("consent %s → OpenRouter request body carries provider %j", async (mode, expected) => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);

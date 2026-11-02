@@ -16,6 +16,7 @@ import {
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
+import { toolTarget } from "./watch.js";
 
 /** Jobs: runs each group of plan steps as one job, start to landing, under per-job caps (several groups make a batch); lists, shows and cancels jobs. */
 
@@ -190,6 +191,7 @@ function runGroup(g: GroupRun) {
   const requested = modelName(route.implement);
   const startedAt = new Date();
   write("request.json", { ...input, steps: stepIds, batch: g.batch, model: modelName(model), difficulty, startedAt });
+  const elapsed = () => Math.round((Date.now() - startedAt.getTime()) / 1000);
 
   const escalation = route.escalation;
   // the job's model, then its allowed fallbacks: a provider limit moves the session on to the next one
@@ -197,6 +199,11 @@ function runGroup(g: GroupRun) {
   let billing: JobRecord["billing"];
   // whoever is waiting on this job right now: delegate first, then each reply
   let progress = g.progress;
+  // the same line goes to progress.txt for anything watching the folder; best effort, with or without an MCP progress token
+  const tell: Progress = (turns, message) => {
+    try { writeWhole(join(dir, "progress.txt"), message + "\n"); } catch { /* never break the job */ }
+    progress(turns, message);
+  };
   let settle!: (text: string) => void;
   const nextOutcome = () => new Promise<string>((resolve) => (settle = resolve));
   const outcome = nextOutcome();
@@ -298,7 +305,7 @@ function runGroup(g: GroupRun) {
 
   /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
   const verify = async () => {
-    const runs = await runVerify(worktree!.path, cmds, (cmd) => progress(session!.totals().turns, `verify: ${cmd}`), kill.signal);
+    const runs = await runVerify(worktree!.path, cmds, (cmd) => tell(session!.totals().turns, `step ${g.group.label} · verify ${cmd} · ${elapsed()}s`), kill.signal);
     checked = true;
     verified.push(...runs);
     // the full output stays on disk; Claude only ever sees the tail
@@ -460,7 +467,8 @@ function runGroup(g: GroupRun) {
           if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
             const part = event.properties.part;
             if (part.state.status === "completed" || part.state.status === "error") {
-              progress(turns, `turn ${turns}: ${part.tool}`);
+              const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
+              tell(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
               if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
               // finishing on the last allowed turn is fine
               if (part.tool !== "finish") {
@@ -863,7 +871,7 @@ const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provi
  */
 const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string>; batch: string | null; settles: () => Promise<void>; block: () => string; parked: () => boolean }>();
 
-export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string };
+export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string; seconds?: number };
 
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
@@ -875,13 +883,20 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
     if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
     return lines.join("\n");
   }
-  if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress);
+  if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress, input.seconds);
   // the id becomes a path: only well-formed ids get that far
   if (!input.job || !/^j[0-9a-z]{4}$/.test(input.job)) return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`);
   const live = running.get(input.job);
   if (input.action === "wait" && live) {
     // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
-    if (!blocked.has(input.job)) await live.settles();
+    if (!blocked.has(input.job)) {
+      if (input.seconds === undefined) await live.settles();
+      else {
+        const waited = await waitOrTimeout(live.settles(), input.seconds);
+        // settled just as the timer fired: the final block is more useful than a stale RUNNING line
+        if (waited.timedOut && running.has(input.job)) return runningCheckin(root, input.job, input.job, input.seconds);
+      }
+    }
     return live.block();
   }
   if (input.action === "cancel" && live) {
@@ -901,9 +916,16 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
 }
 
 /** `jobs wait` on a batch: the next settlement of a live one, or a finished one's block (from its records) at once. */
-function waitBatch(root: string, batch: string, progress: Progress): Promise<string> | string {
+async function waitBatch(root: string, batch: string, progress: Progress, seconds?: number): Promise<string> {
   const live = batches.get(batch);
-  if (live) return live.look(true, progress);
+  if (live) {
+    if (seconds === undefined) return live.look(true, progress);
+    const waited = await waitOrTimeout(live.look(true, progress), seconds);
+    if (!waited.timedOut) return waited.value;
+    const jobs = runningBatchJobs(root, batch);
+    // everything settled just as the timer fired: the completed batch block is more useful
+    return jobs.length ? runningCheckin(root, jobs, batch, seconds) : live.render();
+  }
   let record: BatchRecord;
   try {
     record = JSON.parse(readFileSync(join(root, ".cheapag", "batches", `${batch}.json`), "utf8"));
@@ -914,6 +936,42 @@ function waitBatch(root: string, batch: string, progress: Progress): Promise<str
   const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
   if (jobRecords.some((r) => !r)) return failBlock(`batch ${batch}: a job record is missing (cleaned up?)`);
   return renderBatch(record, jobRecords as JobRecord[], record.fix ? readRecord(join(root, ".cheapag", "jobs", record.fix)) : undefined);
+}
+
+/** A short check-in: each still-running job's latest progress line, then how to check again. */
+function runningCheckin(root: string, jobs: string | string[], asked: string, seconds: number) {
+  const ids = typeof jobs === "string" ? [jobs] : jobs;
+  return [...ids.map((job) => `RUNNING ${job} · ${progressLine(root, job)}`), `next: jobs(action="wait", job="${asked}", seconds=${seconds})`].join("\n");
+}
+
+/** The worker's latest progress line for a job, or `starting` before its first turn. */
+function progressLine(root: string, job: string) {
+  try {
+    return readFileSync(join(root, ".cheapag", "jobs", job, "progress.txt"), "utf8").trim() || "starting";
+  } catch {
+    return "starting";
+  }
+}
+
+/** The batch's group jobs that are still RUNNING (not BLOCKED), from their records. */
+function runningBatchJobs(root: string, batch: string) {
+  try {
+    const record = JSON.parse(readFileSync(join(root, ".cheapag", "batches", `${batch}.json`), "utf8")) as { jobs?: string[] };
+    return (record.jobs ?? []).filter((id) => readRecord(join(root, ".cheapag", "jobs", id))?.status === "RUNNING");
+  } catch {
+    return [];
+  }
+}
+
+/** Resolves with the wait's value, or `timedOut` after `seconds`; the timer is always cleared. */
+function waitOrTimeout<T>(wait: Promise<T>, seconds: number): Promise<{ timedOut: false; value: T } | { timedOut: true }> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    wait.then((value) => ({ timedOut: false as const, value })),
+    new Promise<{ timedOut: true }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true as const }), seconds * 1000);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 const LIST_MAX = 20;

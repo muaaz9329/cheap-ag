@@ -1,0 +1,4 @@
+{
+  "description": "Cheap Agent (Claude Code only): shows a running job's latest progress line under the cheapag tool call and in the spinner. Codex reads hooks/hooks.json alone, which must not carry modules.",
+  "modules": ["./progress.ts"]
+}

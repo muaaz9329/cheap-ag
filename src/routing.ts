@@ -12,7 +12,7 @@ type ProviderId = Provider["provider"];
 
 // verified on OpenCode 1.19.0: options.provider becomes OpenRouter's request-body routing preference, so upstreams that
 // collect data are never used. Every OpenRouter model carries it.
-const OPENROUTER_PRIVATE = { provider: { data_collection: "deny" } };
+const OPENROUTER_PRIVATE = { provider: { data_collection: "deny", sort: "throughput" } };
 
 /**
  * Default models per provider and role (spec: Models and limits): each list is the role's model, then its fallbacks.
