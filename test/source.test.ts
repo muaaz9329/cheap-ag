@@ -72,7 +72,7 @@ test("the steps argument takes the heading id forms; a target under .cheapag/ is
 
 test("a step listing three or more changes is rejected; two numbered or any bullets pass", () => {
   const plan = (doText: string) => `# P\n## 4 x\nfiles: a.txt\ndo:${doText}\ndone-when: done\n`;
-  const split = "step 4 lists 3 changes; one change per step: split it into 4a, 4b, … (needs: orders them)";
+  const split = "step 4 lists 3 changes; one change per step: split it into 4a, 4b, … (needs: orders them), or use - bullets for the details of one change";
   expect(() => parsePlan(plan("\n  1. one\n  2. two\n  3. three"))).toThrow(`line 4: ${split}`);
   expect(() => parsePlan(plan(" 1) stable identity; 2) debounce; 3) drop focus refetch"))).toThrow(`line 4: ${split}`);
   expect(parsePlan(plan("\n  1. one\n  2. two")).steps).toHaveLength(1);
