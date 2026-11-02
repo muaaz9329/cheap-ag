@@ -1,4 +1,3 @@
-import { stateDir } from "./runtime.js";
 import type { Changed } from "./workspace.js";
 
 /**
@@ -198,7 +197,7 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (has("missing") && r.missing.length) lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
   if (has("worktree") && r.worktree) lines.push(`worktree: ${r.worktree}/`);
-  if (!compacted) lines.push(`log: ${stateDir}/jobs/${r.job}/`);
+  if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map((l) => (keep.has(l) ? l.replaceAll("\t", "  ") : fit(l))).join("\n");
 }
 
@@ -220,7 +219,7 @@ export function renderResearch(r: ResearchRecord) {
   if (r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   const n = r.unlanded.length;
   if (n) lines.push(`note: ${n} job${n > 1 ? "s" : ""} not yet landed (${r.unlanded.join(", ")}); their changes are not visible to research`);
-  lines.push(`log: ${stateDir}/jobs/${r.job}/`);
+  lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map(fit).join("\n");
 }
 

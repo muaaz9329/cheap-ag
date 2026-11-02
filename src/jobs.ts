@@ -1,4 +1,3 @@
-import { stateDir } from "./runtime.js";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -67,7 +66,7 @@ function resolveBrief(root: string, brief: string | undefined): { text?: string 
   const value = brief?.trim();
   if (!value) return {};
   if (!/^r[0-9a-z]{4}$/.test(value)) return { text: value.slice(0, MAX_BRIEF) };
-  const file = join(root, stateDir, "jobs", value, "result.txt");
+  const file = join(root, ".cheapag", "jobs", value, "result.txt");
   if (!existsSync(file)) return { fail: `brief ${value}: no research with that id (cleaned up?); pass the brief's text instead` };
   return { text: readFileSync(file, "utf8").trim().slice(0, MAX_BRIEF) };
 }
@@ -85,8 +84,8 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
   const title = task.split(/\r?\n/)[0].slice(0, 70);
   const body = [`# ${title}`, "", "## 1 task", `files: ${req.files?.trim() || "./"}`, `do: ${indent(task)}`,
     `done-when: ${indent(req.done_when?.trim() || "the change described in do: is made and the existing tests still pass")}`, ""].join("\n");
-  const rel = join(stateDir, "plans", `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(2).toString("hex")}.md`);
-  mkdirSync(join(root, stateDir, "plans"), { recursive: true });
+  const rel = join(".cheapag", "plans", `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(2).toString("hex")}.md`);
+  mkdirSync(join(root, ".cheapag", "plans"), { recursive: true });
   writeFileSync(join(root, rel), body);
   return { plan: rel };
 }
@@ -111,7 +110,7 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty };
   else return failBlock("give task (what to change, files, how to check), or plan and steps");
   // only the caller's path: an inline task's own plan lives under .cheapag/plans/
-  if (req.task === undefined && input.plan.split(/[\\/]/).filter((p) => p && p !== ".")[0] === stateDir) return failBlock(`plan ${input.plan} is under ${stateDir}/, Cheap Agent's state folder, which workers cannot see; save plans under .plan/`);
+  if (req.task === undefined && input.plan.split(/[\\/]/).filter((p) => p && p !== ".")[0] === ".cheapag") return failBlock(`plan ${input.plan} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; save plans under .plan/`);
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
   if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
@@ -639,7 +638,7 @@ function runGroup(g: GroupRun) {
  */
 function runBatch(groups: Group[], shared: Shared) {
   const { root, config } = shared;
-  const dir = join(root, stateDir, "batches");
+  const dir = join(root, ".cheapag", "batches");
   mkdirSync(dir, { recursive: true });
   let batch: string;
   do batch = newId("b");
@@ -889,7 +888,7 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
     live.stop({ cap: "cancel", reason: "cancelled on request" });
     return live.done;
   }
-  const dir = join(root, stateDir, "jobs", input.job);
+  const dir = join(root, ".cheapag", "jobs", input.job);
   const record = readRecord(dir);
   if (!record) return failBlock(`job ${input.job} not found`);
   const block = () => readFileSync(join(dir, "result.txt"), "utf8").trimEnd();
@@ -907,14 +906,14 @@ function waitBatch(root: string, batch: string, progress: Progress): Promise<str
   if (live) return live.look(true, progress);
   let record: BatchRecord;
   try {
-    record = JSON.parse(readFileSync(join(root, stateDir, "batches", `${batch}.json`), "utf8"));
+    record = JSON.parse(readFileSync(join(root, ".cheapag", "batches", `${batch}.json`), "utf8"));
   } catch {
     return failBlock(`batch ${batch} not found`);
   }
   // shortcut: a batch another live session runs is shown as its records stand, not waited on; wait from that session
-  const jobRecords = record.jobs.map((id) => readRecord(join(root, stateDir, "jobs", id)));
+  const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
   if (jobRecords.some((r) => !r)) return failBlock(`batch ${batch}: a job record is missing (cleaned up?)`);
-  return renderBatch(record, jobRecords as JobRecord[], record.fix ? readRecord(join(root, stateDir, "jobs", record.fix)) : undefined);
+  return renderBatch(record, jobRecords as JobRecord[], record.fix ? readRecord(join(root, ".cheapag", "jobs", record.fix)) : undefined);
 }
 
 const LIST_MAX = 20;
@@ -937,7 +936,7 @@ function readRecord(dir: string): StoredRecord | undefined {
 
 /** Every readable job record in the project, with the folder it lives in. */
 export function records(root: string) {
-  const base = join(root, stateDir, "jobs");
+  const base = join(root, ".cheapag", "jobs");
   if (!existsSync(base)) return [];
   return readdirSync(base).flatMap((id) => {
     const record = readRecord(join(base, id));
@@ -1005,7 +1004,7 @@ export async function landJobs(input: LandInput, ctx: WorkerContext): Promise<st
     }
   }
   // the last of a batch's groups landed or discarded: its integration check runs now
-  const touched = new Set(ids.filter((id) => /^j[0-9a-z]{4}$/.test(id)).map((id) => readRecord(join(root, stateDir, "jobs", id))?.batch));
+  const touched = new Set(ids.filter((id) => /^j[0-9a-z]{4}$/.test(id)).map((id) => readRecord(join(root, ".cheapag", "jobs", id))?.batch));
   for (const batch of touched) {
     const block = batch && (await integrateLater(root, config, batch, ctx));
     if (block) lines.push("", block);
@@ -1015,7 +1014,7 @@ export async function landJobs(input: LandInput, ctx: WorkerContext): Promise<st
 
 /** A settled batch, still pending, with nothing left to land: runs its integration check and returns the batch block. */
 async function integrateLater(root: string, config: Config, batch: string, ctx: WorkerContext) {
-  const file = join(root, stateDir, "batches", `${batch}.json`);
+  const file = join(root, ".cheapag", "batches", `${batch}.json`);
   let record: BatchRecord & Integration & { plan: string; steps: string };
   try {
     record = JSON.parse(readFileSync(file, "utf8"));
@@ -1023,7 +1022,7 @@ async function integrateLater(root: string, config: Config, batch: string, ctx: 
     return undefined; // cleaned up
   }
   const cmd = config.integration_cmd ?? config.test_cmd;
-  const jobRecords = record.jobs.map((id) => readRecord(join(root, stateDir, "jobs", id)));
+  const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
   if (batches.has(batch) || !cmd || !jobRecords.every((r) => r) || !allLanded(jobRecords as JobRecord[])) return undefined;
   // claimed under the lock: two sessions landing a batch's last groups at once must not both run its check
   const claimed = await withLock(root, () => {
@@ -1055,7 +1054,7 @@ async function integrateLater(root: string, config: Config, batch: string, ctx: 
 /** Applies or discards one finished, unlanded job; returns its OK line, or throws why not. */
 async function landOne(root: string, config: Config, id: string, action: LandInput["action"]) {
   if (!/^j[0-9a-z]{4}$/.test(id)) throw new Error(`${id} is not a job id, e.g. j7f3a`); // the id becomes a path
-  const dir = join(root, stateDir, "jobs", id);
+  const dir = join(root, ".cheapag", "jobs", id);
   const record = readRecord(dir);
   if (!record) throw new Error(`job ${id} not found`);
   if (running.has(id)) throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
@@ -1078,7 +1077,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
     save({ discarded: true });
     return `OK ${id} discarded`;
   }
-  if (!record.baseline?.tree) throw new Error(`job ${id} has no recorded base (made by an older version); land it by hand from ${stateDir}/worktrees/${id}/`);
+  if (!record.baseline?.tree) throw new Error(`job ${id} has no recorded base (made by an older version); land it by hand from .cheapag/worktrees/${id}/`);
   const diff = worktreeDiff(worktree);
   // shortcut: two sessions applying the same job at once could both pass the checks above; the second 3-way apply then conflicts
   const clash = await land(root, id, diff.patch, diff.changed.map((c) => c.path));
@@ -1144,7 +1143,7 @@ function answerEach(answer: string, questions: Question[]): string[] | string {
 
 /** Why `job` cannot take a reply, from its record on disk. */
 function notWaiting(job: string) {
-  const file = join(projectRoot(process.cwd()), stateDir, "jobs", job, "result.json");
+  const file = join(projectRoot(process.cwd()), ".cheapag", "jobs", job, "result.json");
   if (!/^j[0-9a-z]{4}$/.test(job) || !existsSync(file)) return `no job ${job}; reply only to a BLOCKED job's id`;
   const { status } = JSON.parse(readFileSync(file, "utf8")) as { status: string };
   return status === "BLOCKED"
@@ -1156,7 +1155,7 @@ function notWaiting(job: string) {
 function newJob(root: string) {
   for (;;) {
     const job = newId("j");
-    const dir = join(root, stateDir, "jobs", job);
+    const dir = join(root, ".cheapag", "jobs", job);
     if (existsSync(dir)) continue;
     mkdirSync(dir, { recursive: true });
     return { job, dir };

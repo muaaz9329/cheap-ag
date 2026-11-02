@@ -1,4 +1,3 @@
-import { configName, stateDir, runtimeEnv } from "./runtime.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -198,7 +197,7 @@ export function ensureOpencode(provider: Provider, projectDir = process.cwd(), r
   if (started && route && booted !== config) {
     // a reboot would kill every live session: refuse it while any job or research call holds the server
     // shortcut: one server per config would let both run; worth it only if config changes mid-session become common
-    if (holds > 0) return Promise.reject(new Error(`the model configuration changed (consent or ${configName} models) while jobs are running; retry once they finish`));
+    if (holds > 0) return Promise.reject(new Error("the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish"));
     stopOpencode();
   }
   if (!started) booted = config;
@@ -211,10 +210,10 @@ export function ensureOpencode(provider: Provider, projectDir = process.cwd(), r
 }
 
 async function boot(projectDir: string, config: string): Promise<Opencode> {
-  const configDir = join(projectDir, stateDir, "opencode");
+  const configDir = join(projectDir, ".cheapag", "opencode");
   writeConfigDir(configDir, config);
-  const external = runtimeEnv("OPENCODE_URL");
-  const password = (external && runtimeEnv("OPENCODE_PASSWORD")) || randomBytes(24).toString("base64url");
+  const external = process.env.CHEAPAG_OPENCODE_URL;
+  const password = (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
   const url = external || (await spawnServer(configDir, password));
 
   const res = await fetch(new URL("/global/health", url), {

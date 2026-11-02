@@ -1,4 +1,3 @@
-import { appName } from "./runtime.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -198,7 +197,7 @@ const WINDOWS = [
  * One JSON line per model per job: `{at, model, costUsd}`.
  * shortcut: never pruned (a line per job and model); trim entries older than the monthly window if it ever grows large.
  */
-export const ledgerFile = () => join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), appName, "spend.jsonl");
+export const ledgerFile = () => join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "cheapag", "spend.jsonl");
 
 export function recordSpend(spend: Record<string, number>) {
   const lines = Object.entries(spend).filter(([, cost]) => cost > 0).map(([m, costUsd]) => JSON.stringify({ at: new Date().toISOString(), model: m, costUsd }) + "\n");

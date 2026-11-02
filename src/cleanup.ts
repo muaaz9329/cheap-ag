@@ -1,4 +1,3 @@
-import { appName, codex, stateDir } from "./runtime.js";
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config.js";
@@ -28,7 +27,7 @@ export type Cleaned = { removed: string[]; kept: string[] };
 export function cleanup(root: string, retention: Config["retention"], linkDirs: string[], opts: { all?: boolean; now?: number } = {}): Cleaned {
   const now = opts.now ?? Date.now();
   const out: Cleaned = { removed: [], kept: [] };
-  const state = join(root, stateDir);
+  const state = join(root, ".cheapag");
   // a symlinked state dir (or subdir) would put what we delete outside the repo: leave it alone
   if (!realDir(state)) return out;
   const jobsDir = join(state, "jobs");
@@ -118,7 +117,7 @@ export function cleanProject(cwd: string, all = false) {
 export function clean(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
   if (args.length > 1 || (args.length && args[0] !== "--all")) {
-    out(`✗ usage: ${appName} clean [--all]   (--all: remove everything not in flight)`);
+    out("✗ usage: cheapag clean [--all]   (--all: remove everything not in flight)");
     return 1;
   }
   let result: Cleaned;
@@ -138,12 +137,12 @@ export function clean(args: string[]): number {
 /** A one-line offer to gitignore `.cheapag/` when the repo containing `cwd` does not ignore it (spec E5); never edits .gitignore. */
 export function gitignoreHint(cwd: string) {
   try {
-    git(projectRoot(cwd), ["check-ignore", "-q", codex ? `${stateDir}/consent.json` : `${stateDir}/`]);
+    git(projectRoot(cwd), ["check-ignore", "-q", ".cheapag/"]);
     return undefined;
   } catch (err) {
     // exit 1: not ignored; anything else (not a repo, git error) offers nothing
     return (err as { status?: number }).status === 1
-      ? `hint: ${stateDir}/ (Cheap Agent's runtime state) is not gitignored; add a \`${stateDir}/\` line to .gitignore so it is never committed`
+      ? "hint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed"
       : undefined;
   }
 }

@@ -44,9 +44,6 @@ jobs:
           out="$("$tmp/node_modules/.bin/cheapag" status)"
           echo "$out"
           echo "$out" | grep -q cheapag
-          out="$(CHEAPCODE_HOME="$tmp/codex-home" "$tmp/node_modules/.bin/cheapcode" status)"
-          echo "$out"
-          echo "$out" | grep -q cheapcode
       - name: Live tests when an API key is present
         if: inputs.tests == ''
         shell: bash

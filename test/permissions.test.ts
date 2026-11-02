@@ -160,7 +160,7 @@ test("env files cannot even be read", async () => {
 }, slow(60_000));
 
 test("protected paths cannot be edited; ordinary files can", async () => {
-  for (const path of [".env", "config/.env.local", ".git/hooks/x", "sub/.git/config", ".cheapag/state", ".cheapcode/state", "cheapag.json", "cheapcode.json", "package-lock.json", "web/yarn.lock"]) {
+  for (const path of [".env", "config/.env.local", ".git/hooks/x", "sub/.git/config", ".cheapag/state", "cheapag.json", "package-lock.json", "web/yarn.lock"]) {
     expect(await write(path), path).toBe("denied");
   }
   expect(await write("src/ok.ts")).toBe("allowed");

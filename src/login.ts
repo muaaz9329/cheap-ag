@@ -61,7 +61,15 @@ export async function login(args: string[] = []): Promise<number> {
     return 1;
   }
   const preset = currentPreset(picked.id) ?? "balanced";
-  const choice = flag ?? ((await ask(`Worker models: cheapest / balanced (recommended) / strongest [${preset}]: `)) || preset);
+  let choice = flag ?? "";
+  if (flag === undefined) {
+    out("Worker models:");
+    CHOICES.forEach((name, i) =>
+      out(`  ${i + 1}) ${name}${name === "balanced" ? " (recommended)" : name === "custom" ? " (set models yourself in cheapag.json)" : ""}`),
+    );
+    const answer = await ask(`Models [1-${CHOICES.length}, Enter = ${preset}]: `);
+    choice = answer ? (CHOICES[Number(answer) - 1] ?? answer) : preset;
+  }
   if (!isChoice(choice)) {
     out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
     return 1;
@@ -78,6 +86,10 @@ export async function login(args: string[] = []): Promise<number> {
   const provider: Provider = { provider: picked.id, via: "login" };
   const check = await liveCheck(provider);
   out(check.ok ? `✓ ${check.line}` : `✗ ${check.line}`);
+  if (!check.ok) {
+    const hint = regionHint(check.line);
+    if (hint) out(hint);
+  }
   const active = detectProvider()!;
   if (active.provider !== provider.provider) out(`Note: ${label(active.provider)} is also saved and is used first.`);
   if (!check.ok) return 1; // the login stays saved; fix the cause and run login again
@@ -156,6 +168,12 @@ async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: strin
     stopOpencode();
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** The fix for OpenCode Go's Global-region error, when the live check hit it. */
+export function regionHint(line: string): string | undefined {
+  if (!line.includes("requires Global regions")) return undefined;
+  return "  Fix: in the OpenCode console (opencode.ai), Settings → Privacy → Regions → Global; or pick a model that does not need it (e.g. opencode-go/glm-5.3-flash) with --preset custom.";
 }
 
 /** A one-line reason and fix for the common live-check failures. */

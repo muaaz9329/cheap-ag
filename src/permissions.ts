@@ -41,9 +41,9 @@ const LOCKFILES = [
 
 /** Paths the worker may never edit: git internals, Cheap Agent state, env files, lockfiles. */
 export const PROTECTED = [
-  ".git", ".git/**", "**/.git", "**/.git/**", ".cheapag/**", ".cheapcode/**", ".env*", "**/.env*",
+  ".git", ".git/**", "**/.git", "**/.git/**", ".cheapag/**", ".env*", "**/.env*",
   // the worker must not loosen its own (or a later job's) rules
-  "cheapag.json", "cheapcode.json",
+  "cheapag.json",
   ...LOCKFILES.flatMap((f) => [f, `**/${f}`]),
 ];
 

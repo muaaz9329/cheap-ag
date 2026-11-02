@@ -1,4 +1,3 @@
-import { stateDir, runtimeEnv } from "./runtime.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -43,7 +42,7 @@ export type Worktree = { path: string; head: string; stash: string | null; base:
 export function createWorktree(root: string, job: string, linkDirs: string[]): Worktree {
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   const stash = git(root, ["stash", "create"]).trim() || null;
-  const path = join(root, stateDir, "worktrees", job);
+  const path = join(root, ".cheapag", "worktrees", job);
   git(root, ["worktree", "add", "--detach", path, head]);
   const links: string[] = [];
   try {
@@ -93,7 +92,7 @@ function discard(root: string, path: string, links: string[]) {
 }
 
 /** Pathspecs that keep Cheap Agent's state and the given dependency dirs out of a git operation. */
-const outside = (dirs: string[]) => [".cheapag", ".cheapcode", ...dirs].map((d) => `:(exclude,top,literal)${d}`);
+const outside = (dirs: string[]) => [".cheapag", ...dirs].map((d) => `:(exclude,top,literal)${d}`);
 
 // git 2.55 rejects a pathspec naming an ignored path, even as an exclusion; an already-ignored dir needs no exclusion
 const notIgnored = (dir: string, paths: string[]) =>
@@ -141,18 +140,18 @@ export function removeWorktree(root: string, worktree: Worktree) {
 }
 
 /** How long landing waits for another holder. `CHEAPAG_LOCK_TIMEOUT_MS` is a test hook (like CHEAPAG_OPENCODE_URL), not a setting. */
-const lockTimeoutMs = () => Number(runtimeEnv("LOCK_TIMEOUT_MS")) || 10 * 60_000;
+const lockTimeoutMs = () => Number(process.env.CHEAPAG_LOCK_TIMEOUT_MS) || 10 * 60_000;
 
 /** What `.cheapag/land.lock` holds. `token` tells one holder's lock from the next one's (absent in older locks). */
 type Holder = { pid: number; at: string; token?: string };
 
 /** Serialises landing and integration checks across Cheap Agent processes on one project: `.cheapag/land.lock` holds pid + timestamp + token. */
 export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promise<T> {
-  const lock = join(root, stateDir, "land.lock");
+  const lock = join(root, ".cheapag", "land.lock");
   const token = randomBytes(8).toString("hex");
   // unique per call: parallel groups in one process wait on the lock at once, and must not delete each other's file
   const mine = `${lock}.${process.pid}.${token}`;
-  mkdirSync(join(root, stateDir), { recursive: true });
+  mkdirSync(join(root, ".cheapag"), { recursive: true });
   // written whole, then hard-linked into place: the lock never exists without its contents
   writeFileSync(mine, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token } satisfies Holder));
   const timeout = lockTimeoutMs();
@@ -170,7 +169,7 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
       if (!(holder.pid > 0 && isAlive(holder.pid))) breakStale(lock, holder);
       else if (Date.now() > deadline) {
         const waited = timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
-        throw new Error(`timed out after ${waited} waiting for ${stateDir}/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`);
+        throw new Error(`timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`);
       } else await new Promise((r) => setTimeout(r, 200));
     }
   } finally {
@@ -230,7 +229,7 @@ const literal = (path: string) => `:(literal)${path}`;
 export function land(root: string, job: string, patch: string, paths: string[]): Promise<string | undefined> {
   return withLock(root, () => {
     if (!patch.trim()) return undefined;
-    const index = join(root, stateDir, "jobs", job, "land.index");
+    const index = join(root, ".cheapag", "jobs", job, "land.index");
     copyFileSync(git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim(), index);
     const env = { GIT_INDEX_FILE: index };
     try {
@@ -284,7 +283,7 @@ export function leftoverMarkers(worktree: Worktree) {
  * record), and only a real directory. The `linkDirs` entries that are links in it are its dependency links.
  */
 export function jobWorktree(root: string, job: string, base: string, linkDirs: string[]): Worktree | undefined {
-  const path = join(root, stateDir, "worktrees", job);
+  const path = join(root, ".cheapag", "worktrees", job);
   if (!lstatOf(path)?.isDirectory()) return undefined;
   const links = linkDirs.map((d) => join(path, d)).filter((l) => lstatOf(l)?.isSymbolicLink());
   return { path, head: "", stash: null, base, links, linked: links.map((l) => normalisePath(relative(path, l))) };

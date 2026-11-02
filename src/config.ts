@@ -1,4 +1,3 @@
-import { appName, configName } from "./runtime.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -34,10 +33,10 @@ const DEFAULTS: Config = {
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 
 /** The user-level config every repo's `cheapag.json` overrides; `cheapag login` writes its `models` (the preset). */
-export const userConfigFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), appName, "config.json");
+export const userConfigFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
 
 export function loadConfig(root: string): Config {
-  const [mine, repo] = [read(userConfigFile()), read(join(root, configName))];
+  const [mine, repo] = [read(userConfigFile()), read(join(root, "cheapag.json"))];
   // caps, retention and models merge key by key, so a repo can set one and keep the user's others
   return {
     ...DEFAULTS, ...mine, ...repo,

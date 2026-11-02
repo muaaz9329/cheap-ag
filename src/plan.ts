@@ -1,4 +1,3 @@
-import { stateDir } from "./runtime.js";
 import { DIFFICULTIES, type Difficulty } from "./routing.js";
 
 /** Plan format contract (spec D2): one H1, optional context, one H2 per step with lowercase `key:` fields. */
@@ -63,8 +62,8 @@ export function parsePlan(source: string): Plan {
     if (missing.length) throw new Error(`step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`);
     const d = step.fields.difficulty;
     if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty)) throw new Error(`step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`);
-    const hidden = step.fields.files.split(/[,\n]/).map((f) => f.trim().replace(/^\.\//, "")).find((f) => f.split("/")[0] === stateDir);
-    if (hidden) throw new Error(`line ${step.filesLine}: step ${step.id} files: ${hidden} is under ${stateDir}/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`);
+    const hidden = step.fields.files.split(/[,\n]/).map((f) => f.trim().replace(/^\.\//, "")).find((f) => f.split("/")[0] === ".cheapag");
+    if (hidden) throw new Error(`line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`);
     const changes = countChanges(step.fields.do ?? "");
     if (changes >= 3) throw new Error(`line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them)`);
   }

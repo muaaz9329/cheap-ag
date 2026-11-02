@@ -8,4 +8,6 @@ allowed-tools: Bash(npx -y cheap-agent@1.2.7 hook) Bash(npx -y cheap-agent@1.2.7
 
 !`npx -y cheap-agent@1.2.7 hook $ARGUMENTS`
 
-The developer ran this command themselves; its output is above. Report it in one line. Do not turn the edit guard on or off in any other way.
+The developer ran this command themselves; its output is above. Report it in one line.
+
+Only because the user invoked this skill: If no output appears above (Codex): run that command yourself once, exactly as written, with `$ARGUMENTS` replaced by whatever the user typed after the skill name (or nothing). It needs network for npx; ask for that if the sandbox blocks it. Do not turn the edit guard on or off again or in any other way.
