@@ -16,6 +16,15 @@ const hooks = JSON.parse(readFileSync(join(repoDir, "plugin", "hooks", "hooks.js
 const command = (hooks.hooks.PreToolUse[0].hooks[0].command as string).replace(`npx -y cheap-agent@${version}`, `"${process.execPath}" "${serverEntry}"`);
 const resultCommand = (hooks.hooks.PostToolUse[0].hooks[0].command as string).replace(`npx -y cheap-agent@${version}`, `"${process.execPath}" "${serverEntry}"`);
 const lines = (n: number, tag = "x") => Array.from({ length: n }, (_, i) => `${tag}${i}`).join("\n") + "\n";
+/** A Codex apply_patch: sections are `*** Update File:`/`*** Add File:`/`*** Delete File:` with their hunks. */
+const applyPatch = (...sections: string[]) => ["*** Begin Patch", ...sections, "*** End Patch"].join("\n") + "\n";
+const updateFile = (path: string, removed: number, added: number) => [
+  `*** Update File: ${path}`,
+  "@@",
+  ...Array.from({ length: removed }, (_, i) => `-old${i}`),
+  ...Array.from({ length: added }, (_, i) => `+new${i}`),
+].join("\n");
+const addFile = (path: string, added: number) => [`*** Add File: ${path}`, ...Array.from({ length: added }, (_, i) => `+line${i}`)].join("\n");
 
 function setup() {
   const repo = tempRepo();
@@ -116,6 +125,24 @@ test("guard_lines comes from the repo's cheapag.json", () => {
   expect(run("Write", { file_path: "f.ts", content: lines(6) })).toMatch(/Large edit \(6 changed lines, over 5\)/);
 });
 
+test("on: a Codex apply_patch is guarded per file like Edit/Write; garbage is allowed", () => {
+  const { run, cli } = setup();
+  cli("on");
+  const patch = (command: string, prompt?: string) => run("apply_patch", { command }, { prompt });
+  // a small patch adds and removes two lines: well under the 20-line limit
+  expect(patch(applyPatch(updateFile("src/a.ts", 1, 1)))).toBeNull();
+  // a large patch is denied with the same message as an Edit of that size
+  expect(patch(applyPatch(addFile("big.ts", 21)))).toMatch(/^Large edit \(21 changed lines, over 20\): write a plan step/);
+  // a multi-file patch counts each file on its own: 16 + 16 = 32 lines together, but each is under 20
+  expect(patch(applyPatch(updateFile("src/a.ts", 8, 8), updateFile("src/b.ts", 8, 8)))).toBeNull();
+  // ...and each file's edit is counted for the turn rule: src/a.ts already has 2, so a 3rd is denied
+  expect(patch(applyPatch(updateFile("src/a.ts", 1, 1)))).toMatch(/^3rd edit to src\/a\.ts this turn:/);
+  expect(patch(applyPatch(updateFile("src/b.ts", 1, 1)))).toBeNull(); // another file still has a fresh count
+  // malformed patch text fails open
+  expect(patch("not a patch\n+garbage\n-nope")).toBeNull();
+  expect(patch("*** Begin Patch\n*** End Patch")).toBeNull();
+});
+
 test("context: the SessionStart hook prints a one-line pointer to delegate; the rules stay in the server instructions", () => {
   // a fresh cache means the update check makes no network call
   const out = contextOut({ checked: Date.now(), latest: version }, { CLAUDE_CODE_ENTRYPOINT: "cli" });
@@ -127,14 +154,44 @@ test("context: the SessionStart hook prints a one-line pointer to delegate; the 
 });
 
 /** Runs `hook context` hermetically, with a fresh cache the caller controls, so no test can touch the network or ~/.config. */
-function contextOut(cache: { checked: number; latest: string }, extraEnv: Record<string, string> = {}) {
+function contextOut(cache: { checked: number; latest: string }, extraEnv: Record<string, string> = {}, host?: "codex", stdin = "") {
   const { home, env } = hermeticHome();
   onTestFinished(() => rmSync(home, { recursive: true, force: true }));
   const dir = join(home, "config", "cheapag");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "update-check.json"), JSON.stringify(cache));
-  return JSON.parse(execFileSync(process.execPath, [serverEntry, "hook", "context"], { env: { ...env, ...extraEnv }, encoding: "utf8" }));
+  const args = ["hook", "context", ...(host ? [host] : [])];
+  return JSON.parse(execFileSync(process.execPath, [serverEntry, ...args], { env: { ...env, ...extraEnv }, input: stdin, encoding: "utf8" }));
 }
+
+test("context codex: the SessionStart hook prints the full Codex instructions, including the hidden-tools warning", () => {
+  const out = contextOut({ checked: Date.now(), latest: version }, { CLAUDE_CODE_ENTRYPOINT: "cli" }, "codex");
+  expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  const text = out.hookSpecificOutput.additionalContext as string;
+  expect(text).toContain("research");
+  expect(text).toContain("An OK is done");
+  expect(text).toContain("search for them");
+  expect(text.length).toBeLessThanOrEqual(4096);
+});
+
+test("context: PLUGIN_ROOT marks Codex, so plain hook context prints the full Codex instructions", () => {
+  const out = contextOut({ checked: Date.now(), latest: version }, { CLAUDE_CODE_ENTRYPOINT: "cli", PLUGIN_ROOT: "/Users/x/.codex/plugins/cheapag" });
+  expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  expect(out.hookSpecificOutput.additionalContext).toContain("search for them");
+});
+
+test("context: a transcript_path under .codex marks Codex, so plain hook context prints the full Codex instructions", () => {
+  const stdin = JSON.stringify({ transcript_path: "/Users/x/.codex/sessions/a.jsonl" });
+  const out = contextOut({ checked: Date.now(), latest: version }, { CLAUDE_CODE_ENTRYPOINT: "cli", PLUGIN_ROOT: "" }, undefined, stdin);
+  expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  expect(out.hookSpecificOutput.additionalContext).toContain("search for them");
+});
+
+test("context: neither Codex signal keeps the byte-identical Claude one-liner", () => {
+  const stdin = JSON.stringify({ transcript_path: "/Users/x/.claude/projects/a.jsonl" });
+  const out = contextOut({ checked: Date.now(), latest: version }, { CLAUDE_CODE_ENTRYPOINT: "cli", PLUGIN_ROOT: "" }, undefined, stdin);
+  expect(out.hookSpecificOutput.additionalContext).toBe(SESSION_CONTEXT);
+});
 
 test("context: a newer minor or major version adds a yellow systemMessage and tells Claude to prompt the update", () => {
   const [major, minor] = version.split(".").map(Number);

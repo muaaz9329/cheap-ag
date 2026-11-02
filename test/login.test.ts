@@ -113,7 +113,12 @@ tty("login saves the key through the bundled OpenCode, live-checks it, and regis
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" });
   expect(r.output).not.toContain(KEY.slice(10)); // OpenCode masks the input; nothing echoes it
   // Enter on the worker-models question took balanced, the default
-  expect(r.output).toContain("Worker models: cheapest / balanced (recommended) / strongest [balanced]");
+  expect(r.output).toContain("Worker models:");
+  expect(r.output).toContain("1) cheapest");
+  expect(r.output).toContain("2) balanced (recommended)");
+  expect(r.output).toContain("3) strongest");
+  expect(r.output).toContain("4) custom (set models yourself in cheapag.json)");
+  expect(r.output).toContain("Models [1-4, Enter = balanced]:");
   expect(r.config).toEqual({ models: PRESETS.openrouter.balanced });
 }, slow(90_000));
 
@@ -125,17 +130,24 @@ tty("picking strongest writes its models to the user config, and the live check 
   expect(r.output).toContain("✓ openrouter/z-ai/glm-5.3 answered");
 }, slow(90_000));
 
+tty("a number on the worker-models list picks that preset: 3 is strongest", async () => {
+  const r = await runLogin({ claude: "registered", preset: "3" });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.config).toEqual({ models: PRESETS.openrouter.strongest });
+  expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "z-ai/glm-5.3" });
+}, slow(90_000));
+
 tty("re-running login offers the current preset; Enter keeps it and the config's other keys", async () => {
   const r = await runLogin({ claude: "registered", config: { test_cmd: "make check", models: PRESETS.openrouter.strongest } });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).toContain("strongest [strongest]");
+  expect(r.output).toContain("Models [1-4, Enter = strongest]");
   expect(r.config).toEqual({ test_cmd: "make check", models: PRESETS.openrouter.strongest });
 }, slow(90_000));
 
 tty("--preset sets the models without asking; an answer that is no preset changes nothing", async () => {
   const r = await runLogin({ claude: "registered", args: ["--preset", "cheapest"] });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).not.toContain("Worker models: cheapest / balanced");
+  expect(r.output).not.toContain("Worker models:\n");
   expect(r.config).toEqual({ models: PRESETS.openrouter.cheapest });
   const bad = await runLogin({ claude: "registered", preset: "fastest" });
   expect(bad.exit).toMatch(/^EXIT 1 UNMATCHED/); // never got to the key
@@ -251,6 +263,14 @@ tty.each([
   const r = await runLogin({ claude: "unregistered", check: [{ error: { name: "APIError", message } }] });
   expect(r.exit).toBe("EXIT 1");
   expect(r.output).toContain(expected);
+}, slow(90_000));
+
+tty("a live check blocked by OpenCode Go's region setting also prints the fix", async () => {
+  const message = "This Go model requires Global regions. Select Global in your workspace's Privacy settings to use it.";
+  const r = await runLogin({ claude: "unregistered", check: [{ error: { name: "APIError", message } }] });
+  expect(r.exit).toBe("EXIT 1");
+  expect(r.output).toContain(`✗ live check failed: ${message}`);
+  expect(r.output).toContain("  Fix: in the OpenCode console (opencode.ai), Settings → Privacy → Regions → Global; or pick a model that does not need it (e.g. opencode-go/glm-5.3-flash) with --preset custom.");
 }, slow(90_000));
 
 test("login refuses a non-interactive stdin instead of hanging", async () => {

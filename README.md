@@ -95,6 +95,32 @@ A few dollars lasts hundreds of tasks. It runs on macOS and Linux.
 - If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
 - The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
 
+### Codex
+
+Codex support is experimental. Run `npx cheap-agent` once to log in. It also offers to add itself to Claude Code; say no if you don't use Claude.
+
+```bash
+npx cheap-agent
+```
+
+Add the Cheap Agent plugin marketplace:
+
+```bash
+codex plugin marketplace add muaaz9329/cheap-ag
+```
+
+Install the plugin:
+
+```bash
+codex plugin add cheapag@cheap-agent
+```
+
+Start `codex` in your project. When it says hooks need review, trust the 3 cheapag hooks (or do it later with `/hooks`).
+
+Then type `$cheapag:allow` once per project. Codex asks to allow network for npx the first time.
+
+Codex shares the same login, consent and `.cheapag/` folder as Claude Code. OpenCode Go users need Global under Regions in the OpenCode console for the DeepSeek models.
+
 ## The numbers
 
 Tested on [SWE-bench Verified](https://www.swebench.com): real bugs from real open-source projects, graded by the official harness. Same prompts in Claude Code with Opus 5.5, with and without Cheap Agent.

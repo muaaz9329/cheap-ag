@@ -5,7 +5,7 @@ import { loadConfig, userConfigFile } from "./config.js";
 import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Bash"]);
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch", "Bash"]);
 // Bash forms that write a file: redirects and heredocs into a path, in-place sed/perl, tee, cp/mv targets, and
 // python/node one-liners that open files for writing. The benchmark showed Claude writing whole files this way.
 const BASH_WRITES = [
@@ -42,6 +42,7 @@ const flag = (root: string) => join(root, ".cheapag", "hook.json");
 export function hook(args: string[]): number | Promise<number> {
   if (args.length === 1 && args[0] === "guard") return guard();
   if (args.length === 1 && args[0] === "context") return context();
+  if (args.length === 2 && args[0] === "context" && args[1] === "codex") return context("codex");
   if (args.length === 1 && args[0] === "result") return result();
   const out = (line: string) => process.stdout.write(line + "\n");
   if (args.length > 1 || (args.length && args[0] !== "on" && args[0] !== "off")) {
@@ -85,18 +86,37 @@ const updateCacheFile = () => join(dirname(userConfigFile()), "update-check.json
 type UpdateCache = { checked?: number; latest?: string };
 
 /**
- * The SessionStart output: the delegate pointer, plus a Claude-Code-style update notice when a new minor or major
- * version is out. The version check never throws or prints: a registry that is slow, offline or broken just leaves the
- * session's context byte-identical.
+ * Codex sets PLUGIN_ROOT for plugin hook commands (Claude Code sets only CLAUDE_PLUGIN_ROOT), and its hook stdin has a
+ * transcript_path under a `.codex` directory; either signal means the shared hooks file is running under Codex.
  */
-async function context(): Promise<number> {
+function codexHost(): boolean {
+  if (process.env.PLUGIN_ROOT) return true;
+  if (process.stdin.isTTY) return false;
+  try {
+    const input = JSON.parse(readFileSync(0, "utf8")) as { transcript_path?: unknown };
+    return typeof input.transcript_path === "string" && /[\\/]\.codex[\\/]/.test(input.transcript_path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The SessionStart output: a short delegate pointer for Claude, or the full Codex server instructions for Codex (which
+ * never sees the MCP `instructions`), plus a Claude-Code-style update notice when a new minor or major version is out.
+ * The version check never throws or prints: a registry that is slow, offline or broken just leaves the session's
+ * context byte-identical.
+ */
+async function context(host?: "claude" | "codex"): Promise<number> {
+  const target = host ?? (codexHost() ? "codex" : "claude");
   const latest = await newerVersion();
   // The terminal notice is yellow, except in the desktop app, which renders no colours; there the sentence Claude
   // reads in additionalContext is what surfaces the update.
   const systemMessage = latest && colour(`Cheap Agent ${latest} is available (you have ${INSTALLED}). Update: npx cheap-agent@latest`);
+  // imported lazily so the guard and result hooks never load the MCP server
+  const base = target === "codex" ? (await import("./server.js")).hostInstructions("codex", process.cwd()) : SESSION_CONTEXT;
   const additionalContext = latest
-    ? `${SESSION_CONTEXT} Cheap Agent ${latest} is available (the user has ${INSTALLED}): at the start of your first reply, tell the user in one line to update with \`npx cheap-agent@latest\`.`
-    : SESSION_CONTEXT;
+    ? `${base} Cheap Agent ${latest} is available (the user has ${INSTALLED}): at the start of your first reply, tell the user in one line to update with \`npx cheap-agent@latest\`.`
+    : base;
   process.stdout.write(JSON.stringify({
     ...(systemMessage && { systemMessage }),
     hookSpecificOutput: { hookEventName: "SessionStart", additionalContext },
@@ -272,6 +292,7 @@ function check(input: Input): string | undefined {
   const tool = input.tool_input ?? {};
   if (typeof input.cwd !== "string") return;
   if (input.tool_name === "Bash") return typeof tool.command === "string" ? bashCheck(input.cwd, tool.command) : undefined;
+  if (input.tool_name === "apply_patch") return typeof tool.command === "string" ? patchCheck(input.cwd, tool.command, input) : undefined;
   if (typeof tool.file_path !== "string") return;
   const root = projectRoot(input.cwd);
   if (!existsSync(flag(root))) return;
@@ -279,22 +300,86 @@ function check(input: Input): string | undefined {
   if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
   const lines = changed(input.tool_name!, tool, file);
-  if (lines > limit) return `Large edit (${lines} changed lines, over ${limit}): ${REDIRECT}`;
-  // A turn is one user prompt: Claude Code's prompt_id. Without it (older Claude Code) only the size rule applies.
+  const state = turnState(input, root);
+  const reason = editRules(state?.turn.edits, tool.file_path, file, lines, limit);
+  if (reason) return reason;
+  if (state) saveTurn(root, state);
+}
+
+type Turn = { prompt: string; edits: Record<string, number> };
+
+/**
+ * A turn is one user prompt: Claude Code's prompt_id. Without it (older Claude Code) only the size rule applies, so
+ * the turn is undefined and nothing is counted.
+ */
+function turnState(input: Input, root: string): { turn: Turn; file: string } | undefined {
   if (!input.prompt_id || !input.session_id) return;
   // shortcut: one small file per session, never pruned and not locked against parallel edits; prune in `cheapag clean` if they pile up
-  const state = join(root, ".cheapag", "hook", `${input.session_id.replace(/[^\w-]/g, "_")}.json`);
-  let turn: { prompt: string; edits: Record<string, number> } = { prompt: input.prompt_id, edits: {} };
+  const file = join(root, ".cheapag", "hook", `${input.session_id.replace(/[^\w-]/g, "_")}.json`);
+  let turn: Turn = { prompt: input.prompt_id, edits: {} };
   try {
-    const saved = JSON.parse(readFileSync(state, "utf8"));
+    const saved = JSON.parse(readFileSync(file, "utf8"));
     if (saved.prompt === input.prompt_id) turn = saved;
   } catch {
     // first edit of the session
   }
-  if ((turn.edits[file] ?? 0) >= 2) return `3rd edit to ${tool.file_path} this turn: ${REDIRECT}`;
-  turn.edits[file] = (turn.edits[file] ?? 0) + 1;
+  return { turn, file };
+}
+
+function saveTurn(root: string, state: { turn: Turn; file: string }) {
   mkdirSync(join(root, ".cheapag", "hook"), { recursive: true });
-  writeFileSync(state, JSON.stringify(turn));
+  writeFileSync(state.file, JSON.stringify(state.turn));
+}
+
+/** The size rule, then the 2-edits-per-file-per-turn rule; a pass increments the file's count. */
+function editRules(edits: Record<string, number> | undefined, name: string, file: string, lines: number, limit: number): string | undefined {
+  if (lines > limit) return `Large edit (${lines} changed lines, over ${limit}): ${REDIRECT}`;
+  if (!edits) return;
+  if ((edits[file] ?? 0) >= 2) return `3rd edit to ${name} this turn: ${REDIRECT}`;
+  edits[file] = (edits[file] ?? 0) + 1;
+}
+
+/** A Codex patch file section: `*** Update File:`, `*** Add File:` or `*** Delete File:`; other `***` lines end it. */
+const PATCH_FILE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/;
+
+/** Codex's apply_patch text as one entry per file with the lines its hunks add and remove. Unknown text yields none. */
+function patchEdits(patch: string): { path: string; lines: number }[] {
+  const edits: { path: string; lines: number }[] = [];
+  let current: { path: string; lines: number } | undefined;
+  for (const line of patch.split("\n")) {
+    const file = PATCH_FILE.exec(line);
+    if (file) {
+      current = { path: file[1].trim(), lines: 0 };
+      edits.push(current);
+    } else if (line.startsWith("*** ") && !line.startsWith("*** Move to:")) {
+      current = undefined;
+    } else if (current && (line.startsWith("+") || line.startsWith("-"))) {
+      current.lines++;
+    }
+  }
+  return edits;
+}
+
+/** Each file in a Codex patch goes through the Edit/Write rules; a malformed patch yields no files and is allowed. */
+function patchCheck(cwd: string, patch: string, input: Input): string | undefined {
+  const root = projectRoot(cwd);
+  if (!existsSync(flag(root))) return;
+  const edits = patchEdits(patch);
+  if (!edits.length) return;
+  const limit = loadConfig(root).guard_lines;
+  const state = turnState(input, root);
+  // a denied patch is not applied, so none of its files count until every one of them passes
+  const counts = state && { ...state.turn.edits };
+  for (const edit of edits) {
+    const file = resolve(cwd, edit.path);
+    if (isPlan(root, file)) continue;
+    const reason = editRules(counts, edit.path, file, edit.lines, limit);
+    if (reason) return reason;
+  }
+  if (state && counts) {
+    state.turn.edits = counts;
+    saveTurn(root, state);
+  }
 }
 
 /** Plans live in .plan/ and are how Claude delegates, so the guard never blocks them. */
