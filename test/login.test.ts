@@ -20,7 +20,7 @@ const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
 // the terminal-driven tests need python3 and a pty, which Windows lacks; the launcher and win32 generation tests still run there
 const tty = test.skipIf(process.platform === "win32");
 
-async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object; plugin?: "installed" | "fails"; cmd?: string[] }) {
+async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object; plugin?: "installed" | "fails"; cmd?: string[]; registeredCommand?: string[]; steps?: { expect: string; send: string }[] }) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   fake.script(...(opts.check ?? [{ usage: { cost: 0.0001 } }]));
@@ -35,7 +35,8 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
   if (opts.claude !== "absent") {
     mkdirSync(bin);
     const scope = { registered: "User config (available in all your projects)", local: "Local config (private to you in this project)", unregistered: "" }[opts.claude];
-    const get = scope ? `echo "cheapag:"; echo "  Scope: ${scope}"; exit 0` : "exit 1";
+    const registered = opts.registeredCommand ?? [process.execPath, serverEntry];
+    const get = scope ? `echo "cheapag:"; echo "  Scope: ${scope}"; echo "  Command: ${registered[0]}"; echo "  Args: ${registered.slice(1).join(" ")}"; exit 0` : "exit 1";
     // ticket 31: "plugin list" / "plugin marketplace list" name cheapag once installed; "plugin install" can fail
     const listed = opts.plugin === "installed" ? `if [ "$1 $2" = "plugin list" ]; then echo "  ❯ cheapag@cheapag"; fi\nif [ "$1 $2 $3" = "plugin marketplace list" ]; then echo "  ❯ cheapag"; fi\n` : "";
     const fails = opts.plugin === "fails" ? `if [ "$1 $2" = "plugin install" ]; then echo "Plugin not found" >&2; exit 1; fi\n` : "";
@@ -51,7 +52,7 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
         ...(opts.plugin === "fails" ? [`if "%1 %2"=="plugin install" goto fail`] : []),
         "exit /b 0",
         ":get",
-        ...(scope ? ["echo cheapag:", `echo   Scope: ${scope}`, "exit /b 0"] : ["exit /b 1"]),
+        ...(scope ? ["echo cheapag:", `echo   Scope: ${scope}`, `echo   Command: ${registered[0]}`, `echo   Args: ${registered.slice(1).join(" ")}`, "exit /b 0"] : ["exit /b 1"]),
         ":fail",
         "echo Plugin not found 1>&2",
         "exit /b 1",
@@ -59,7 +60,7 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
       writeFileSync(join(bin, "claude.cmd"), cmd.join("\r\n") + "\r\n");
     }
   }
-  const steps = [
+  const steps = opts.steps ?? [
     { expect: "Provider", send: "2\r" },
     ...(opts.args ? [] : [{ expect: "Workermodels", send: `${opts.preset ?? ""}\r` }]),
     { expect: "EnteryourAPIkey", send: `${KEY}\r` },
@@ -200,6 +201,17 @@ tty("an existing registration is detected and kept without asking; the plugin is
   expect(r.claudeCalls).toEqual(["mcp get cheapag", ...PLUGIN(r.marketplace)]);
 }, slow(90_000));
 
+tty("an outdated registration is replaced with this run's server, without asking", async () => {
+  const r = await runLogin({ claude: "registered", registeredCommand: ["npx", "-y", "cheap-agent@1.2.7"] });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).toContain("✓ Updated cheapag's server in Claude Code to ");
+  expect(r.output).not.toContain("[Y/n]");
+  const remove = r.claudeCalls.indexOf("mcp remove cheapag -s user");
+  expect(remove).toBeGreaterThan(-1);
+  expect(r.claudeCalls[remove + 1]).toBe(ADD);
+  expect(r.claudeCalls.slice(-PLUGIN(r.marketplace).length)).toEqual(PLUGIN(r.marketplace));
+}, slow(90_000));
+
 tty("the plugin is generated from the package: hooks and commands call the launcher, no .mcp.json, its own marketplace", async () => {
   const r = await runLogin({ claude: "registered" });
   const plugin = join(r.marketplace, "cheapag");
@@ -234,6 +246,25 @@ tty("npx cheap-agent with no arguments in a terminal runs setup (Claude Code sta
   const r = await runLogin({ claude: "registered", cmd: [process.execPath, serverEntry] });
   expect(r.output).toContain("Cheap Agent login");
   expect(r.exit).toBe("EXIT 0");
+}, slow(90_000));
+
+tty("npx cheap-agent with a saved provider updates without asking and registers the server", async () => {
+  const r = await runLogin({
+    claude: "registered",
+    logins: { openrouter: "k" },
+    config: { models: PRESETS.openrouter.strongest },
+    cmd: [process.execPath, serverEntry],
+    steps: [],
+  });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).not.toContain("Provider [1-");
+  expect(r.output).not.toContain("EnteryourAPIkey");
+  expect(r.output).toContain("· already set up with OpenRouter (strongest)");
+  expect(r.output).toContain("✓ Updated the cheapag plugin to ");
+  expect(r.output).not.toContain("Added the cheapag plugin");
+  expect(r.output).not.toContain("run /cheapag:allow");
+  expect(r.output).toContain("Restart Claude Code to load it. To change provider or models: npx cheap-agent login");
+  expect(r.claudeCalls).toEqual(["mcp get cheapag", ...PLUGIN(r.marketplace)]);
 }, slow(90_000));
 
 tty("a registration at another scope does not count: login still offers the user-scope add", async () => {

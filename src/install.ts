@@ -88,7 +88,7 @@ export function writePlugin(entry: string, _node: string, platform: NodeJS.Platf
 }
 
 /** Generates the plugin and adds it to Claude Code (or updates it); prints the manual commands when a step fails. */
-export function installPlugin(out: (line?: string) => void): boolean {
+export function installPlugin(out: (line?: string) => void, { update = false }: { update?: boolean } = {}): boolean {
   const marketplace = writePlugin(realpathSync(process.argv[1]), stableNode());
   const claude = (...args: string[]) => runCli("claude", ["plugin", ...args], { encoding: "utf8" });
   const listed = (args: string[], name: string) => (claude(...args)?.stdout ?? "").includes(name);
@@ -104,7 +104,9 @@ export function installPlugin(out: (line?: string) => void): boolean {
       return false;
     }
   }
-  out("✓ Added the cheapag plugin to Claude Code (its /cheapag commands and hooks)");
+  out(update
+    ? `✓ Updated the cheapag plugin to ${version}`
+    : "✓ Added the cheapag plugin to Claude Code (its /cheapag commands and hooks)");
   return true;
 }
 
