@@ -9,7 +9,7 @@ const REQUIRED = ["files", "done-when"];
 
 /** The plan grammar in one line, for Claude: the delegate tool description and every plan-error FAIL carry it. */
 export const PLAN_FORMAT =
-  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>", "difficulty: easy|medium|hard"), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks.';
+  'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>", "difficulty: easy|medium|hard"), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks. Numbered or lettered list items count as separate changes, and a step or task with three or more is refused; write the details of one change as - bullets or prose.';
 
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
@@ -65,7 +65,7 @@ export function parsePlan(source: string): Plan {
     const hidden = step.fields.files.split(/[,\n]/).map((f) => f.trim().replace(/^\.\//, "")).find((f) => f.split("/")[0] === ".cheapag");
     if (hidden) throw new Error(`line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`);
     const changes = countChanges(step.fields.do ?? "");
-    if (changes >= 3) throw new Error(`line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them)`);
+    if (changes >= 3) throw new Error(`line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them), or use - bullets for the details of one change`);
   }
   return { title, context: context.join("\n").trim(), steps: steps.map(({ line, ...step }) => ({ ...step, text: step.text.trim() })) };
 }

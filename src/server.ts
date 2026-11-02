@@ -32,7 +32,7 @@ const HARD_RULE: Record<HardTasks, string> = {
  * so the usage rules travel with the server and nobody edits CLAUDE.md. Claude Code cuts them at 4,096 characters.
  */
 export const instructions = (hard: HardTasks = "delegate", takeover: TakeOver = "sonnet", host: "claude" | "codex" = "claude") => `Cheap Agent: a cheap worker model writes the code; you plan and review. The user pays for your tokens, not the worker's.
-${host === "codex" ? "Codex: cheapag's tools (delegate, research, jobs, reply, land, ping) may be hidden until you search for them; search for them before reading or editing code.\n" : ""}Send every code change to delegate, including small, mechanical, "quick" or multi-file ones. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only if the user asks, or to fix one line after a worker result. Bash file writes (heredocs, redirects, sed -i) are editing too.
+${host === "codex" ? "Codex: cheapag's tools (delegate, research, jobs, reply, land, ping) may be hidden until you search for them; search for them before reading or editing code.\n" : ""}Send every code change to delegate, including small, mechanical, "quick" or multi-file ones. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only if the user asks, or to fix one line after a worker result. Bash file writes (heredocs, redirects, sed -i) are editing too. Write a task's details as - bullets or prose: numbered or lettered items count as separate changes, and three or more get the task refused.
 ${DIFFICULTY_HINT}${HARD_RULE[hard]}
 ${REVIEW_RULE} ${TAKE_OVER_RULE[takeover]}
 ${VERIFY_RULE}
