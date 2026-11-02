@@ -63,12 +63,12 @@ export function allowRepo(cwd: string, env: Record<string, string>, args: string
  * Hermetic (see `hermeticHome`); `cwd` defaults to that home, so `.cheapag/` never lands in this repo.
  * `allow` first opts the cwd's repo in through the real CLI (`[]` = all models), as the developer would.
  */
-export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[]; allow?: string[] } = {}) {
+export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[]; args?: string[]; allow?: string[] } = {}) {
   const { home, env } = hermeticHome(opts.logins);
   if (opts.allow) allowRepo(opts.cwd ?? home, { ...env, ...opts.env }, opts.allow);
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [...(opts.nodeArgs ?? []), serverEntry],
+    args: [...(opts.nodeArgs ?? []), serverEntry, ...(opts.args ?? [])],
     cwd: opts.cwd ?? home,
     env: { ...env, ...opts.env },
     stderr: "inherit",

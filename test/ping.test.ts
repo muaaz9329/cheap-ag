@@ -26,6 +26,21 @@ test("server instructions carry the usage rules, within Claude Code's 4,096-char
   ]) expect(instructions).toContain(rule);
 });
 
+test("codex host gets Codex instructions, no Claude-only rules, same server name", async () => {
+  const codex = await startServer({ args: ["codex"] });
+  try {
+    expect(codex.client.getServerVersion()).toMatchObject({ name: "cheapag", version });
+    const instructions = codex.client.getInstructions()!;
+    expect(instructions).toContain("npx cheap-agent allow");
+    expect(instructions).toContain("do the task yourself");
+    expect(instructions).not.toContain("model: sonnet");
+    expect(instructions).not.toContain("/cheapag:allow");
+    expect(instructions.length).toBeLessThanOrEqual(4096);
+  } finally {
+    await codex.close();
+  }
+});
+
 test("delegate and research load upfront in Claude Code, with descriptions that lead with what they do", async () => {
   const { tools } = await server.client.listTools();
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
