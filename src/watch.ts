@@ -144,6 +144,54 @@ function readJson(file: string): Record<string, any> | undefined {
 }
 
 /**
+ * `cheapag watch <job…>`: follows the given jobs' progress.txt and result.txt, printing a line per change and then
+ * each result. Returns 0 once every job is final. Used by Codex, which streams a running command's output live.
+ */
+export async function follow(root: string, ids: string[], out: NodeJS.WritableStream = process.stdout, pollMs = 500): Promise<number> {
+  const base = join(root, ".cheapag", "jobs");
+  const printed = new Map<string, string>();
+  const final = new Set<string>();
+  for (;;) {
+    for (const id of ids) {
+      if (final.has(id)) continue;
+      const dir = join(base, id);
+      if (!existsSync(dir)) {
+        out.write(`✗ no job ${id}\n`);
+        final.add(id);
+        continue;
+      }
+      const progressFile = join(dir, "progress.txt");
+      if (existsSync(progressFile)) {
+        let line = "";
+        try {
+          line = readFileSync(progressFile, "utf8").trim();
+        } catch {
+          line = "";
+        }
+        if (line && line !== printed.get(id)) {
+          printed.set(id, line);
+          out.write(`  ${id}  ${line}\n`);
+        }
+      }
+      const resultFile = join(dir, "result.txt");
+      const word = firstWord(resultFile);
+      if (word && word !== "RUNNING") {
+        final.add(id);
+        let result = "";
+        try {
+          result = readFileSync(resultFile, "utf8").trim();
+        } catch {
+          result = "";
+        }
+        out.write(`\n${result}\n`);
+      }
+    }
+    if (ids.every((id) => final.has(id))) return 0;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/**
  * `cheapag watch`: prints each new line of the project's job progress, polling rather than fs.watch (Windows, and
  * worktrees are removed under a watcher). Runs until Ctrl-C.
  */

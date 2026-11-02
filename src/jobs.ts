@@ -871,7 +871,7 @@ const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provi
  */
 const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string>; batch: string | null; settles: () => Promise<void>; block: () => string; parked: () => boolean }>();
 
-export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string };
+export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string; seconds?: number };
 
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
@@ -883,13 +883,20 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
     if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
     return lines.join("\n");
   }
-  if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress);
+  if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress, input.seconds);
   // the id becomes a path: only well-formed ids get that far
   if (!input.job || !/^j[0-9a-z]{4}$/.test(input.job)) return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`);
   const live = running.get(input.job);
   if (input.action === "wait" && live) {
     // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
-    if (!blocked.has(input.job)) await live.settles();
+    if (!blocked.has(input.job)) {
+      if (input.seconds === undefined) await live.settles();
+      else {
+        const waited = await waitOrTimeout(live.settles(), input.seconds);
+        // settled just as the timer fired: the final block is more useful than a stale RUNNING line
+        if (waited.timedOut && running.has(input.job)) return runningCheckin(root, input.job, input.job, input.seconds);
+      }
+    }
     return live.block();
   }
   if (input.action === "cancel" && live) {
@@ -909,9 +916,16 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
 }
 
 /** `jobs wait` on a batch: the next settlement of a live one, or a finished one's block (from its records) at once. */
-function waitBatch(root: string, batch: string, progress: Progress): Promise<string> | string {
+async function waitBatch(root: string, batch: string, progress: Progress, seconds?: number): Promise<string> {
   const live = batches.get(batch);
-  if (live) return live.look(true, progress);
+  if (live) {
+    if (seconds === undefined) return live.look(true, progress);
+    const waited = await waitOrTimeout(live.look(true, progress), seconds);
+    if (!waited.timedOut) return waited.value;
+    const jobs = runningBatchJobs(root, batch);
+    // everything settled just as the timer fired: the completed batch block is more useful
+    return jobs.length ? runningCheckin(root, jobs, batch, seconds) : live.render();
+  }
   let record: BatchRecord;
   try {
     record = JSON.parse(readFileSync(join(root, ".cheapag", "batches", `${batch}.json`), "utf8"));
@@ -922,6 +936,42 @@ function waitBatch(root: string, batch: string, progress: Progress): Promise<str
   const jobRecords = record.jobs.map((id) => readRecord(join(root, ".cheapag", "jobs", id)));
   if (jobRecords.some((r) => !r)) return failBlock(`batch ${batch}: a job record is missing (cleaned up?)`);
   return renderBatch(record, jobRecords as JobRecord[], record.fix ? readRecord(join(root, ".cheapag", "jobs", record.fix)) : undefined);
+}
+
+/** A short check-in: each still-running job's latest progress line, then how to check again. */
+function runningCheckin(root: string, jobs: string | string[], asked: string, seconds: number) {
+  const ids = typeof jobs === "string" ? [jobs] : jobs;
+  return [...ids.map((job) => `RUNNING ${job} · ${progressLine(root, job)}`), `next: jobs(action="wait", job="${asked}", seconds=${seconds})`].join("\n");
+}
+
+/** The worker's latest progress line for a job, or `starting` before its first turn. */
+function progressLine(root: string, job: string) {
+  try {
+    return readFileSync(join(root, ".cheapag", "jobs", job, "progress.txt"), "utf8").trim() || "starting";
+  } catch {
+    return "starting";
+  }
+}
+
+/** The batch's group jobs that are still RUNNING (not BLOCKED), from their records. */
+function runningBatchJobs(root: string, batch: string) {
+  try {
+    const record = JSON.parse(readFileSync(join(root, ".cheapag", "batches", `${batch}.json`), "utf8")) as { jobs?: string[] };
+    return (record.jobs ?? []).filter((id) => readRecord(join(root, ".cheapag", "jobs", id))?.status === "RUNNING");
+  } catch {
+    return [];
+  }
+}
+
+/** Resolves with the wait's value, or `timedOut` after `seconds`; the timer is always cleared. */
+function waitOrTimeout<T>(wait: Promise<T>, seconds: number): Promise<{ timedOut: false; value: T } | { timedOut: true }> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    wait.then((value) => ({ timedOut: false as const, value })),
+    new Promise<{ timedOut: true }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true as const }), seconds * 1000);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 const LIST_MAX = 20;

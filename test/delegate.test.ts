@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
-import { snapshot, startServer, tempRepo, type Logins } from "./harness.js";
+import { callText, snapshot, startServer, tempRepo, type Logins } from "./harness.js";
 import { PLAN_FORMAT } from "../src/plan.js";
 
 const PLAN = `# Hello feature
@@ -56,6 +56,22 @@ test("an inline task runs as a one-step job without a plan file, and lands OK", 
   expect(await call({})).toBe("FAIL reason: give task (what to change, files, how to check), or plan and steps");
   expect(await call({ task: "x", plan: ".plan/hello.md", steps: "1" })).toBe("FAIL reason: give either task, or plan and steps, not both");
   expect(await call({ task: "  " })).toBe("FAIL reason: task is empty: say what to change, in which files, and how to check it");
+});
+
+test("jobs wait with seconds returns the running worker's latest step, then a plain wait returns the final block", async () => {
+  const { server } = await scenarioWithServer([
+    { edit: "src/hello.ts", content: "export const hello = 1;\n" },
+    { tool: "write" },
+    { wait: 2_000 },
+    { finish: REPORT },
+  ]);
+  const running = await callText(server.client, "delegate", { plan: ".plan/hello.md", steps: "1", wait: false });
+  const job = jobOf(running);
+  expect(running).toMatch(new RegExp(`^RUNNING ${job} `));
+  const checkin = await callText(server.client, "jobs", { action: "wait", job, seconds: 1 });
+  expect(checkin.startsWith(`RUNNING ${job} · `)).toBe(true);
+  expect(checkin).toContain('next: jobs(action="wait"');
+  expect(await callText(server.client, "jobs", { action: "wait", job })).toMatch(/^OK /);
 });
 
 test("a plan under .cheapag/ FAILs clearly before any job", async () => {

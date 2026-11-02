@@ -33,7 +33,9 @@ test("marketplace lists the plugin from this repo, and the manifests agree on na
 
 test("the MCP entry and every command run exactly this package version, so the pin cannot drift", () => {
   expect(json(join(plugin, ".mcp.json"))).toEqual({ mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`] } } });
-  expect(json(join(plugin, "codex.mcp.json"))).toEqual({ mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`, "codex"] } } });
+  expect(json(join(plugin, "codex.mcp.json"))).toEqual({
+    mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`, "codex"], omit_tools_from: ["code_mode", "deferred"] } },
+  });
   const files = readdirSync(plugin, { recursive: true, withFileTypes: true }).filter((f) => f.isFile());
   const pins = files.flatMap((f) => readFileSync(join(f.parentPath, f.name), "utf8").match(/cheap-agent@[^\s`"')]+/g) ?? []);
   expect(pins.length).toBeGreaterThan(3);

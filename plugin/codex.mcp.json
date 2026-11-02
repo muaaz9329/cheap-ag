@@ -2,7 +2,8 @@
   "mcpServers": {
     "cheapag": {
       "command": "npx",
-      "args": ["-y", "cheap-agent@1.2.7", "codex"]
+      "args": ["-y", "cheap-agent@1.2.7", "codex"],
+      "omit_tools_from": ["code_mode", "deferred"]
     }
   }
 }

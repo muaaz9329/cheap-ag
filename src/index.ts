@@ -5,7 +5,11 @@ if (process.argv[2] === "login" || (process.argv[2] === undefined && process.std
 else if (process.argv[2] === "allow") process.exit((await import("./allow.js")).allow(process.argv.slice(3)));
 else if (process.argv[2] === "clean") process.exit((await import("./cleanup.js")).clean(process.argv.slice(3)));
 else if (process.argv[2] === "status") process.exit((await import("./status.js")).status(process.argv.slice(3)));
-else if (process.argv[2] === "watch") process.exit(await (await import("./watch.js")).watch());
+else if (process.argv[2] === "watch") {
+  const ids = process.argv.slice(3).filter((arg) => !arg.startsWith("-"));
+  const live = await import("./watch.js");
+  process.exit(ids.length ? await live.follow((await import("./workspace.js")).projectRoot(process.cwd()), ids) : await live.watch());
+}
 else if (process.argv[2] === "hook") process.exit(await (await import("./hook.js")).hook(process.argv.slice(3)));
 else if (process.argv[2] === "codex") await (await import("./server.js")).serve("codex");
 else await (await import("./server.js")).serve();
