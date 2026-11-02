@@ -1,12 +1,12 @@
 <h1 align="center">Cheap Agent</h1>
 
 <p align="center">
-  <em>Your Opus is a principal engineer. Stop paying it to type.</em>
+  <em>Your frontier model is a principal engineer. Stop paying it to type.</em>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/cheap-agent?style=flat-square&color=111111&label=npm" alt="npm">
-  <img src="https://img.shields.io/badge/for-Claude%20Code-111111?style=flat-square" alt="For Claude Code">
+  <img src="https://img.shields.io/badge/for-Claude%20Code%20%7C%20Codex-111111?style=flat-square" alt="For Claude Code and Codex">
   <img src="https://img.shields.io/badge/cheap%20model-%C2%BD%C2%A2%20a%20task-111111?style=flat-square" alt="Cheap model: half a cent a task">
   <img src="https://img.shields.io/badge/tested%20on-SWE--bench%20Verified-111111?style=flat-square" alt="Tested on SWE-bench Verified">
   <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT License">
@@ -22,7 +22,7 @@
 
 <p align="center">
   <strong>Same feature. Same prompt. 63% fewer Opus tokens.</strong><br>
-  <strong>Your Claude plan lasts longer. Your code still ships with tests.</strong>
+  <strong>Your Claude or ChatGPT plan lasts longer. Your code still ships with tests.</strong>
 </p>
 
 <p align="center">
@@ -35,9 +35,9 @@ You know the principal engineer. Twenty years in. Sees the whole system at once.
 
 You would never pay them to type out a CSV exporter.
 
-But that's exactly what happens every time Opus writes your code: the most expensive model you have, reading files, typing boilerplate, re-running tests, burning through your plan.
+But that's exactly what happens every time your frontier model (Claude Opus, GPT-6 Astra or Sol) writes your code: the most expensive model you have, reading files, typing boilerplate, re-running tests, burning through your plan.
 
-**Cheap Agent fixes the org chart.** Opus plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
+**Cheap Agent fixes the org chart.** Your frontier model plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
 
 ## Why I built this
 
@@ -50,6 +50,10 @@ This is a small effort from my side. It won't make Opus ten times cheaper. But s
 📖 The full story (why I built it, how it works step by step, and the SWE-bench numbers): **[Cheap Agent: how I made my Claude plan last 2.2–2.7x longer](https://muaazkhan.me/blog/cheap-agent)**
 
 ## Install
+
+Works in Claude Code and Codex. One login covers both.
+
+### Claude Code
 
 **Easiest:** paste this into Claude Code. It asks what you want, then gives you one command to run.
 
@@ -83,43 +87,43 @@ Then, in each project, once:
 
 **That's it.** Ask Claude for changes like you always do.
 
-**You need:**
-- [Claude Code](https://claude.com/claude-code)
-- [Node.js](https://nodejs.org) 20+
-- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com), [OpenCode Go](https://opencode.ai) or [Command Code](https://commandcode.ai) (needs a plan with API access)
-
-A few dollars lasts hundreds of tasks. It runs on macOS and Linux.
-
-**Windows (beta):** tested in CI, not yet by a Windows user. You also need [Git for Windows](https://git-scm.com/downloads/win) (Git Bash). Known so far:
-- The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
-- If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
-- The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
-
 ### Codex
 
-Codex support is experimental. Run `npx cheap-agent` once to log in. It also offers to add itself to Claude Code; say no if you don't use Claude.
+Log in (say no when it offers to add itself to Claude Code, if you don't use Claude):
 
 ```bash
 npx cheap-agent
 ```
 
-Add the Cheap Agent plugin marketplace:
+Add the plugin:
 
 ```bash
 codex plugin marketplace add muaaz9329/cheap-ag
 ```
 
-Install the plugin:
-
 ```bash
 codex plugin add cheapag@cheap-agent
 ```
 
-Start `codex` in your project. When it says hooks need review, trust the 3 cheapag hooks (or do it later with `/hooks`).
+Start `codex` in your project and trust the 3 cheapag hooks when it asks. Then, in each project, once:
 
-Then type `$cheapag:allow` once per project. Codex asks to allow network for npx the first time.
+```
+$cheapag:allow
+```
 
-Codex shares the same login, consent and `.cheapag/` folder as Claude Code. OpenCode Go users need Global under Regions in the OpenCode console for the DeepSeek models.
+**That's it.** Ask Codex for changes like you always do.
+
+**You need:**
+- [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex)
+- [Node.js](https://nodejs.org) 20+
+- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com), [OpenCode Go](https://opencode.ai) or [Command Code](https://commandcode.ai) (Command Code needs a plan with API access; OpenCode Go needs Regions set to Global in its console for the DeepSeek models)
+
+A few dollars lasts hundreds of tasks. It runs on macOS, Linux and Windows.
+
+**Windows:** you also need [Git for Windows](https://git-scm.com/downloads/win) (Git Bash). Known so far:
+- The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
+- If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
+- The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
 
 ## The numbers
 
@@ -160,7 +164,7 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 
 - **Every change is proven.** The cheap model must write a test that fails before its fix and passes after. Cheap Agent runs the tests itself; it doesn't take the model's word for it.
 - **Your project stays clean.** Work happens in a private copy (a git worktree). Only passing work lands, uncommitted, so you review the diff like any other.
-- **Opus stays in charge,** but it's held to it: Cheap Agent's hooks stop Opus from quietly redoing work that already passed, or doing a failed step itself when Sonnet can.
+- **Your frontier model stays in charge,** but it's held to it: Cheap Agent's hooks stop it from quietly redoing work that already passed, or (in Claude Code) doing a failed step itself when Sonnet can.
 
 ## Commands
 
@@ -168,10 +172,11 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 |---|---|
 | `/cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
 | `/cheapag:status` | Recent jobs, and what the cheap model has cost you. |
-| `/cheapag:hook on` | No more "I'll just do it myself": Claude *must* hand code changes to the cheap model. |
+| `/cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
 | `/cheapag:clean` | Tidy up old job folders. |
 
 To watch the worker live while Claude Code or Codex waits, run `npx cheap-agent watch` in a second terminal.
+In Codex, type `$` instead of `/`: `$cheapag:allow`, `$cheapag:status`, and so on.
 
 ## Settings
 
@@ -179,20 +184,20 @@ Optional. Put a `cheapag.json` in a project:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `takeover` | `"sonnet"` | Who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (Opus, capped at 15 tool calls). |
+| `takeover` | `"sonnet"` | Who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (your frontier model, capped at 15 tool calls). Claude Code only; Codex finishes it itself. |
 | `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
 | `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
 
 ## FAQ
 
 **Is a half-cent model actually any good?**
-On its own, no. With a written task from Opus, a test it has to pass, and a referee that runs that test, yes, most of the time. When it isn't, it says so and Sonnet takes over.
+On its own, no. With a written task from your frontier model, a test it has to pass, and a referee that runs that test, yes, most of the time. When it isn't, it says so and a stronger model takes over.
 
-**Does Claude check the work?**
+**Does my frontier model check the work?**
 The tests check the work, and Cheap Agent runs them. Opus checking every passing change cost three times the tokens and caught nothing in my runs, so it trusts a pass. You still review the diff before you commit.
 
 **Where does my code go?**
-To the provider you picked, only after you run `/cheapag:allow` in that project, which also shows exactly which models will see it. Your API key stays on your machine, in a hidden prompt and a local credential store, never in chat.
+To the provider you picked, only after you run `/cheapag:allow` (`$cheapag:allow` in Codex) in that project, which also shows exactly which models will see it. Your API key stays on your machine, in a hidden prompt and a local credential store, never in chat.
 
 **Will it commit or push anything?**
 Never. Changes land uncommitted. Your git, your call.
@@ -220,6 +225,12 @@ New versions are announced on the [Releases page](https://github.com/muaaz9329/c
 npx cheap-agent@latest
 ```
 
+In Codex, also:
+
+```bash
+codex plugin marketplace upgrade
+```
+
 **Remove** (two commands):
 
 ```bash
@@ -228,4 +239,10 @@ claude plugin uninstall cheapag@cheapag
 
 ```bash
 claude mcp remove -s user cheapag
+```
+
+In Codex:
+
+```bash
+codex plugin remove cheapag@cheap-agent
 ```
