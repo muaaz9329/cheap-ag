@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
 import { failBlock, renderConsent } from "./report.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, localServer } from "./config.js";
 import { fullRoute, modelName, presetOf, routeModels, type Route, type WorkerModel } from "./routing.js";
 import { projectRoot } from "./workspace.js";
 
@@ -37,7 +37,11 @@ export function writeConsent(root: string, consent: Consent) {
   writeFileSync(file(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
 }
 
-const routeNames = (r: Route) => routeModels(r).map(modelName);
+// a local model is named with its server: pointing the same model id at another URL is another recipient
+const routeNames = (r: Route) => {
+  const at = r.implement.providerID === "local" ? `@${localServer()?.base_url}` : "";
+  return routeModels(r).map((m) => modelName(m) + at);
+};
 
 /** The models config now routes to other models than the consent was shown (not judged on a damaged config, which the job's own load reports; a record from before routes were kept has none). */
 export function routeMoved(root: string, consent: Consent) {
@@ -130,12 +134,15 @@ function consentBlock(root: string, provider: Provider["provider"], full: Route)
   const main = routeModels({ ...full, fallbacks: [], researchFallbacks: [] }).map((m) => m.id);
   const extra = models.map((m) => m.id).filter((id) => !main.includes(id));
   const ids = main.join(", ") + (extra.length ? ` (+fallbacks ${extra.join(", ")})` : "");
+  const local = provider === "local" ? localServer() : undefined;
   const retentionLine = provider === "openrouter"
     ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
+    : local
+    ? `your own server; it keeps what it is set up to keep (a proxy such as LiteLLM may forward to a hosted provider)`
     : models.map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`).join("; ");
   return renderConsent({
     repo: basename(root),
-    send: `code from this repo → ${providerLabel(provider)}: ${ids}`,
+    send: `code from this repo → ${local ? `local server at ${local.base_url}` : providerLabel(provider)}: ${ids}`,
     retention: retentionLine,
     approve: "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself",
   });

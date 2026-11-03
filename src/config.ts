@@ -35,6 +35,37 @@ const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 /** The user-level config every repo's `cheapag.json` overrides; `cheapag login` writes its `models` (the preset). */
 export const userConfigFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
 
+/**
+ * A local OpenAI-compatible server for the worker (llama.cpp, Strata, Ollama, LM Studio, vLLM, LiteLLM): `local` in the
+ * user config only, so a repo's cheapag.json can never point the worker at another endpoint. `model` is the server's
+ * model id; `api_key_file` names a file OpenCode reads the key from (Cheap Agent never reads it); `context` and `output`
+ * are the model's token limits, which OpenCode needs to compact a long session before the server rejects it.
+ */
+export type LocalServer = { base_url: string; model: string; api_key_file?: string; context?: number; output?: number };
+
+/** The user config's `local` server, undefined when none is set; throws on a damaged one. */
+export function localServer(): LocalServer | undefined {
+  const file = userConfigFile();
+  if (!existsSync(file)) return undefined;
+  const value = JSON.parse(readFileSync(file, "utf8")) as { local?: unknown };
+  return value?.local === undefined ? undefined : parseLocal(value.local, file);
+}
+
+function parseLocal(local: unknown, file: string): LocalServer {
+  if (typeof local !== "object" || local === null || Array.isArray(local)) throw new Error(`${file}: local must be an object`);
+  const { base_url, model, api_key_file, context, output } = local as Record<string, unknown>;
+  if (typeof base_url !== "string" || !/^https?:\/\/\S+$/.test(base_url)) throw new Error(`${file}: local.base_url must be an http(s) URL, e.g. http://127.0.0.1:8080/v1`);
+  if (typeof model !== "string" || !model.trim()) throw new Error(`${file}: local.model must be the server's model id`);
+  if (api_key_file !== undefined && (typeof api_key_file !== "string" || !isAbsolute(api_key_file))) throw new Error(`${file}: local.api_key_file must be an absolute path`);
+  for (const [key, v] of [["context", context], ["output", output]] as const) {
+    if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v <= 0)) throw new Error(`${file}: local.${key} must be a positive whole number of tokens`);
+  }
+  return {
+    base_url: base_url.replace(/\/+$/, ""), model: model.trim(),
+    ...(api_key_file !== undefined && { api_key_file }), ...(context !== undefined && { context: context as number }), ...(output !== undefined && { output: output as number }),
+  };
+}
+
 export function loadConfig(root: string): Config {
   const [mine, repo] = [read(userConfigFile()), read(join(root, "cheapag.json"))];
   // caps, retention and models merge key by key, so a repo can set one and keep the user's others
@@ -61,7 +92,11 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local } = value as Record<string, unknown>;
+  if (local !== undefined) {
+    if (file !== userConfigFile()) throw new Error(`${file}: local can only be set in ${userConfigFile()}, never in a repo`);
+    parseLocal(local, file);
+  }
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet

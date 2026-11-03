@@ -1,7 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { providerLabel, type Provider } from "./credentials.js";
+import { localServer } from "./config.js";
+import { LOGIN_COMMAND, providerLabel, type Provider } from "./credentials.js";
 import type { RunResult, Session } from "./worker.js";
 
 /** Routing: which model each role runs, fallbacks on provider limits, escalation eligibility, and the local spend ledger. */
@@ -19,7 +20,7 @@ const OPENROUTER_PRIVATE = { provider: { data_collection: "deny", sort: "through
  * Go and DeepSeek ids are in OpenCode 1.19.0's bundled model catalog; OpenRouter's are on openrouter.ai/api/v1/models
  * (checked 2026-10-16). Direct DeepSeek has no other models to fall back to.
  */
-export const ROLES: Record<ProviderId, { implement: string[]; research: string[]; escalation: string }> = {
+export const ROLES: Record<Exclude<ProviderId, "local">, { implement: string[]; research: string[]; escalation: string }> = {
   "opencode-go": {
     implement: ["deepseek-v4.1-flash", "qwen3.7-plus", "glm-5.3", "kimi-k3"],
     research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
@@ -36,13 +37,26 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
   commandcode: { implement: ["deepseek/deepseek-v4.1-flash"], research: ["deepseek/deepseek-v4.1-flash"], escalation: "deepseek/deepseek-v4-pro" },
 };
 
+/**
+ * A local server's roles: its configured model implements and researches. There is no stronger model to escalate to
+ * unless `models.escalation` names one (e.g. a second model behind the same LiteLLM), and no fallbacks: no rate limits.
+ */
+function localRoles(): { implement: string[]; research: string[]; escalation?: string } {
+  const local = localServer();
+  if (!local) throw new Error(`no local server configured; run ${LOGIN_COMMAND}`);
+  return { implement: [local.model], research: [local.model] };
+}
+
+const rolesOf = (provider: ProviderId) => (provider === "local" ? localRoles() : ROLES[provider]);
+
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
 export const PRESET_NAMES = ["cheapest", "balanced", "strongest"] as const;
 export type Preset = (typeof PRESET_NAMES)[number];
 // balanced is the default route, Flash for every tier: GLM-5.3 cost Claude 1.5x fewer tokens than Flash on the tasks Flash
 // lost (ticket 25) but showed no gain on the hard tier (26), so it is opt-in as strongest. cheapest is balanced until a
 // cheaper worker than Flash exists (a tie reports balanced). Kimi K3 was dropped: $0.36 worker per task, BUDGET on half.
-export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
+// a local server has no presets: login asks for its model instead
+export const PRESETS: Record<Exclude<ProviderId, "local">, Record<Preset, ModelsConfig>> = {
   "opencode-go": {
     cheapest: { implement: "opencode-go/deepseek-v4.1-flash" },
     balanced: { implement: "opencode-go/deepseek-v4.1-flash" },
@@ -69,6 +83,7 @@ export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
 
 /** The preset whose route `models` gives on this provider, else custom (`preset=` in ping and status); a tie names balanced, the default. */
 export function presetOf(provider: ProviderId, models: ModelsConfig = {}): Preset | "custom" {
+  if (provider === "local") return "custom";
   const key = (m: ModelsConfig) => JSON.stringify(fullRoute(provider, m));
   return (["balanced", "cheapest", "strongest"] as const).find((p) => key(PRESETS[provider][p]) === key(models)) ?? "custom";
 }
@@ -98,7 +113,7 @@ export const tierModel = (r: Route, d?: Difficulty) => (d === "hard" ? r.hard ??
 
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {
-  const roles = ROLES[provider];
+  const roles = rolesOf(provider);
   const own = (name?: string) => (name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined);
   const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
   const [research, ...researchFallbacks] = [own(models.research) ?? roles.research[0], ...roles.research.slice(1)];
@@ -108,7 +123,7 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
     medium: tier(models.medium),
     hard: tier(models.hard),
     fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map((id) => model(provider, id)),
-    escalation: model(provider, own(models.escalation) ?? roles.escalation),
+    escalation: tier(models.escalation) ?? (roles.escalation ? model(provider, roles.escalation) : undefined),
     research: model(provider, research),
     researchFallbacks: researchFallbacks.map((id) => model(provider, id)),
   };
@@ -248,6 +263,8 @@ function readLedger(): { at: number; model: string; costUsd: number }[] {
  * earlier in this job, or at `skipAt` (E4 `escalation_skip_at`) or more of a tracked cap (spec A7: V4 Pro's Go cap is small).
  */
 export function escalationSkip(escalation: WorkerModel | undefined, c: Chain, skipAt: number, spent: Record<string, number>) {
+  // a local server has an escalation model only when models.escalation names one
+  if (!escalation && c.first.providerID === "local") return "esc: skipped, no escalation model for the local server (set models.escalation, or allow it with /cheapag:allow)";
   if (!escalation) return "esc: skipped, the escalation model is not allowed by this repo's consent";
   const name = modelName(escalation);
   if (c.limits.some((l) => l.model === name)) return `esc: skipped, ${escalation.id} hit its usage limit in this job`;

@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { loadConfig, userConfigFile } from "./config.js";
+import { loadConfig, localServer, userConfigFile, type LocalServer } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
 import { runCli } from "./platform.js";
@@ -20,6 +20,9 @@ import { runSession } from "./worker.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 const CHECK_TIMEOUT_MS = 90_000;
+// a local server may first have to load the model from disk (or wake from an idle unload)
+const LOCAL_CHECK_TIMEOUT_MS = 300_000;
+const LOCAL_URL = "http://127.0.0.1:8080/v1";
 
 const CHOICES = [...PRESET_NAMES, "custom"] as const;
 type Choice = (typeof CHOICES)[number];
@@ -52,6 +55,10 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
       out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
       return 1;
     }
+    if (saved.provider === "local") {
+      out(`No terminal to ask in: the local server stays as configured in ${userConfigFile()}`);
+      return 0;
+    }
     // no terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the benchmark)
     const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
     if (!flag) out(`No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`);
@@ -63,37 +70,42 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   out("Cheap Agent login");
   const current = detectProvider();
   if (current) out(`Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`);
-  PROVIDERS.forEach((p, i) => out(`  ${i + 1}) ${p.label}`));
+  PROVIDERS.forEach((p, i) => out(`  ${i + 1}) ${p.label}${p.id === "local" ? " (any OpenAI-compatible URL: llama.cpp, Strata, Ollama, LM Studio, vLLM, LiteLLM)" : ""}`));
   const answer = await ask(`Provider [1-${PROVIDERS.length}]: `);
   const picked = PROVIDERS[Number(answer) - 1];
   if (!picked) {
     out(`✗ "${answer}" is not one of 1-${PROVIDERS.length}; nothing changed`);
     return 1;
   }
-  const preset = currentPreset(picked.id) ?? "balanced";
-  let choice = flag ?? "";
-  if (flag === undefined) {
-    out("Worker models:");
-    CHOICES.forEach((name, i) =>
-      out(`  ${i + 1}) ${name}${name === "balanced" ? " (recommended)" : name === "custom" ? " (set models yourself in cheapag.json)" : ""}`),
-    );
-    const answer = await ask(`Models [1-${CHOICES.length}, Enter = ${preset}]: `);
-    choice = answer ? (CHOICES[Number(answer) - 1] ?? answer) : preset;
-  }
-  if (!isChoice(choice)) {
-    out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
-    return 1;
+  if (picked.id === "local") {
+    if (flag) out("--preset does not apply to a local server: its model is asked for below");
+    if (!(await localLogin(out))) return 1;
+  } else {
+    const preset = currentPreset(picked.id) ?? "balanced";
+    let choice = flag ?? "";
+    if (flag === undefined) {
+      out("Worker models:");
+      CHOICES.forEach((name, i) =>
+        out(`  ${i + 1}) ${name}${name === "balanced" ? " (recommended)" : name === "custom" ? " (set models yourself in cheapag.json)" : ""}`),
+      );
+      const answer = await ask(`Models [1-${CHOICES.length}, Enter = ${preset}]: `);
+      choice = answer ? (CHOICES[Number(answer) - 1] ?? answer) : preset;
+    }
+    if (!isChoice(choice)) {
+      out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
+      return 1;
+    }
+
+    // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
+    const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit" });
+    if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
+      out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
+      return 1;
+    }
+    if (!savePreset(picked.id, choice, out) || !dropLocal(out, picked.label)) return 1;
   }
 
-  // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
-  const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit" });
-  if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
-    out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
-    return 1;
-  }
-  if (!savePreset(picked.id, choice, out)) return 1;
-
-  const provider: Provider = { provider: picked.id, via: "login" };
+  const provider: Provider = { provider: picked.id, via: picked.id === "local" ? "config" : "login" };
   const check = await liveCheck(provider);
   out(check.ok ? `✓ ${check.line}` : `✗ ${check.line}`);
   if (!check.ok) {
@@ -128,7 +140,7 @@ function currentPreset(provider: Provider["provider"]) {
 }
 
 /** Writes the preset as the user config's `models`, other keys kept; custom writes nothing. */
-function savePreset(provider: Provider["provider"], choice: Choice, out: (line?: string) => void) {
+function savePreset(provider: Exclude<Provider["provider"], "local">, choice: Choice, out: (line?: string) => void) {
   const file = userConfigFile();
   if (choice === "custom") {
     out(`Worker models: custom, nothing written; set "models" in a repo's cheapag.json, or in ${file} for every repo`);
@@ -146,12 +158,137 @@ function savePreset(provider: Provider["provider"], choice: Choice, out: (line?:
   return true;
 }
 
+/**
+ * Asks for the local server: its URL, the model (from the server's own /models list when it gives one), a key file if it
+ * needs a key, and the context window (detected from llama.cpp's /props or LM Studio's API when they answer). Saves it as
+ * the user config's `local`, other keys kept. The key file is only checked to exist: OpenCode reads it, Cheap Agent never does.
+ */
+async function localLogin(out: (line?: string) => void): Promise<boolean> {
+  let current: LocalServer | undefined;
+  try {
+    current = localServer();
+  } catch {} // a damaged entry is replaced
+  out("e.g. llama.cpp http://127.0.0.1:8080/v1, Ollama http://127.0.0.1:11434/v1, LM Studio http://127.0.0.1:1234/v1");
+  let base = ((await ask(`Server URL [Enter = ${current?.base_url ?? LOCAL_URL}]: `)) || current?.base_url || LOCAL_URL).replace(/\/+$/, "");
+  if (!/^https?:\/\/\S+$/.test(base)) {
+    out(`✗ "${base}" is not an http(s) URL; nothing changed`);
+    return false;
+  }
+  let listed = await listModels(base);
+  // most servers serve the OpenAI API under /v1: accept the bare host too
+  if (listed === "unreachable" && !/\/v1$/.test(base)) {
+    const v1 = await listModels(`${base}/v1`);
+    if (v1 !== "unreachable") [base, listed] = [`${base}/v1`, v1];
+  }
+  if (listed === "unreachable") out(`! ${base}/models did not answer; is the server running? Continuing, the live check will tell.`);
+
+  const keep = current?.base_url === base ? current : undefined;
+  const keyAnswer = await ask(`API key file, if the server needs a key [Enter = ${keep?.api_key_file ?? "none"}, "none" to clear]: `);
+  const keyFile = keyAnswer === "none" ? undefined : keyAnswer ? keyAnswer.replace(/^~(?=$|[\\/])/, homedir()) : keep?.api_key_file;
+  if (keyFile !== undefined && (!isAbsolute(keyFile) || !existsSync(keyFile))) {
+    // not echoed: a key pasted here by mistake stays off the screen
+    out("✗ no such file: give the absolute path of a file holding only the key; nothing changed");
+    return false;
+  }
+
+  let model: string | undefined;
+  if (Array.isArray(listed) && listed.length) {
+    out("Models on this server:");
+    listed.forEach((id, i) => out(`  ${i + 1}) ${id}`));
+    const fallback = keep && listed.includes(keep.model) ? keep.model : listed[0];
+    const answer = await ask(`Model [1-${listed.length} or an id, Enter = ${fallback}]: `);
+    model = answer ? (listed[Number(answer) - 1] ?? answer) : fallback;
+  } else {
+    if (listed === "auth") out("The server wants a key to list its models; type the model id instead.");
+    model = (await ask(`Model id, as the server names it${keep ? ` [Enter = ${keep.model}]` : ""}: `)) || keep?.model;
+  }
+  if (!model) {
+    out("✗ no model given; nothing changed");
+    return false;
+  }
+
+  const detected = await contextOf(base, model);
+  const known = detected ?? (keep?.model === model ? keep.context : undefined);
+  const ctxAnswer = await ask(`Context window in tokens${detected ? " (detected)" : ""} [Enter = ${known ?? "unknown"}]: `);
+  const context = ctxAnswer ? Number(ctxAnswer.replace(/[_,]/g, "").replace(/k$/i, "000")) : known;
+  if (context !== undefined && !(Number.isInteger(context) && context > 0)) {
+    out(`✗ "${ctxAnswer}" is not a number of tokens; nothing changed`);
+    return false;
+  }
+  if (context === undefined) out("! Context window unknown: OpenCode cannot compact a long job before the server rejects it. Set local.context later if jobs fail on long sessions.");
+
+  const local: LocalServer = { base_url: base, model, ...(keyFile && { api_key_file: keyFile }), ...(context && { context }) };
+  const file = userConfigFile();
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ ...readUser(), local }, null, 2) + "\n");
+  } catch (err) {
+    out(`✗ ${file}: ${(err as Error).message}; local server not saved`);
+    return false;
+  }
+  out(`✓ Local server: ${model} at ${base}, saved in ${file}`);
+  return true;
+}
+
+/** The server's model ids from GET /models, "auth" when it wants a key for that, "unreachable" when it does not answer as an OpenAI API. */
+async function listModels(base: string): Promise<string[] | "auth" | "unreachable"> {
+  try {
+    const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5_000) });
+    if (res.status === 401 || res.status === 403) return "auth";
+    if (!res.ok) return "unreachable";
+    const { data } = (await res.json()) as { data?: { id?: unknown }[] };
+    if (!Array.isArray(data)) return "unreachable";
+    return data.map((m) => m.id).filter((id): id is string => typeof id === "string");
+  } catch {
+    return "unreachable";
+  }
+}
+
+/**
+ * The context window one request gets, when the server says: llama.cpp's /props (its n_ctx is shared by the parallel
+ * slots), else LM Studio's /api/v0/models. Undefined when neither answers without a key.
+ */
+async function contextOf(base: string, model: string): Promise<number | undefined> {
+  const root = base.replace(/\/v1$/, "");
+  const get = async (url: string) => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+      return res.ok ? ((await res.json()) as any) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const props = await get(`${root}/props`);
+  const nCtx = props?.default_generation_settings?.n_ctx;
+  if (Number.isInteger(nCtx) && nCtx > 0) return Math.floor(nCtx / (Number.isInteger(props.total_slots) && props.total_slots > 0 ? props.total_slots : 1));
+  const lms = await get(`${root}/api/v0/models`);
+  const entry = Array.isArray(lms?.data) ? lms.data.find((m: any) => m?.id === model) : undefined;
+  const loaded = entry?.loaded_context_length ?? entry?.max_context_length;
+  return Number.isInteger(loaded) && loaded > 0 ? loaded : undefined;
+}
+
+/** After a login to a hosted provider: removes the user config's `local`, which would otherwise keep winning over it. */
+function dropLocal(out: (line?: string) => void, provider: string) {
+  try {
+    const { local, ...rest } = readUser();
+    if (local === undefined) return true;
+    writeFileSync(userConfigFile(), JSON.stringify(rest, null, 2) + "\n");
+    out(`✓ Local server setting removed from ${userConfigFile()}; ${provider} is used now`);
+    return true;
+  } catch (err) {
+    out(`✗ ${userConfigFile()}: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 /** One tiny real call to the implement model the user's config now picks, through the bundled OpenCode, in a throwaway directory. */
 async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
   const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;
+  let timeoutMs = CHECK_TIMEOUT_MS;
   try {
+    timeoutMs = provider.provider === "local" ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
     // the throwaway dir has no cheapag.json, so this is the user's config alone
     const route = fullRoute(provider.provider, loadConfig(dir).models);
     const model = route.implement;
@@ -167,7 +304,7 @@ async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: strin
       }),
     );
     // covers boot as well as the answer; on timeout, stopping OpenCode below ends the session, and login exits
-    const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("no answer within 90s")), CHECK_TIMEOUT_MS)));
+    const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`no answer within ${timeoutMs / 1000}s`)), timeoutMs)));
     const result = await Promise.race([run, timeout]);
     if (result.error) return { ok: false, line: explain(result.error, name) };
     return { ok: true, line: `${name} answered (cost $${result.usage.costUsd.toFixed(4)})` };
@@ -191,6 +328,7 @@ function explain(message: string, model: string) {
   const first = message.split("\n")[0];
   if (/\b401\b|unauthori[sz]ed|authentication|invalid.*key|api key/i.test(message)) return `the key was rejected (${first}); run ${LOGIN} again with the right key`;
   if (/\b402\b|credit|insufficient|balance|quota/i.test(message)) return `the account has no credit (${first}); top it up, then run ${LOGIN} again`;
+  if (/ECONNREFUSED|fetch failed|unable to connect|connection refused/i.test(message)) return `could not reach the server for ${model} (${first}); start it, or run ${LOGIN} with the right URL`;
   if (/\b404\b|not found|no endpoints|not available/i.test(message)) return `${model} is unavailable to this account (${first}); run ${LOGIN} and pick another provider`;
   return `live check failed: ${first}`;
 }
