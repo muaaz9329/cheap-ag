@@ -286,3 +286,20 @@ test("commandcode presets: cheapest and balanced implement on Flash, strongest o
   expect(modelName(route.research!)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
   expect(modelName(route.escalation!)).toBe("commandcode/deepseek/deepseek-v4-pro");
 });
+
+// ---- cheapaimodel presets and role defaults ----
+
+test("cheapaimodel presets: cheapest and balanced implement on Flash, strongest on GLM-5.3; roles default Flash with GLM-5.3-Flash escalation", () => {
+  const implement = (models: ModelsConfig) => modelName(fullRoute("cheapaimodel", models).implement);
+  expect(implement(PRESETS.cheapaimodel.cheapest)).toBe("cheapaimodel/deepseek-v4-1-flash");
+  expect(implement(PRESETS.cheapaimodel.balanced)).toBe("cheapaimodel/deepseek-v4-1-flash");
+  expect(implement(PRESETS.cheapaimodel.strongest)).toBe("cheapaimodel/glm-5.3");
+  expect(modelName(fullRoute("cheapaimodel", PRESETS.cheapaimodel.strongest).medium!)).toBe("cheapaimodel/glm-5.3");
+
+  const route = fullRoute("cheapaimodel");
+  expect(modelName(route.implement)).toBe("cheapaimodel/deepseek-v4-1-flash");
+  expect(route.fallbacks.map(modelName)).toEqual(["cheapaimodel/glm-5.3"]);
+  expect(modelName(route.research!)).toBe("cheapaimodel/deepseek-v4-1-flash");
+  expect(route.researchFallbacks.map(modelName)).toEqual(["cheapaimodel/glm-5.3-flash"]);
+  expect(modelName(route.escalation!)).toBe("cheapaimodel/glm-5.3-flash");
+});

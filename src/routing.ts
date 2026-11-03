@@ -34,6 +34,9 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
   deepseek: { implement: ["deepseek-flash"], research: ["deepseek-flash"], escalation: "deepseek-v4-pro" },
   // Command Code's Provider API (OpenAI-compatible); ids from api.commandcode.ai/provider/v1/models (checked 2026-10-31)
   commandcode: { implement: ["deepseek/deepseek-v4.1-flash"], research: ["deepseek/deepseek-v4.1-flash"], escalation: "deepseek/deepseek-v4-pro" },
+  // cheapaimodel's API (OpenAI-compatible); ids from cheapaimodel.ai/api/models (checked 2026-11-03). OpenRouter's route
+  // without Qwen, which it does not serve; Kimi K3 and Grok 4.7 are left out
+  cheapaimodel: { implement: ["deepseek-v4-1-flash", "glm-5.3"], research: ["deepseek-v4-1-flash", "glm-5.3-flash"], escalation: "glm-5.3-flash" },
 };
 
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
@@ -64,6 +67,12 @@ export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
     cheapest: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
     balanced: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
     strongest: { implement: "commandcode/deepseek/deepseek-v4-pro" },
+  },
+  // same shape as OpenRouter: Flash by default, GLM-5.3 for strongest
+  cheapaimodel: {
+    cheapest: { implement: "cheapaimodel/deepseek-v4-1-flash" },
+    balanced: { implement: "cheapaimodel/deepseek-v4-1-flash" },
+    strongest: { implement: "cheapaimodel/glm-5.3", medium: "cheapaimodel/glm-5.3" },
   },
 };
 
