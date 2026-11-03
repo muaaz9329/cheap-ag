@@ -10,6 +10,7 @@ export const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
   { id: "commandcode", label: "Command Code" },
+  { id: "cheapaimodel", label: "cheapaimodel" },
 ] as const;
 
 export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" };
