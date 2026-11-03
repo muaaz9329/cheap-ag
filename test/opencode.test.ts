@@ -159,6 +159,21 @@ test("a Command Code key never reaches output or config; the config declares the
   });
 });
 
+test("the bundled OpenCode keeps its own database: a newer OpenCode's in the shared data dir neither stops it nor is touched", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const server = await startServer({ logins: { openrouter: "o" } });
+  onTestFinished(server.close);
+  // OpenCode 2.x's schema (sessions in session_v2): 1.19 refuses to start on it ("Database is not empty and has no session table")
+  const shared = join(server.home, "data", "opencode", "opencode.db");
+  const db = new DatabaseSync(shared);
+  db.exec("CREATE TABLE session_v2 (id TEXT PRIMARY KEY); INSERT INTO session_v2 VALUES ('ses_newer')");
+  db.close();
+  const before = readFileSync(shared);
+  // OpenCode boots on the first call, after the database is in place
+  expect(await callText(server.client, "ping")).toMatch(/^OK cheapag /);
+  expect(readFileSync(shared).equals(before)).toBe(true);
+}, slow(60_000));
+
 test("boots the bundled OpenCode lazily on localhost, restarts it after a crash, and kills its process group on exit", async () => {
   // PATH without Homebrew & co: only the bundled binary can be found
   const PATH = [dirname(process.execPath), "/usr/bin", "/bin"].join(":");

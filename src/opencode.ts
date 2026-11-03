@@ -158,6 +158,9 @@ function opencodeConfig(provider: Provider, route: Route) {
   return JSON.stringify(config, null, 2) + "\n";
 }
 
+/** The bundled OpenCode's session database file, in OpenCode's data dir. */
+export const OPENCODE_DB = "cheapag-opencode.db";
+
 export type Opencode = { url: string; password: string; version: string };
 
 let started: Promise<Opencode> | undefined;
@@ -243,6 +246,9 @@ function spawnServer(configDir: string, password: string) {
         OPENCODE_SERVER_PASSWORD: password,
         OPENCODE_CONFIG_DIR: configDir,
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        // its own session database beside the user's (relative to OpenCode's data dir, where the shared auth.json stays): a newer
+        // OpenCode installed by the user migrates opencode.db to a schema 1.19 refuses to start on ("has no session table")
+        OPENCODE_DB,
         // OpenCode watches each session dir's .git; cheapag uses none of its events, and on Windows the open handle blocks removing the worktree
         OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
         ...(bash ? { SHELL: bash } : {}),
