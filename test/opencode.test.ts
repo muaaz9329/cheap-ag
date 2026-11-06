@@ -159,6 +159,17 @@ test("a Command Code key never reaches output or config; the config declares the
   });
 });
 
+test("an OpenCode Zen key never reaches output or config; Zen is built into OpenCode, so the config only sets the small model", async () => {
+  const key = "sk-zenSECRET0123456789abcdef0123";
+  const server = await startServer({ env: { CHEAPAG_OPENCODE_URL: await fakeHealth(key) }, logins: { opencode: key } });
+  onTestFinished(server.close);
+  const text = await callText(server.client, "ping");
+  expect(text).toBe("FAIL reason: opencode version [redacted], expected 1.19.0; reinstall cheap-agent");
+  const config = readFileSync(join(server.home, ".cheapag", "opencode", "opencode.json"), "utf8");
+  expect(config).not.toContain(key);
+  expect(JSON.parse(config)).toEqual({ $schema: "https://opencode.ai/config.json", small_model: "opencode/deepseek-v4.1-flash", provider: {} });
+});
+
 test("boots the bundled OpenCode lazily on localhost, restarts it after a crash, and kills its process group on exit", async () => {
   // PATH without Homebrew & co: only the bundled binary can be found
   const PATH = [dirname(process.execPath), "/usr/bin", "/bin"].join(":");

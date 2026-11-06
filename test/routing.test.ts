@@ -4,8 +4,9 @@ import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from "./harness.js";
 import { loadConfig } from "../src/config.js";
+import { PROVIDERS } from "../src/credentials.js";
 import { parsePlan } from "../src/plan.js";
-import { clock, fullRoute, modelName, PRESETS, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import { clock, fullRoute, modelName, PRESETS, presetOf, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
 import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
@@ -285,4 +286,26 @@ test("commandcode presets: cheapest and balanced implement on Flash, strongest o
   expect(modelName(route.implement)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
   expect(modelName(route.research!)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
   expect(modelName(route.escalation!)).toBe("commandcode/deepseek/deepseek-v4-pro");
+});
+
+// ---- opencode (Zen) presets and role defaults ----
+
+test("opencode (Zen) is listed last so login numbers 1-4 and Go's detection priority are unchanged", () => {
+  expect(PROVIDERS.map((p) => p.id)).toEqual(["opencode-go", "openrouter", "deepseek", "commandcode", "opencode"]);
+});
+
+test("opencode (Zen) presets: cheapest and balanced implement on Flash, strongest on GLM; roles default Flash with V4 Pro escalation and no Go-only fallback", () => {
+  const implement = (models: ModelsConfig) => modelName(fullRoute("opencode", models).implement);
+  expect(implement(PRESETS.opencode.cheapest)).toBe("opencode/deepseek-v4.1-flash");
+  expect(implement(PRESETS.opencode.balanced)).toBe("opencode/deepseek-v4.1-flash");
+  expect(implement(PRESETS.opencode.strongest)).toBe("opencode/glm-5.3");
+  expect(presetOf("opencode", PRESETS.opencode.strongest)).toBe("strongest");
+  expect(presetOf("opencode", { implement: "opencode/kimi-k3" })).toBe("custom");
+
+  const route = fullRoute("opencode");
+  expect(modelName(route.escalation!)).toBe("opencode/deepseek-v4-pro");
+  expect(modelName(route.research!)).toBe("opencode/qwen3.8-flash");
+  expect(routeModels(route).map(modelName)).not.toContain("opencode/qwen3.7-plus");
+  expect(routeModels(route).every((m) => m.providerID === "opencode")).toBe(true);
+  expect(modelName(fullRoute("opencode", { implement: "opencode-go/glm-5.3" }).implement)).toBe("opencode/deepseek-v4.1-flash");
 });

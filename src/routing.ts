@@ -31,6 +31,12 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
     // GLM-5.3-Flash: 37% on Terminal-Bench 4.0 vs V4 Pro 14% (Vals, 2026-10-16), and cheaper ($0.05 in / $0.20 out)
     escalation: "z-ai/glm-5.3-flash",
   },
+  // Zen's catalog (models.dev, checked 2026-11-06) has no qwen3.7-plus, so the fallbacks are GLM then Kimi
+  opencode: {
+    implement: ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3"],
+    research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
+    escalation: "deepseek-v4-pro",
+  },
   deepseek: { implement: ["deepseek-flash"], research: ["deepseek-flash"], escalation: "deepseek-v4-pro" },
   // Command Code's Provider API (OpenAI-compatible); ids from api.commandcode.ai/provider/v1/models (checked 2026-10-31)
   commandcode: { implement: ["deepseek/deepseek-v4.1-flash"], research: ["deepseek/deepseek-v4.1-flash"], escalation: "deepseek/deepseek-v4-pro" },
@@ -47,6 +53,11 @@ export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
     cheapest: { implement: "opencode-go/deepseek-v4.1-flash" },
     balanced: { implement: "opencode-go/deepseek-v4.1-flash" },
     strongest: { implement: "opencode-go/glm-5.3", medium: "opencode-go/glm-5.3" },
+  },
+  opencode: {
+    cheapest: { implement: "opencode/deepseek-v4.1-flash" },
+    balanced: { implement: "opencode/deepseek-v4.1-flash" },
+    strongest: { implement: "opencode/glm-5.3", medium: "opencode/glm-5.3" },
   },
   openrouter: {
     cheapest: { implement: "openrouter/deepseek/deepseek-v4.1-flash" },

@@ -4,7 +4,7 @@ Gives Claude the Cheap Agent MCP server (`delegate`, `research`, `reply`, `jobs`
 
 ## Worker models
 
-`npx cheap-agent login` asks which worker models to use, after the provider. Each preset picks the implement and escalation models for your provider (OpenCode Go, OpenRouter or DeepSeek):
+`npx cheap-agent login` asks which worker models to use, after the provider. Each preset picks the implement and escalation models for your provider (OpenCode Go, OpenCode Zen, OpenRouter or DeepSeek):
 
 - **cheapest**: the lowest worker spend. Claude takes over more often when the worker fails.
 - **balanced** (the default): the preset the benchmark measured and recommends.
