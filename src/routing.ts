@@ -34,6 +34,12 @@ export const ROLES: Record<ProviderId, { implement: string[]; research: string[]
   deepseek: { implement: ["deepseek-flash"], research: ["deepseek-flash"], escalation: "deepseek-v4-pro" },
   // Command Code's Provider API (OpenAI-compatible); ids from api.commandcode.ai/provider/v1/models (checked 2026-10-31)
   commandcode: { implement: ["deepseek/deepseek-v4.1-flash"], research: ["deepseek/deepseek-v4.1-flash"], escalation: "deepseek/deepseek-v4-pro" },
+  // Cheaper Inference (OpenAI-compatible); ids from api.cheaperinference.com/public/models (checked 2026-11-05)
+  cheaperinference: {
+    implement: ["deepseek-v4.1-flash", "qwen3.7-plus", "glm-5.3", "kimi-k3"],
+    research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
+    escalation: "glm-5.3-flash",
+  },
 };
 
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
@@ -64,6 +70,11 @@ export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
     cheapest: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
     balanced: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
     strongest: { implement: "commandcode/deepseek/deepseek-v4-pro" },
+  },
+  cheaperinference: {
+    cheapest: { implement: "cheaperinference/deepseek-v4.1-flash" },
+    balanced: { implement: "cheaperinference/deepseek-v4.1-flash" },
+    strongest: { implement: "cheaperinference/glm-5.3", medium: "cheaperinference/glm-5.3" },
   },
 };
 

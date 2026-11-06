@@ -137,14 +137,27 @@ const COMMAND_CODE = {
   options: { baseURL: "https://api.commandcode.ai/provider/v1" },
 };
 
+const CHEAPER_INFERENCE = {
+  npm: "@ai-sdk/openai-compatible",
+  name: "Cheaper Inference",
+  options: { baseURL: "https://api.cheaperinference.com/v1" },
+};
+
+/** Providers that are not in OpenCode's catalog, declared as OpenAI-compatible providers. */
+const OPENAI_COMPATIBLE: Partial<Record<Provider["provider"], typeof COMMAND_CODE>> = {
+  commandcode: COMMAND_CODE,
+  cheaperinference: CHEAPER_INFERENCE,
+};
+
 /** The generated opencode.json for the route's models: their options (e.g. OpenRouter routing) and the small model. */
 function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
   const models = Object.fromEntries(routeModels(route).filter((m) => m.options).map((m) => [m.id, { options: m.options }]));
   const providerConfig: Record<string, unknown> = Object.keys(models).length ? { models } : {};
-  // Command Code is not in OpenCode's catalog: declare it as an OpenAI-compatible provider (the key still comes from the auth store)
-  if (provider.provider === "commandcode") {
-    Object.assign(providerConfig, COMMAND_CODE, {
+  // Command Code and Cheaper Inference are not in OpenCode's catalog: declare them as OpenAI-compatible providers (the key still comes from the auth store)
+  const compatible = OPENAI_COMPATIBLE[provider.provider];
+  if (compatible) {
+    Object.assign(providerConfig, compatible, {
       models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }])),
     });
   }
