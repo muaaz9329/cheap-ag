@@ -286,3 +286,20 @@ test("commandcode presets: cheapest and balanced implement on Flash, strongest o
   expect(modelName(route.research!)).toBe("commandcode/deepseek/deepseek-v4.1-flash");
   expect(modelName(route.escalation!)).toBe("commandcode/deepseek/deepseek-v4-pro");
 });
+
+// ---- cheaperinference presets and role defaults ----
+
+test("cheaperinference presets: cheapest and balanced implement on Flash, strongest on GLM-5.3; roles default Flash with GLM-5.3-Flash escalation", () => {
+  const implement = (models: ModelsConfig) => modelName(fullRoute("cheaperinference", models).implement);
+  expect(implement(PRESETS.cheaperinference.cheapest)).toBe("cheaperinference/deepseek-v4.1-flash");
+  expect(implement(PRESETS.cheaperinference.balanced)).toBe("cheaperinference/deepseek-v4.1-flash");
+  expect(implement(PRESETS.cheaperinference.strongest)).toBe("cheaperinference/glm-5.3");
+
+  const route = fullRoute("cheaperinference");
+  expect(modelName(route.implement)).toBe("cheaperinference/deepseek-v4.1-flash");
+  expect(route.fallbacks.map(modelName)).toEqual(["cheaperinference/qwen3.7-plus", "cheaperinference/glm-5.3", "cheaperinference/kimi-k3"]);
+  expect(modelName(route.research!)).toBe("cheaperinference/qwen3.8-flash");
+  expect(modelName(route.escalation!)).toBe("cheaperinference/glm-5.3-flash");
+  // no OpenRouter routing options on a Cheaper Inference model
+  expect(route.implement.options).toBeUndefined();
+});
