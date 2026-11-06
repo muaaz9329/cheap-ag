@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { BRIEF_FORMAT, REPRO_RULE, refTokens } from "../src/research.js";
+import * as consent from "../src/consent.js";
+import * as opencode from "../src/opencode.js";
+import * as routing from "../src/routing.js";
+import * as worker from "../src/worker.js";
+import * as workspace from "../src/workspace.js";
+import { BRIEF_FORMAT, REPRO_RULE, refTokens, research as runResearch } from "../src/research.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, removeDir, slow, startServer, tempRepo, type Logins } from "./harness.js";
 
@@ -31,6 +36,63 @@ const block = (fields: string) => ({ text: `Found it.\n\`\`\`cheapag-research\n$
 const prompt = (head: string, words = 200) => `${head}\n${REPRO_RULE}\nAnswer in at most ${words} words.\n${BRIEF_FORMAT}`;
 
 const idOf = (text: string) => text.match(/^\w+ (r[0-9a-z]{4}) /)![1];
+
+test.each([
+  ["FAIL", "release"], ["FAIL", "remove"], ["ANSWER", "release"], ["ANSWER", "remove"],
+] as const)("%s terminal records survive EBUSY during worktree %s", async (status, phase) => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  onTestFinished(() => { vi.restoreAllMocks(); });
+  vi.spyOn(workspace, "projectRoot").mockReturnValue(repo.dir);
+  vi.spyOn(consent, "consentGate").mockReturnValue({ route: routing.fullRoute("opencode-go") });
+  vi.spyOn(routing, "recordSpend").mockImplementation(() => {});
+  const releaseHold = vi.fn();
+  vi.spyOn(opencode, "holdOpencode").mockReturnValue(releaseHold);
+  vi.spyOn(worker, "openSession").mockResolvedValue({
+    sessionID: "research-fault",
+    run: async () => status === "FAIL" ? { text: "", error: "API rejected request (400)" } : block("status: answer\nconfidence: high\nnotes: useful answer"),
+    totals: () => ({ sessionID: "research-fault", turns: 0, usage: { costUsd: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0 }, rejections: [], spend: {} }),
+  });
+  let id = "";
+  const persistedBeforeCleanup: boolean[] = [];
+  const observe = (path: string) => {
+    id = path.split(/[\\/]/).at(-1)!;
+    const dir = join(repo.dir, ".cheapag", "jobs", id);
+    persistedBeforeCleanup.push(existsSync(join(dir, "research.json")) && existsSync(join(dir, "result.txt")));
+  };
+  const busy = Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+  const releaseDirectory = vi.spyOn(worker, "releaseDirectory").mockImplementation(async (path) => {
+    observe(path);
+    if (phase === "release") throw busy;
+  });
+  const removeWorktree = vi.spyOn(workspace, "removeWorktree").mockImplementation((_root, tree) => {
+    observe(tree.path);
+    throw busy;
+  });
+  const text = await runResearch({ question: "where is the code?" }, {
+    provider: { provider: "opencode-go", via: "login" },
+    opencode: async () => ({ url: "http://unused.invalid", password: "unused", version: "test" }),
+    progress: () => {},
+  });
+  const dir = join(repo.dir, ".cheapag", "jobs", id);
+  const record = JSON.parse(readFileSync(join(dir, "research.json"), "utf8"));
+  expect(record).toMatchObject({ status, cleanupError: busy.message, worktree: `.cheapag/worktrees/${id}` });
+  if (status === "FAIL") {
+    expect(record.reason).toBe("worker error: API rejected request (400)");
+    expect(text).toContain("reason: worker error: API rejected request (400)");
+  } else {
+    expect(record.answer).toBe("useful answer");
+    expect(record.reason).toBeUndefined();
+  }
+  expect(persistedBeforeCleanup).toEqual(phase === "release" ? [true] : [true, true]);
+  expect(text).toContain(`worktree: .cheapag/worktrees/${id}/`);
+  expect(text).toContain(`cleanup error: ${busy.message}`);
+  expect(readFileSync(join(dir, "result.txt"), "utf8")).toBe(text + "\n");
+  expect(existsSync(join(repo.dir, record.worktree))).toBe(true);
+  expect(releaseDirectory).toHaveBeenCalledTimes(1);
+  expect(removeWorktree).toHaveBeenCalledTimes(phase === "remove" ? 1 : 0);
+  expect(releaseHold).toHaveBeenCalledTimes(1);
+});
 
 test("the ref parser accepts Windows drive-letter and backslash paths, and POSIX ones", () => {
   expect(refTokens("C:\\x\\src\\app.ts:1 and src/app.ts:2-3")).toEqual([

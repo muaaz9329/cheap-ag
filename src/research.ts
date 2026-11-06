@@ -142,10 +142,6 @@ export async function research(
     error = (err as Error).message;
   } finally {
     release(); // the session is done: a config change may reboot OpenCode now
-    if (worktree) {
-      await releaseDirectory(worktree.path); // release before the worktree is removed
-      removeWorktree(root, worktree);
-    }
   }
 
   const recovered = stopped?.cap === "turns" && partialText ? verifyRepro(parseAnswer(partialText, root, scope, maxWords), ran) : undefined;
@@ -166,11 +162,26 @@ export async function research(
     models: { requested: modelName(models.first), final: modelName(final) },
     usage: spent,
     timing: { startedAt, endedAt: new Date(), ms: Date.now() - startedAt.getTime() },
+    cleanupError: undefined as string | undefined,
+    worktree: undefined as string | undefined,
   };
-  const block = renderResearch(record);
+  let block = renderResearch(record);
   // research.json, not result.json: `jobs list` reads only job records
   write("research.json", record);
   write("result.txt", block + "\n");
+  if (worktree) {
+    try {
+      await releaseDirectory(worktree.path); // release before the worktree is removed
+      removeWorktree(root, worktree);
+    } catch (err) {
+      // Cleanup failure must not replace the worker's answer or its original error.
+      record.cleanupError = (err as Error).message;
+      record.worktree = normalisePath(relative(root, worktree.path));
+      block = renderResearch(record);
+      write("research.json", record);
+      write("result.txt", block + "\n");
+    }
+  }
   return block;
 }
 

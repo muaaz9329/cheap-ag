@@ -77,6 +77,10 @@ export type ResearchRecord = {
   deadEnds?: string;
   confidence?: "high" | "medium" | "low";
   reason?: string;
+  /** Cleanup failure is separate from the worker's status and reason. */
+  cleanupError?: string;
+  /** Repo-relative worktree retained when cleanup fails. */
+  worktree?: string;
   /** Jobs not yet landed, whose changes research could not see. */
   unlanded: string[];
 };
@@ -217,6 +221,8 @@ export function renderResearch(r: ResearchRecord) {
   if (r.answer.trim()) lines.push("notes:", ...r.answer.trim().split("\n").flatMap((l) => wrap(l.trimEnd())));
   if (r.confidence) lines.push(`confidence: ${r.confidence}`);
   if (r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
+  if (r.cleanupError) lines.push(`cleanup error: ${oneLine(r.cleanupError)}`);
+  if (r.worktree) lines.push(`worktree: ${r.worktree}/`);
   const n = r.unlanded.length;
   if (n) lines.push(`note: ${n} job${n > 1 ? "s" : ""} not yet landed (${r.unlanded.join(", ")}); their changes are not visible to research`);
   lines.push(`log: .cheapag/jobs/${r.job}/`);
