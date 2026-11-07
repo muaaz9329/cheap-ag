@@ -6,7 +6,7 @@ import { dirname, join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, userConfigFile } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
-import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
+import { ensureOpencode, OPENCODE_DB, opencodeBinary, stopOpencode } from "./opencode.js";
 import { runCli } from "./platform.js";
 import { installPlugin, stableNode } from "./install.js";
 import { fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig } from "./routing.js";
@@ -86,7 +86,7 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   }
 
   // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
-  const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit" });
+  const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit", env: { ...process.env, OPENCODE_DB } });
   if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
     out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
     return 1;
