@@ -6,7 +6,7 @@ import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from
 import { loadConfig } from "../src/config.js";
 import { PROVIDERS } from "../src/credentials.js";
 import { parsePlan } from "../src/plan.js";
-import { clock, fullRoute, modelName, PRESETS, presetOf, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import { clock, effectiveModels, fullRoute, modelName, PRESETS, presetOf, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
 import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
@@ -18,14 +18,14 @@ const GO_LIMIT = (next?: number): Action => ({
   retry: { reason: "account_rate_limit", message: "5h usage limit reached. It will reset in 2 hours 14 minutes. To continue using this model now, enable usage from your available balance", next },
 });
 
-async function scenario(opts: { scripts: Action[][]; logins?: Logins; allow?: string[]; doneWhen?: string; ledger?: { model: string; costUsd: number }[] }) {
+async function scenario(opts: { scripts: Action[][]; logins?: Logins; allow?: string[]; doneWhen?: string; ledger?: { model: string; costUsd: number }[]; env?: Record<string, string> }) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   writeFileSync(join(repo.dir, "plan.md"), PLAN(opts.doneWhen));
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   for (const s of opts.scripts) fake.script(...s);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: opts.logins ?? { "opencode-go": "k" }, allow: opts.allow ?? [] });
+  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url, ...opts.env }, logins: opts.logins ?? { "opencode-go": "k" }, allow: opts.allow ?? [] });
   onTestFinished(server.close);
   // the user-wide spend ledger lives in the (hermetic) XDG state dir
   const ledger = join(server.home, "state", "cheapag", "spend.jsonl");
@@ -33,7 +33,7 @@ async function scenario(opts: { scripts: Action[][]; logins?: Logins; allow?: st
     mkdirSync(join(ledger, ".."), { recursive: true });
     writeFileSync(ledger, opts.ledger.map((e) => JSON.stringify({ at: new Date(Date.now() - 60_000).toISOString(), ...e }) + "\n").join(""));
   }
-  const delegate = () => callText(server.client, "delegate", { plan: "plan.md", steps: "1" });
+  const delegate = (model?: string) => callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...(model && { model }) });
   const record = (text: string) => JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", text.match(/^\w+ (j[0-9a-z]{4}) /)![1], "result.json"), "utf8"));
   const models = () => fake.recorded.prompts.map((p) => p.model?.modelID);
   return { repo, fake, server, delegate, record, models, ledger };
@@ -146,6 +146,56 @@ test("a transient retry on Go (no limit reason, a quick backoff) is not a limit:
   expect(models()).toEqual([undefined]);
 });
 
+const OVERLOADED: Action = { error: { name: "APIError", message: "Upstream request failed: [overloaded] the server is overloaded; retry shortly" } };
+
+test("a capacity error is retried once in a forked session on the same model, then lands OK", async () => {
+  const { delegate, fake } = await scenario({ scripts: [[OVERLOADED], [EDIT, FINISH]] });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^OK j\w{4} step=1 .* cost=\$0\.000$/); // no model= token: still the same model
+  expect(fake.recorded.forks).toHaveLength(1);
+  const [first, second] = fake.recorded.prompts;
+  expect(second.sessionID).toBe(fake.recorded.forks[0].to);
+  expect(second.sessionID).not.toBe(first.sessionID);
+  expect(JSON.stringify(second.parts)).toContain("The previous attempt hit a provider capacity error");
+  expect(second.model).toEqual(first.model);
+});
+
+test("a capacity error that repeats after the fork ends PROVIDER: the model and the others named, no fallback; nothing lands", async () => {
+  const { repo, delegate, fake, record } = await scenario({
+    allow: ["--models", "opencode-go/deepseek-v4.1-flash,opencode-go/qwen3.7-plus"],
+    scripts: [[OVERLOADED], [OVERLOADED], [OVERLOADED]],
+  });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^PROVIDER j\w{4} step=1 /);
+  expect(record(text).status).toBe("PROVIDER");
+  expect(text).toContain("deepseek-v4.1-flash is failing (last error: ");
+  expect(text).toContain("other models: qwen3.7-plus");
+  expect(text).toContain("next: ask the user: continue with Claude");
+  expect(fake.recorded.prompts).toHaveLength(2);
+  expect(fake.recorded.forks).toHaveLength(1);
+  expect(existsSync(join(repo.dir, "hello.txt"))).toBe(false);
+});
+
+test("delegate model: runs the job on that allowed model (bare or full id); an unknown one is refused naming the allowed ids", async () => {
+  const { delegate, fake } = await scenario({ scripts: [[EDIT, FINISH]] });
+  expect(await delegate("qwen3.7-plus")).toMatch(/^OK .* model=opencode-go\/qwen3\.7-plus/);
+  expect(fake.recorded.sessions.map((s) => s.model?.id)).toEqual(["qwen3.7-plus"]); // the session itself starts on it
+  const refused = await delegate("gpt-9");
+  expect(refused).toMatch(/^FAIL reason: model gpt-9 is not allowed here; allowed: deepseek-v4\.1-flash, .*; run \/cheapag:allow to add it/);
+  expect(fake.recorded.sessions).toHaveLength(1);
+});
+
+test("a 401 error ends FAIL after one prompt: no fork, no fallback", async () => {
+  const { delegate, fake } = await scenario({
+    scripts: [[{ error: { name: "APIError", message: "invalid api key", statusCode: 401 } }]],
+  });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^FAIL j\w{4} step=1 /);
+  expect(text).toContain("reason: worker error: invalid api key");
+  expect(fake.recorded.prompts).toHaveLength(1);
+  expect(fake.recorded.forks).toEqual([]);
+});
+
 test("a BUDGET whose retry time is only OpenCode's short backoff quotes the provider's own text instead", async () => {
   const { delegate } = await scenario({
     logins: { openrouter: "sk-or-v1-testkeytestkeytestkey" },
@@ -171,9 +221,7 @@ test("config models override the role defaults; a model for another provider is 
 test("config models: the job runs on the configured implement model; a malformed models entry is a FAIL before any job", async () => {
   const { repo, fake, server, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/glm-5.3" } }));
-  expect(await delegate()).toMatch(/^CONSENT /); // another route than the one allowed
-  allowRepo(repo.dir, homeEnv(server.home));
-  expect(await delegate()).toMatch(/^OK /);
+  expect(await delegate()).toMatch(/^OK /); // same provider: another model never asks for consent again
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
 
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { fallback: "opencode-go/kimi-k3" } }));
@@ -194,6 +242,14 @@ test("tierModel: hard → models.hard ?? models.medium ?? implement; medium → 
   expect(ids({ hard: "openrouter/x/y" })).toEqual([flash, flash, flash, flash]); // another provider's: ignored
   // the tier models are models the route may send code to, so consent (the CONSENT block, cheapag allow) names them
   expect(routeModels(fullRoute("opencode-go", { hard: "opencode-go/minimax-m3" })).map(modelName)).toContain("opencode-go/minimax-m3");
+});
+
+test("models.variants: a full model name's effort becomes the WorkerModel's variant; a model without an entry has none", () => {
+  const route = fullRoute("opencode-go", { implement: "opencode-go/glm-5.3", variants: { "opencode-go/glm-5.3": "high" } });
+  expect(route.implement.variant).toBe("high");
+  expect(route.fallbacks.find((m) => m.id === "qwen3.7-plus")!.variant).toBeUndefined();
+  expect(route.research!.variant).toBeUndefined();
+  expect(fullRoute("opencode-go", { implement: "opencode-go/glm-5.3" }).implement.variant).toBeUndefined();
 });
 
 test("plan steps accept difficulty:; any other value is a plan error", () => {
@@ -308,4 +364,11 @@ test("opencode (Zen) presets: cheapest and balanced implement on Flash, stronges
   expect(routeModels(route).map(modelName)).not.toContain("opencode/qwen3.7-plus");
   expect(routeModels(route).every((m) => m.providerID === "opencode")).toBe(true);
   expect(modelName(fullRoute("opencode", { implement: "opencode-go/glm-5.3" }).implement)).toBe("opencode/deepseek-v4.1-flash");
+});
+
+test("effectiveModels: the preset's models, with an explicit models role winning", () => {
+  expect(effectiveModels("opencode-go", { preset: "strongest", models: {} })).toEqual(PRESETS["opencode-go"].strongest);
+  expect(effectiveModels("opencode-go", { models: { medium: "opencode-go/glm-5.3" } })).toEqual({ medium: "opencode-go/glm-5.3" });
+  expect(effectiveModels("opencode-go", { preset: "strongest", models: { implement: "opencode-go/kimi-k3" } }))
+    .toEqual({ implement: "opencode-go/kimi-k3", medium: PRESETS["opencode-go"].strongest.medium });
 });

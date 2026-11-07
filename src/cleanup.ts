@@ -106,6 +106,22 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
   return out;
 }
 
+/**
+ * Re-runs cleanup every `everyMs` while the server lives (ticket 49): an unref'ed timer, and every error is logged to
+ * stderr in one line so housekeeping can never crash or keep the process alive. Never touches an in-flight job.
+ */
+export function startPeriodicCleanup(root: string, config: Config, everyMs: number) {
+  const timer = setInterval(() => {
+    try {
+      cleanup(root, config.retention, config.link_dirs);
+    } catch (err) {
+      process.stderr.write(`cheapag: periodic cleanup failed: ${(err as Error).message.replace(/\s+/g, " ")}\n`);
+    }
+  }, everyMs);
+  timer.unref();
+  return timer;
+}
+
 /** Cleans the repo containing `cwd` with its configured retention (throws on a bad config or outside a repo). */
 export function cleanProject(cwd: string, all = false) {
   const root = projectRoot(cwd);

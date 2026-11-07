@@ -232,6 +232,12 @@ test("context: CHEAPAG_NO_UPDATE_CHECK=1 skips the check even when the cache has
 const FAIL_BLOCK = "FAIL jab12 step=1 files=0 +0/-0 tests=pass turns=12 cost=$0.003\nfound: django/db/models/query.py:only(), proxy model pk\nreason: no reproduction test by turn 12";
 const read = { file_path: "a.ts" };
 
+test("takeover: a PROVIDER result starts no take-over: the provider is down, so Claude must not hand it to Sonnet", () => {
+  const { run, result } = setup();
+  result("PROVIDER jab12 step=1 files=0 +0/-0 turns=0 cost=$0\nreason: opencode is down or overloaded on every allowed model: a, b (last error: overloaded); retry in a few minutes");
+  expect(run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" })).toBeNull();
+});
+
 test("takeover self: after a FAIL, the call past limits.takeover_calls in that prompt is denied; cheapag's tools never count; a new prompt is free", () => {
   const { run, result, repo } = setup();
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "self", limits: { takeover_calls: 3 } }));
@@ -264,8 +270,9 @@ test("takeover self: PARTIAL and TIMEOUT start it too; limits.takeover_calls 0 t
   expect(run("Read", read, { prompt: "p2" })).toBeNull();
 });
 
-test("takeover sonnet (default): after a FAIL, only the Agent tool, read-only tools and cheapag's tools are left; the subagent works freely; a new prompt is free", () => {
-  const { run, result } = setup();
+test("takeover sonnet: after a FAIL, only the Agent tool, read-only tools and cheapag's tools are left; the subagent works freely; a new prompt is free", () => {
+  const { run, result, repo } = setup();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "sonnet" }));
   result(FAIL_BLOCK);
   const reason = run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" });
   expect(reason).toMatch(/^The worker did not finish this step: hand it to your Agent tool with model: sonnet \(the task, the user's words, the block's found:, test=, error: and worktree\)/);
@@ -294,6 +301,7 @@ test("takeover sonnet (default): after a FAIL, only the Agent tool, read-only to
 
 test("takeover sonnet: cd/env prefixes and git's -C/--no-pager/-c options stay reads; edits outside the repo pass; an env FAIL blocks nothing", () => {
   const { run, result, repo } = setup();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "sonnet" }));
   result(FAIL_BLOCK);
   expect(run("Bash", { command: "cd /repo && git status" })).toBeNull();
   expect(run("Bash", { command: "git -C /repo diff -- a.ts" })).toBeNull();
@@ -310,6 +318,34 @@ test("takeover sonnet: cd/env prefixes and git's -C/--no-pager/-c options stay r
   // an OK the worker applied or discarded clears the earlier FAIL even without a check
   result("OK j1 discarded");
   expect(run("Bash", { command: "npm test" })).toBeNull();
+});
+
+test("takeover ask (default): after a FAIL, reads pass but Agent and repo edits are denied with the one-question message; AskUserQuestion clears it", () => {
+  const { run, result, repo } = setup();
+  result(FAIL_BLOCK);
+  expect(run("Read", read)).toBeNull();
+  expect(run("Bash", { command: "git diff -- src/a.ts" })).toBeNull();
+  expect(run("mcp__cheapag__land", { job: "jab12" })).toBeNull();
+  expect(run("ToolSearch", { query: "delegate" })).toBeNull();
+  expect(run("mcp__ccd_turn__wrap_up", {})).toBeNull();
+  const message = "The worker did not finish this step: ask the user first (continue with Claude, retry the worker on another model, or stop) with one question, then do what they pick.";
+  expect(run("Agent", { model: "sonnet", prompt: "finish it" })).toBe(message);
+  expect(run("Edit", { file_path: join(repo.dir, "a.ts"), old_string: "a", new_string: "b" })).toBe(message);
+  expect(run("Bash", { command: "echo x > f" })).toBe(message);
+  expect(run("Bash", { command: "npm test" })).toBe(message);
+  // asking the user is the way out: whatever they pick is theirs
+  expect(run("AskUserQuestion", { questions: [{ question: "Continue?", options: [] }] })).toBeNull();
+  expect(run("Agent", { model: "sonnet", prompt: "finish it" })).toBeNull();
+  expect(run("Edit", { file_path: join(repo.dir, "a.ts"), old_string: "a", new_string: "b" })).toBeNull();
+});
+
+test("takeover sonnet: asking and the desktop app's own tools are allowed after a FAIL", () => {
+  const { run, result, repo } = setup();
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "sonnet" }));
+  result(FAIL_BLOCK);
+  expect(run("AskUserQuestion", { questions: [] })).toBeNull();
+  expect(run("ToolSearch", { query: "delegate" })).toBeNull();
+  expect(run("mcp__ccd_turn__wrap_up", {})).toBeNull();
 });
 
 test("takeover: an env-kind FAIL leaves the guard off (nothing for the taker to finish)", () => {

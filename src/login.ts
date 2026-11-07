@@ -9,7 +9,7 @@ import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as lab
 import { ensureOpencode, OPENCODE_DB, opencodeBinary, stopOpencode } from "./opencode.js";
 import { runCli } from "./platform.js";
 import { installPlugin, stableNode } from "./install.js";
-import { fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig } from "./routing.js";
+import { effectiveModels, fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig, type Preset } from "./routing.js";
 import { runSession } from "./worker.js";
 
 /**
@@ -43,6 +43,7 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   if (setup && flag === undefined) {
     const saved = detectProvider();
     if (saved) {
+      if (saved.provider !== "local") migratePreset(saved.provider, out);
       out(`Cheap Agent ${version} · already set up with ${label(saved.provider)} (${currentPreset(saved.provider) ?? "custom"})`);
       const code = await register(out, true);
       out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
@@ -60,6 +61,7 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
       return 0;
     }
     // no terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the benchmark)
+    migratePreset(saved.provider, out);
     const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
     if (!flag) out(`No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`);
     return savePreset(saved.provider, choice, out) ? 0 : 1;
@@ -81,6 +83,7 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     if (flag) out("--preset does not apply to a local server: its model is asked for below");
     if (!(await localLogin(out))) return 1;
   } else {
+    migratePreset(picked.id, out);
     const preset = currentPreset(picked.id) ?? "balanced";
     let choice = flag ?? "";
     if (flag === undefined) {
@@ -129,17 +132,18 @@ function readUser(): Record<string, unknown> {
   return value;
 }
 
-/** The preset the user's config holds, when it sets `models` (Enter keeps it); a damaged file counts as none. */
-function currentPreset(provider: Provider["provider"]) {
+/** The preset the user's config holds: its saved name, else what its `models` match (Enter keeps it); a damaged file counts as none. */
+function currentPreset(provider: Provider["provider"]): Preset | "custom" | undefined {
   try {
-    const { models } = readUser();
+    const { preset, models } = readUser();
+    if (preset !== undefined) return preset as Preset;
     return models ? presetOf(provider, models as ModelsConfig) : undefined;
   } catch {
     return undefined;
   }
 }
 
-/** Writes the preset as the user config's `models`, other keys kept; custom writes nothing. */
+/** Writes the preset name as the user config's `preset`, other keys kept; an old equal `models` is dropped, custom writes nothing. */
 function savePreset(provider: Exclude<Provider["provider"], "local">, choice: Choice, out: (line?: string) => void) {
   const file = userConfigFile();
   if (choice === "custom") {
@@ -147,15 +151,30 @@ function savePreset(provider: Exclude<Provider["provider"], "local">, choice: Ch
     return true;
   }
   try {
-    const config = { ...readUser(), models: PRESETS[provider][choice] };
+    const config = { ...readUser(), preset: choice } as Record<string, unknown>;
+    if (JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][choice])) delete config.models;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
   } catch (err) {
     out(`✗ ${file}: ${(err as Error).message}; worker models not saved`);
     return false;
   }
-  out(`✓ Worker models: ${choice} (implement ${PRESETS[provider][choice].implement}), saved in ${file}`);
+  out(`✓ Worker models: ${choice} preset (implement ${PRESETS[provider][choice].implement}), saved in ${file}; follows new releases`);
   return true;
+}
+
+/** Rewrites an old user config whose `models` exactly match a current preset to that preset's name; anything else is left alone. */
+function migratePreset(provider: Exclude<Provider["provider"], "local">, out: (line?: string) => void) {
+  try {
+    const config = readUser();
+    if (config.preset !== undefined || config.models === undefined) return;
+    // balanced first, as presetOf does: cheapest and balanced are often the same route
+    const name = (["balanced", "cheapest", "strongest"] as const).find((p) => JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][p]));
+    if (!name) return;
+    const { models, ...rest } = config;
+    writeFileSync(userConfigFile(), JSON.stringify({ ...rest, preset: name }, null, 2) + "\n");
+    out(`✓ worker models: ${name} preset (follows new releases)`);
+  } catch {} // a damaged config is reported by the config load
 }
 
 /**
@@ -290,7 +309,7 @@ async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: strin
   try {
     timeoutMs = provider.provider === "local" ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
     // the throwaway dir has no cheapag.json, so this is the user's config alone
-    const route = fullRoute(provider.provider, loadConfig(dir).models);
+    const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(dir)));
     const model = route.implement;
     name = modelName(model);
     // with the route, OpenCode's config pins this model too (on OpenRouter: data collection denied)

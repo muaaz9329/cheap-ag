@@ -8,8 +8,31 @@ import { startServer, tempRepo } from "./harness.js";
 const CHECK = `import { readFileSync } from "node:fs";\nprocess.exit(readFileSync("src/hello.ts", "utf8").includes("= 2") ? 0 : 1);\n`;
 const REPRO = CHECK;
 const PASSES_ANYWAY = "process.exit(0);\n";
+/** Passes on the fix, then puts the fix file back to its base content, so setting it aside has nothing to save. */
+const REVERTS_FIX = [
+  'import { readFileSync, writeFileSync } from "node:fs";',
+  'const fixed = readFileSync("src/hello.ts", "utf8").includes("= 2");',
+  'writeFileSync("src/hello.ts", "export const hello = 0;\\n");',
+  'process.exit(fixed ? 0 : 1);',
+  "",
+].join("\n");
+/** Fails on the base unless the added file is gone, so it proves the added file is set aside for the reproduction. */
+const NEEDS_ADDED_FILE = [
+  'import { existsSync, readFileSync } from "node:fs";',
+  'const fixed = readFileSync("src/hello.ts", "utf8").includes("= 2");',
+  'if (!fixed) process.exit(existsSync("src/extra.ts") ? 0 : 1);',
+  'process.exit(existsSync("src/extra.ts") ? 0 : 3);',
+  "",
+].join("\n");
 
-async function delegate(repro: string, reproTest = REPRO) {
+function stashInMain(repo: ReturnType<typeof tempRepo>) {
+  writeFileSync(join(repo.dir, "README.md"), "# fixture\n\nuser edit\n");
+  repo.git("stash", "push", "-u", "-m", "user stash");
+}
+
+type DelegateOptions = { reproTest?: string; beforeJob?: (repo: ReturnType<typeof tempRepo>) => void; files?: Record<string, string> };
+
+async function delegate(repro: string, opts: DelegateOptions = {}) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   writeFileSync(join(repo.dir, "check.mjs"), CHECK);
@@ -19,11 +42,13 @@ async function delegate(repro: string, reproTest = REPRO) {
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ allow_commands: ["node"] }));
   repo.git("add", "-A");
   repo.git("commit", "-q", "-m", "base");
+  opts.beforeJob?.(repo);
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   const script: Action[] = [
-    { edit: "test/hello.test.mjs", content: reproTest },
+    { edit: "test/hello.test.mjs", content: opts.reproTest ?? REPRO },
     { edit: "src/hello.ts", content: "export const hello = 2;\n" },
+    ...Object.entries(opts.files ?? {}).map(([edit, content]) => ({ edit, content })),
     { tool: "write" },
     { finish: { summary: "fixed hello", risks: [], review: [], missing: [], repro } as never },
   ];
@@ -48,9 +73,10 @@ test("a reproduction that fails without the fix and passes with it: OK repro=fai
 });
 
 test("a reproduction that also passes on the original code: repro=unverified with a risk", async () => {
-  const { text, record } = await delegate("node test/hello.test.mjs", PASSES_ANYWAY);
+  const { text, record } = await delegate("node test/hello.test.mjs", { reproTest: PASSES_ANYWAY });
   expect(record.repro).toBe("unverified");
-  expect(text).toContain("reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
+  expect(record.risks[0]).toBe("nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
+  expect(text).toContain("nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
 });
 
 test("no reproduction: repro=none with the worker's reason as a risk", async () => {
@@ -70,4 +96,22 @@ test("a step that is not a fix: no repro token, no risk", async () => {
   const { text, record } = await delegate("n/a");
   expect(record.repro).toBeUndefined();
   expect(text.split("\n")[0]).not.toContain("repro=");
+});
+
+test("a user stash in the main checkout survives a repro check", async () => {
+  const { repo, record } = await delegate("node test/hello.test.mjs", { beforeJob: stashInMain });
+  expect(record.repro).toBe("fail→pass");
+  expect(repo.git("stash", "list")).toContain("user stash");
+});
+
+test("a repro check that sets aside nothing leaves the user's stash untouched", async () => {
+  const { repo, record } = await delegate("node test/hello.test.mjs", { reproTest: REVERTS_FIX, beforeJob: stashInMain });
+  expect(record.repro).toBe("fail→pass");
+  expect(repo.git("stash", "list")).toContain("user stash");
+});
+
+test("a file the fix added is removed for the reproduction and restored afterwards", async () => {
+  const { repo, record } = await delegate("node test/hello.test.mjs", { reproTest: NEEDS_ADDED_FILE, files: { "src/extra.ts": "export const extra = true;\n" } });
+  expect(record.repro).toBe("fail→pass");
+  expect(readFileSync(join(repo.dir, "src", "extra.ts"), "utf8")).toBe("export const extra = true;\n");
 });
