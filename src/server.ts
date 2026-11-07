@@ -83,21 +83,15 @@ export async function serve(host: "claude" | "codex" = "claude") {
   const safeText = (s: string) => ({ content: [{ type: "text" as const, text: redact(s) }] });
   let hinted = false;
   /** The first job result of this process carries the gitignore offer, on its own line after the block (outside the renderer's contract). */
-  const withHint = (text: string, root?: string) => {
+  const withHint = (text: string, root: string) => {
     if (hinted) return text;
     hinted = true;
-    const hint = gitignoreHint(root ?? process.cwd());
+    const hint = gitignoreHint(root);
     return hint ? `${text}\n\n${hint}` : text;
   };
   /** Repositories this process has recovered and cleaned: the cwd's at start, each `root` on its first call. */
   const prepared = new Set<string>();
-  const prepare = (root?: string) => {
-    let dir: string;
-    try {
-      dir = callRoot(root);
-    } catch {
-      return; // not a repository (or a relative root): the tool call reports it
-    }
+  const prepare = (dir: string) => {
     if (prepared.has(dir)) return;
     prepared.add(dir);
     // jobs a previous server left running or blocked there can never finish now
@@ -114,8 +108,17 @@ export async function serve(host: "claude" | "codex" = "claude") {
       // a bad config (delegate reports that): nothing to clean
     }
   };
+  /**
+   * The repository a call works in, resolved once per call (see `callRoot`; throws for a relative root or one outside a
+   * repository), recovered and cleaned on its first use. Everything the call does goes through this one path.
+   */
+  const repoFor = (root?: string) => {
+    const dir = callRoot(root);
+    prepare(dir);
+    return dir;
+  };
   /** OpenCode boots once per process; its config goes under the repo of the call that boots it. */
-  const opencodeFor = (provider: Provider, root?: string) => (route: Route) => ensureOpencode(provider, root ?? process.cwd(), route);
+  const opencodeFor = (provider: Provider, root: string) => (route: Route) => ensureOpencode(provider, root, route);
   /** Worker progress as MCP progress notifications to the calling request, when it asked for them. */
   const progressTo = (extra: { _meta?: { progressToken?: string | number }; sendNotification: (n: ServerNotification) => Promise<void> }) =>
     (progress: number, message: string) => {
@@ -133,10 +136,11 @@ export async function serve(host: "claude" | "codex" = "claude") {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
-        // a given root must be a repository: report where calls with it would work
-        const at = root === undefined ? "" : ` root=${callRoot(root)}`;
-        const opencode = await ensureOpencode(provider, root);
-        return safeText(`OK cheapag ${version} opencode=${opencode.version} provider=${provider.provider} via=${provider.via} preset=${presetHere(provider.provider, root)}${at}`);
+        // ping works outside a repository; a given root must be one, and is reported resolved
+        const dir = root === undefined ? undefined : callRoot(root);
+        const opencode = await ensureOpencode(provider, dir);
+        const at = dir === undefined ? "" : ` root=${dir}`;
+        return safeText(`OK cheapag ${version} opencode=${opencode.version} provider=${provider.provider} via=${provider.via} preset=${presetHere(provider.provider, dir)}${at}`);
       } catch (err) {
         return safeText(`FAIL reason: ${(err as Error).message}`);
       }
@@ -166,9 +170,10 @@ export async function serve(host: "claude" | "codex" = "claude") {
     async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
-      prepare(input.root);
       try {
-        return safeText(withHint(await delegate(host === "codex" ? { ...input, wait: false } : input, { provider, opencode: opencodeFor(provider, input.root), progress: progressTo(extra) }), input.root));
+        const root = repoFor(input.root);
+        const req = { ...input, root, ...(host === "codex" && { wait: false }) };
+        return safeText(withHint(await delegate(req, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }), root));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -191,9 +196,9 @@ export async function serve(host: "claude" | "codex" = "claude") {
     async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
-      prepare(input.root);
       try {
-        return safeText(withHint(await research(input, { provider, opencode: opencodeFor(provider, input.root), progress: progressTo(extra) }), input.root));
+        const root = repoFor(input.root);
+        return safeText(withHint(await research({ ...input, root }, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }), root));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -214,7 +219,8 @@ export async function serve(host: "claude" | "codex" = "claude") {
     async (input, extra) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
       try {
-        return safeText(withHint(await reply(input, progressTo(extra)), input.root));
+        const root = repoFor(input.root);
+        return safeText(withHint(await reply({ ...input, root }, progressTo(extra)), root));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -234,9 +240,9 @@ export async function serve(host: "claude" | "codex" = "claude") {
     },
     async (input, extra) => {
       if (!detectProvider()) return safeText(NO_PROVIDER);
-      prepare(input.root);
       try {
-        return safeText(withHint(await jobs(input, progressTo(extra)), input.root));
+        const root = repoFor(input.root);
+        return safeText(withHint(await jobs({ ...input, root }, progressTo(extra)), root));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -257,17 +263,21 @@ export async function serve(host: "claude" | "codex" = "claude") {
     async (input, extra) => {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
-      prepare(input.root);
       try {
+        const root = repoFor(input.root);
         // landing a batch's last group runs its integration check, which may start a fix job
-        return safeText(await landJobs(input, { provider, opencode: opencodeFor(provider, input.root), progress: progressTo(extra) }));
+        return safeText(await landJobs({ ...input, root }, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
     },
   );
 
-  prepare();
+  try {
+    prepare(projectRoot(process.cwd()));
+  } catch {
+    // not a repository: nothing to recover or clean
+  }
   // CHEAPAG_DEBUG_SHUTDOWN=1 traces each shutdown point to stderr (CI logs); silent otherwise
   const shutdownLog = (line: string) => {
     if (process.env.CHEAPAG_DEBUG_SHUTDOWN === "1") process.stderr.write(`cheapag-shutdown: ${line}\n`);

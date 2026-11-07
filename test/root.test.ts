@@ -42,7 +42,18 @@ test("delegate with root runs in that repository and lands there, not in the ser
   expect(await callText(server.client, "jobs", { action: "show", job, root: there.dir })).toMatch(new RegExp(`^OK ${job} `));
   expect(await callText(server.client, "reply", { job, answer: "a", root: there.dir })).toBe(`FAIL reason: job ${job} is OK, not BLOCKED; only a BLOCKED job takes a reply`);
   expect(await callText(server.client, "reply", { job, answer: "a" })).toBe(`FAIL reason: no job ${job}; reply only to a BLOCKED job's id`);
-  expect(await callText(server.client, "land", { job, action: "apply", root: there.dir })).toContain(job);
+  expect(await callText(server.client, "land", { job, action: "apply", root: there.dir })).toMatch(new RegExp(`^FAIL ${job} reason: job ${job} already landed`));
+  expect(await callText(server.client, "land", { job, action: "apply" })).toMatch(new RegExp(`^FAIL ${job} reason: job ${job} not found`));
+});
+
+test("a live job is only reachable with its own root: cancel from another root leaves it running", async () => {
+  const { here, there, server } = await scenario([{ edit: "src/there.ts", content: "export const there = 1;\n" }, { tool: "write" }, { wait: 3_000 }, DONE]);
+  const running = await callText(server.client, "delegate", { task: "Add src/there.ts", root: there.dir, wait: false });
+  const job = running.split(" ")[1];
+  expect(running).toMatch(new RegExp(`^RUNNING ${job} `));
+  expect(await callText(server.client, "jobs", { action: "cancel", job, root: here.dir })).toBe(`FAIL reason: job ${job} not found`);
+  expect(await callText(server.client, "jobs", { action: "wait", job, root: here.dir })).toBe(`FAIL reason: job ${job} not found`);
+  expect(await callText(server.client, "jobs", { action: "wait", job, root: there.dir })).toMatch(new RegExp(`^OK ${job} `));
 });
 
 test("a root nobody allowed gets CONSENT, and no job starts there or in the cwd", async () => {
@@ -51,6 +62,8 @@ test("a root nobody allowed gets CONSENT, and no job starts there or in the cwd"
   onTestFinished(other.cleanup);
   const text = await callText(server.client, "delegate", { task: "Add src/x.ts", root: other.dir });
   expect(text).toMatch(new RegExp(`^CONSENT repo=${basename(other.dir)}`));
+  // /cheapag:allow would approve the session's repo, so the block points at a terminal in the root instead
+  expect(text.split("\n").at(-1)).toBe("approve: ask the user to run npx cheap-agent allow in a terminal in this root (/cheapag:allow approves the session's repo); add --zdr-only or --models a,b to narrow it; never approve yourself");
   expect(fake.recorded.prompts).toHaveLength(0);
   expect(existsSync(join(other.dir, ".cheapag", "jobs"))).toBe(false);
   expect(existsSync(join(here.dir, ".cheapag", "jobs"))).toBe(false);
@@ -69,24 +82,31 @@ test("a relative root, or one outside any repository, fails before any job", asy
   expect(fake.recorded.prompts).toHaveLength(0);
 });
 
-test("ping with root reports the repository calls with it work in", async () => {
+test("ping with a folder inside a repository reports the repository, and OpenCode's config lands at its top level", async () => {
   const { there, server } = await scenario([]);
-  expect(await callText(server.client, "ping", { root: join(there.dir, "src", "..") })).toMatch(new RegExp(`^OK cheapag .* root=${there.dir.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`));
+  mkdirSync(join(there.dir, "src"));
+  expect(await callText(server.client, "ping", { root: join(there.dir, "src") })).toMatch(new RegExp(`^OK cheapag .* root=${there.dir.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`));
+  expect(existsSync(join(there.dir, ".cheapag", "opencode"))).toBe(true);
+  expect(existsSync(join(there.dir, "src", ".cheapag"))).toBe(false);
   expect(await callText(server.client, "ping")).not.toContain("root=");
 });
 
 test("a root's jobs left BLOCKED by a dead server are recovered on the first call with that root", async () => {
   const { there, server, env } = await scenario([{ edit: "src/there.ts", content: "export const there = 1;\n" }, DONE]);
   const job = (await callText(server.client, "delegate", { task: "Add src/there.ts", root: there.dir })).split(" ")[1];
-  const stale = "jblkd";
-  mkdirSync(join(there.dir, ".cheapag", "jobs", stale));
+  // one left BLOCKED by a server that is gone, one RUNNING under a live process (this test runner)
+  const stale = "jblkd", alive = "jaliv";
   const { pid: _, ...rest } = record(there.dir, job);
-  writeFileSync(join(there.dir, ".cheapag", "jobs", stale, "result.json"), JSON.stringify({ ...rest, job: stale, status: "BLOCKED", landed: false }));
+  for (const [id, patch] of [[stale, { status: "BLOCKED" }], [alive, { status: "RUNNING", pid: process.pid }]] as const) {
+    mkdirSync(join(there.dir, ".cheapag", "jobs", id));
+    writeFileSync(join(there.dir, ".cheapag", "jobs", id, "result.json"), JSON.stringify({ ...rest, job: id, landed: false, ...patch }));
+  }
 
   // a fresh server started elsewhere has never seen `there`
   const next = await startServer({ cwd: server.home, env, logins: { "opencode-go": "k" } });
   onTestFinished(next.close);
   expect((await callText(next.client, "jobs", { action: "show", job: stale, root: there.dir })).split("\n")[0]).toMatch(new RegExp(`^CANCELLED ${stale} `));
   expect(record(there.dir, stale)).toMatchObject({ status: "CANCELLED", reason: "server restart" });
+  expect(record(there.dir, alive)).toMatchObject({ status: "RUNNING", pid: process.pid });
   expect(readdirSync(join(there.dir, ".cheapag", "jobs"))).toContain(job);
 });
