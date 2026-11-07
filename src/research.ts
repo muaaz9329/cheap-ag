@@ -4,7 +4,7 @@ import { isAbsolute, basename, join, relative } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
 import { redact, type Provider } from "./credentials.js";
-import { records } from "./jobs.js";
+import { gzipEvents, records } from "./jobs.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
 import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
@@ -185,6 +185,7 @@ export async function research(
       write("result.txt", block + "\n");
     }
   }
+  if (answer.status === "ANSWER") gzipEvents(dir);
   return block;
 }
 

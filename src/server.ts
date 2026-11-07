@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ServerNotification } from "@modelcontextprotocol/sdk/types.js";
-import { cleanProject, gitignoreHint } from "./cleanup.js";
+import { cleanProject, gitignoreHint, startPeriodicCleanup } from "./cleanup.js";
 import { loadConfig, type HardTasks, type TakeOver } from "./config.js";
 import { presetHere } from "./consent.js";
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
@@ -233,6 +233,13 @@ export async function serve(host: "claude" | "codex" = "claude") {
     cleanProject(process.cwd());
   } catch {
     // not a repository, or a bad config (delegate reports that): nothing to clean
+  }
+  // and hourly while the server runs, so a long session frees old worktrees and logs (ticket 49)
+  try {
+    const root = projectRoot(process.cwd());
+    startPeriodicCleanup(root, loadConfig(root), 60 * 60_000);
+  } catch {
+    // not a repository, or a bad config (delegate reports that): no periodic cleanup
   }
   // CHEAPAG_DEBUG_SHUTDOWN=1 traces each shutdown point to stderr (CI logs); silent otherwise
   const shutdownLog = (line: string) => {

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
@@ -622,6 +623,7 @@ function runGroup(g: GroupRun) {
       if (status === "PARTIAL") reason = undefined; // spec D5: PARTIAL says it through missing:
     } else if (conflict) status = "CONFLICT";
     const text = finalize(status);
+    if (status === "OK") gzipEvents(dir);
     finished(text);
     announce(text);
   })().catch((err: Error) => {
@@ -639,6 +641,17 @@ function runGroup(g: GroupRun) {
     announce(text);
   });
   return { job, outcome, done, record: () => last, settles: () => settled };
+}
+
+/** Compresses a settled job's (or research call's) events.jsonl; any error is ignored, nothing depends on it. */
+export function gzipEvents(dir: string): void {
+  try {
+    const file = join(dir, "events.jsonl");
+    writeFileSync(`${file}.gz`, gzipSync(readFileSync(file)));
+    rmSync(file);
+  } catch {
+    // keep the plain file
+  }
 }
 
 /**

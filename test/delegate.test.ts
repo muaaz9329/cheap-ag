@@ -169,7 +169,7 @@ test("a single step runs in a worktree and lands OK, uncommitted, with the resul
 
   const dir = join(repo.dir, ".cheapag", "jobs", job);
   expect(readFileSync(join(dir, "progress.txt"), "utf8")).toBe(progress[2] + "\n"); // the last message, for a live view
-  expect(readdirSync(dir).sort()).toEqual(["diff.patch", "events.jsonl", "finish.json", "progress.txt", "request.json", "result.json", "result.txt"]);
+  expect(readdirSync(dir).sort()).toEqual(["diff.patch", "events.jsonl.gz", "finish.json", "progress.txt", "request.json", "result.json", "result.txt"]);
   expect(JSON.parse(readFileSync(join(dir, "finish.json"), "utf8"))).toEqual(REPORT);
   expect(readFileSync(join(dir, "result.txt"), "utf8")).toBe(text + "\n");
   expect(readFileSync(join(dir, "diff.patch"), "utf8")).toContain("+export const hello = 1;");

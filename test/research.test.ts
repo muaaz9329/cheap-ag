@@ -1,3 +1,4 @@
+import { gunzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -143,6 +144,10 @@ test("answers from the main checkout, uncommitted work included, with validated 
     "confidence: high",
     `log: .cheapag/jobs/${id}/`,
   ].join("\n"));
+  // an answer's event log is gzipped; an UNSURE one stays plain (checked in its own test)
+  const logDir = join(repo.dir, ".cheapag", "jobs", id);
+  expect(existsSync(join(logDir, "events.jsonl"))).toBe(false);
+  for (const line of gunzipSync(readFileSync(join(logDir, "events.jsonl.gz"))).toString("utf8").trim().split("\n")) JSON.parse(line);
 
   // its own agent and ruleset (read, search, test commands; never edit), in a throwaway worktree, on the research model
   const [session] = fake.recorded.sessions;

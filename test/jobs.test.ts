@@ -1,3 +1,4 @@
+import { gunzipSync } from "node:zlib";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
@@ -91,6 +92,8 @@ test("turn cap with nothing changed → FAIL with the reason; no hand-over (user
   expect(fake.recorded.prompts[1]).toMatchObject({ model: undefined, parts: [{ type: "text", text: expect.stringMatching(/^You were stopped before finishing\. Without calling any tool/) }] });
   expect(text).not.toContain("\nfound:");
   expect(existsSync(join(repo.dir, ".cheapag", "worktrees", job))).toBe(true);
+  expect(existsSync(join(repo.dir, ".cheapag", "jobs", job, "events.jsonl"))).toBe(true); // a FAIL keeps the log plain
+  expect(existsSync(join(repo.dir, ".cheapag", "jobs", job, "events.jsonl.gz"))).toBe(false);
 });
 
 test("fail fast: a step with checks and no test file by repro_by_turns → FAIL at once, so Claude takes over early", async () => {
@@ -188,7 +191,7 @@ test("a stopped job asks the worker for its findings once; the FAIL block carrie
 });
 
 test("fail fast does not fire once a test file exists; the OK headline names it as test=", async () => {
-  const { delegate } = await scenario({
+  const { repo, delegate } = await scenario({
     doneWhen: "`node check.mjs` passes",
     repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
     scripts: [[
@@ -199,6 +202,12 @@ test("fail fast does not fire once a test file exists; the OK headline names it 
   });
   const text = await delegate();
   expect(text.split("\n")[0]).toMatch(/^OK j\w{4} step=1 files=2 .* test=test\/hello\.test\.mjs$/);
+  // an OK job's event log is gzipped, the plain file gone
+  const dir = join(repo.dir, ".cheapag", "jobs", jobOf(text));
+  expect(existsSync(join(dir, "events.jsonl"))).toBe(false);
+  const lines = gunzipSync(readFileSync(join(dir, "events.jsonl.gz"))).toString("utf8").trim().split("\n");
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines) JSON.parse(line);
 });
 
 test("minute cap → session aborted → TIMEOUT with reason; nothing lands, worktree kept", async () => {
