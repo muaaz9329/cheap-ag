@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
 import { needsOf, overlap, parsePlan, PLAN_FORMAT, selectGroups, type Group, type Plan, type PlanStep } from "./plan.js";
@@ -582,7 +583,7 @@ function runGroup(g: GroupRun) {
       } else if (result.error) {
         reason = `worker error: ${result.error}`;
       } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
-        ({ repro, risk: reproRisk } = await checkRepro(worktree.path, report.repro, [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands], diff.changed.map((c) => c.path), kill.signal));
+        ({ repro, risk: reproRisk } = await checkRepro(worktree, report.repro, [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands], diff.changed.map((c) => c.path), kill.signal));
         // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
         pauseClock();
         parked = true;
@@ -836,7 +837,8 @@ async function findings(session: Session): Promise<string | undefined> {
   }
 }
 
-async function checkRepro(cwd: string, claim: string | undefined, allowed: string[], changed: string[], signal: AbortSignal): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
+async function checkRepro(worktree: Worktree, claim: string | undefined, allowed: string[], changed: string[], signal: AbortSignal): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
+  const cwd = worktree.path;
   if (!claim || /^n\/?a\b/i.test(claim)) return {};
   if (/^none\b/i.test(claim)) return { repro: "none", risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}` };
   const runs = (cmd: string) => runVerify(cwd, [cmd], () => {}, signal).then((r) => r[0]?.ok ?? false);
@@ -845,23 +847,44 @@ async function checkRepro(cwd: string, claim: string | undefined, allowed: strin
   if (!(await runs(claim))) return unverified(`\`${claim}\` fails on the fixed code`);
   const fix = changed.filter((p) => !TEST_FILE.test(p));
   if (!fix.length) return unverified("the change has no code outside tests");
-  // set the fix aside (tests stay), run the reproduction, then restore; landing uses the diff taken before this
-  try {
-    git(cwd, ["stash", "push", "--include-untracked", "--quiet", "--", ...fix]);
-  } catch {
-    return unverified("could not set the fix aside to rerun the reproduction");
-  }
+  // set the fix aside by file (tests stay), run the reproduction, then restore; landing uses the diff taken before this.
+  // Files are saved in memory, never searched for or dropped in git's shared entry list, which the user's checkout also uses.
+  const saved = new Map<string, Buffer | null>();
   let failsWithout = false;
+  let restored = true;
   try {
+    for (const file of fix) {
+      const path = join(cwd, file);
+      saved.set(file, existsSync(path) ? readFileSync(path) : null);
+      const inBase = spawnSync("git", ["cat-file", "-e", `${worktree.base}:${file}`], { cwd, stdio: "pipe" }).status === 0;
+      if (inBase) {
+        const base = spawnSync("git", ["show", `${worktree.base}:${file}`], { cwd, stdio: "pipe", maxBuffer: 256 * 1024 * 1024 });
+        if (base.status !== 0) throw new Error(`git show ${worktree.base}:${file} failed`);
+        writeFileSync(path, base.stdout);
+      } else {
+        rmSync(path, { force: true });
+      }
+    }
     failsWithout = !(await runs(claim));
+  } catch {
+    failsWithout = false;
+    restored = false;
   } finally {
     // a failed restore only affects the worktree: the landing applies the diff taken before this check
-    try {
-      git(cwd, ["stash", "pop", "--quiet"]);
-    } catch {
-      failsWithout = false;
+    for (const [file, content] of saved) {
+      try {
+        const path = join(cwd, file);
+        if (content === null) rmSync(path, { force: true });
+        else {
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, content);
+        }
+      } catch {
+        restored = false;
+      }
     }
   }
+  if (!restored) return unverified("could not set the fix aside to rerun the reproduction");
   return failsWithout ? { repro: "fail→pass" } : unverified(`\`${claim}\` also passes without the fix`);
 }
 
