@@ -19,6 +19,7 @@ export const REVIEW_RULE = "An OK is done: don't re-run its tests or read its di
  * usage. The hook enforces either: sonnet leaves Opus only Agent and cheapag's tools, self caps its tool calls.
  */
 export const TAKE_OVER_RULE: Record<TakeOver, string> = {
+  ask: "After a FAIL, PARTIAL or TIMEOUT, stop and ask the user one question: Claude (Sonnet subagent from found:, test= and worktree; 100k+ Claude tokens), retry the worker with model: (found: as note:), or stop. Do what they pick; never pick for them. A PARTIAL waits in worktree; land apply if they continue.",
   sonnet: "After a FAIL or PARTIAL (land apply a PARTIAL first), don't delegate it again or open files: give the step to your Agent tool with model: sonnet, passing the task, the user's words and the block's found:, test=, error: and worktree; report its answer, and if it did not finish, say what is left.",
   self: "After a FAIL or PARTIAL, do the task yourself instead of delegating it again: start from its found:, test= and worktree, open only the files they name, no background runs.",
 };

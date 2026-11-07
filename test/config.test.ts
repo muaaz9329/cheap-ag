@@ -30,3 +30,10 @@ test("models.variants: a map of full model names to efforts loads; a non-string 
   expect(() => loadConfig(setup({ models: { variants: { "opencode-go/glm-5.3": 2 } } }).dir))
     .toThrow('models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}');
 });
+
+test("takeover: ask is the default; sonnet and self stay; an unknown mode names all three", () => {
+  expect(loadConfig(setup({}).dir).takeover).toBe("ask");
+  expect(loadConfig(setup({ takeover: "sonnet" }).dir).takeover).toBe("sonnet");
+  expect(loadConfig(setup({ takeover: "self" }).dir).takeover).toBe("self");
+  expect(() => loadConfig(setup({ takeover: "bogus" }).dir)).toThrow("takeover must be one of sonnet, self, ask");
+});

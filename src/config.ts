@@ -11,8 +11,8 @@ export type Config = {
 /** Who implements a hard task (ticket 26): the worker on `models.hard`, Claude itself, or Claude's own Sonnet subagent. */
 export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
 export type HardTasks = (typeof HARD_TASKS)[number];
-/** Who finishes a step the worker could not (ticket 30): a Sonnet subagent, or Claude itself within limits.takeover_calls. */
-export const TAKE_OVER = ["sonnet", "self"] as const;
+/** Who finishes a step the worker could not (tickets 30, 51): ask the user, a Sonnet subagent, or Claude itself within limits.takeover_calls. */
+export const TAKE_OVER = ["sonnet", "self", "ask"] as const;
 export type TakeOver = (typeof TAKE_OVER)[number];
 /** Per-job caps, counted across the whole job: first run, self-fixes and escalation (spec: Models and limits); `max_parallel` bounds a batch's concurrent groups; `max_blocked_minutes` bounds a wait for `reply`. */
 export type Limits = { max_turns: number; max_minutes: number; max_cost_usd: number; max_parallel: number; max_blocked_minutes: number; repro_by_turns: number; takeover_calls: number };
@@ -27,7 +27,7 @@ const DEFAULTS: Config = {
   escalation_skip_at: 0.8,
   guard_lines: 20,
   hard_tasks: "delegate",
-  takeover: "sonnet",
+  takeover: "ask",
 };
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;

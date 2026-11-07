@@ -26,15 +26,17 @@ const HARD_RULE: Record<HardTasks, string> = {
   self: " For a hard task, do it yourself instead of delegating.",
   sonnet: " For a hard task, use your Agent tool with model: sonnet to implement it instead of delegating.",
 };
+/** Codex has no Sonnet subagent and cannot show a question UI, so `ask` becomes asking the user in chat (ticket 51). */
+const CODEX_ASK_RULE = "After a FAIL, PARTIAL or TIMEOUT, ask the user in chat whether to continue yourself, retry the worker on another model, or stop, then end your turn.";
 
 /**
  * The MCP `instructions` (spec: Server instructions; D12 is the status part): Claude Code loads them at session start,
  * so the usage rules travel with the server and nobody edits CLAUDE.md. Claude Code cuts them at 4,096 characters.
  */
-export const instructions = (hard: HardTasks = "delegate", takeover: TakeOver = "sonnet", host: "claude" | "codex" = "claude") => `Cheap Agent: a cheap worker model writes the code; you plan and review. The user pays for your tokens, not the worker's.
+export const instructions = (hard: HardTasks = "delegate", takeover: TakeOver = "ask", host: "claude" | "codex" = "claude") => `Cheap Agent: a cheap worker model writes the code; you plan and review. The user pays for your tokens, not the worker's.
 ${host === "codex" ? "Codex: cheapag's tools (delegate, research, jobs, reply, land, ping) may be hidden until you search for them; search for them before reading or editing code.\n" : ""}Send every code change to delegate, including small, mechanical, "quick" or multi-file ones. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only if the user asks, or to fix one line after a worker result. Bash file writes (heredocs, redirects, sed -i) are editing too. Write a task's details as - bullets or prose: numbered or lettered items count as separate changes, and three or more get the task refused.
 ${DIFFICULTY_HINT}${HARD_RULE[hard]}
-${REVIEW_RULE} ${TAKE_OVER_RULE[takeover]}
+${REVIEW_RULE} ${host === "codex" && takeover === "ask" ? CODEX_ASK_RULE : TAKE_OVER_RULE[takeover]}
 ${VERIFY_RULE}
 ${SCOUT_RULE} Verify low-confidence briefs. Pass source: the user's words or the issue (text or its file path), so the worker can check your task against it.
 cheapag results: the first word decides.
@@ -50,21 +52,21 @@ const ALWAYS_LOAD = { "anthropic/alwaysLoad": true };
 
 /**
  * The instructions the server publishes for a host, from this repo's config. Codex has no Sonnet subagent, so hard
- * tasks map to self and take-over is always self. A missing repo or bad config falls back to the defaults; the two
- * callers (serve and `hook context codex`) must agree, so both go through here.
+ * tasks map to self and a sonnet take-over is self; its ask take-over asks in chat. A missing repo or bad config falls
+ * back to the defaults; the two callers (serve and `hook context codex`) must agree, so both go through here.
  */
 export function hostInstructions(host: "claude" | "codex" = "claude", cwd = process.cwd()): string {
   let hard: HardTasks = "delegate";
-  let takeover: TakeOver = "sonnet";
+  let takeover: TakeOver = "ask";
   try {
     ({ hard_tasks: hard, takeover } = loadConfig(projectRoot(cwd)));
   } catch {
     // not a repository, or a bad config (delegate reports that): the default rule
   }
   if (host === "codex") {
-    // Codex has no Sonnet subagent, so it implements hard tasks itself
+    // Codex has no Sonnet subagent, so it implements hard tasks itself; ask becomes asking in chat
     if (hard === "sonnet") hard = "self";
-    takeover = "self";
+    if (takeover === "sonnet") takeover = "self";
   }
   return instructions(hard, takeover, host);
 }

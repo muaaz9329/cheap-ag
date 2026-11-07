@@ -184,7 +184,7 @@ Optional. Put a `cheapag.json` in a project:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `takeover` | `"sonnet"` | Who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (your frontier model, capped at 15 tool calls). Claude Code only; Codex finishes it itself. |
+| `takeover` | `"ask"` | What happens when the cheap model couldn't finish a step. `"ask"`: Claude asks you first, so nothing is spent without your choice. `"sonnet"`: a Sonnet helper takes over automatically, often several hundred thousand Claude tokens on a hard task. `"self"`: Claude does it, capped at 15 tool calls (`limits.takeover_calls`). Claude Code only; Codex asks in chat (`"ask"`) or finishes it itself. |
 | `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
 | `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
 | `retention` | `{ "unlanded_worktree_days": 2, "job_log_days": 7 }` | Days cleanup keeps an unlanded worktree and a job's log folder. It runs at server start and every hour. |
