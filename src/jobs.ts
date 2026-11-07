@@ -12,7 +12,7 @@ import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted,
 import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
-  conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
+  callRoot, conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
@@ -45,7 +45,7 @@ const FIX_WORDS = /\b(bug|fix(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|error|crash(?:
  */
 export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; source?: string; difficulty?: Difficulty };
 /** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
-export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
+export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string; root?: string };
 
 /** A brief longer than this is cut in the worker's prompt. */
 const MAX_BRIEF = 6_000;
@@ -95,7 +95,7 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
 export type WorkerContext = { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: Progress };
 
 export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(req.root);
   // first: an unapproved repo gets CONSENT before any job, worktree, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
@@ -301,7 +301,7 @@ function runGroup(g: GroupRun) {
   const done = new Promise<string>((resolve) => (finished = resolve));
   const halted = new Promise<void>((resolve) => (halt.signal.aborted ? resolve() : halt.signal.addEventListener("abort", () => resolve(), { once: true })));
   let parked = false; // finished, waiting for earlier groups to land: it can only move once they settle
-  running.set(job, { stop, done, batch: g.batch, settles: () => settled, block: () => renderJob(last), parked: () => parked });
+  running.set(job, { root, stop, done, batch: g.batch, settles: () => settled, block: () => renderJob(last), parked: () => parked });
 
   /** Runs the done conditions in the worktree; returns the failing run and its error tail, if any. */
   const verify = async () => {
@@ -378,7 +378,7 @@ function runGroup(g: GroupRun) {
     // a forgotten question must not hold the session, the worktree and a worker slot forever
     expiry = setTimeout(() => stop({ cap: "cancel", reason: `no reply within ${limits.max_blocked_minutes} min` }), limits.max_blocked_minutes * 60_000).unref();
     blocked.set(job, {
-      job, questions,
+      job, root, questions,
       resume: (answers, replyProgress) => {
         clearTimeout(expiry);
         blockedAt = undefined;
@@ -649,8 +649,9 @@ function runBatch(groups: Group[], shared: Shared) {
   const dir = join(root, ".cheapag", "batches");
   mkdirSync(dir, { recursive: true });
   let batch: string;
+  // unique across repositories too: a live batch in another root keeps its id
   do batch = newId("b");
-  while (existsSync(join(dir, `${batch}.json`)));
+  while (existsSync(join(dir, `${batch}.json`)) || batches.has(batch));
   const startedAt = new Date();
   const notes: string[] = [];
   const after = groups.map((g, i) => groups.slice(0, i).flatMap((earlier, j) => {
@@ -757,7 +758,7 @@ function runBatch(groups: Group[], shared: Shared) {
       if (progress === to) progress = () => {};
     }
   };
-  const entry = { look, render, forward };
+  const entry = { root, look, render, forward };
   batches.set(batch, entry);
   void all.catch(() => {}).then(() => batches.delete(batch)); // a rejection reaches whoever looks
   return { all, ...entry };
@@ -808,7 +809,7 @@ async function integrate(
 }
 
 /** Batches with a group still live in this server process, by id: how `jobs wait` and `reply` attach to them. */
-const batches = new Map<string, { look: (once: boolean, progress: Progress) => Promise<string>; render: () => string; forward: Progress }>();
+const batches = new Map<string, { root: string; look: (once: boolean, progress: Progress) => Promise<string>; render: () => string; forward: Progress }>();
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
 /** A test file, by the usual conventions: a tests/ directory, test_x / x_test / x.test / x.spec names, conftest.py. */
@@ -869,13 +870,19 @@ const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provi
  * Jobs running in this server process, by id: how `jobs cancel` and `jobs wait` reach them. `done` resolves to the final
  * block, `settles()` at the next settlement (BLOCKED or final); `block()` is the current block.
  */
-const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string>; batch: string | null; settles: () => Promise<void>; block: () => string; parked: () => boolean }>();
+/** Live jobs by id, across every repository this server runs jobs in; a call's lookups go through `liveJob` for its root. */
+const running = new Map<string, { root: string; stop: (why: Stop) => void; done: Promise<string>; batch: string | null; settles: () => Promise<void>; block: () => string; parked: () => boolean }>();
+/** The live job `id` in `root`, if one runs there in this server. */
+const liveJob = (root: string, id: string) => {
+  const live = running.get(id);
+  return live?.root === root ? live : undefined;
+};
 
-export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string; seconds?: number };
+export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string; seconds?: number; root?: string };
 
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(input.root);
   if (input.action === "list") {
     const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
     if (!all.length) return "no jobs yet";
@@ -886,7 +893,7 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
   if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress, input.seconds);
   // the id becomes a path: only well-formed ids get that far
   if (!input.job || !/^j[0-9a-z]{4}$/.test(input.job)) return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`);
-  const live = running.get(input.job);
+  const live = liveJob(root, input.job);
   if (input.action === "wait" && live) {
     // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
     if (!blocked.has(input.job)) {
@@ -917,7 +924,8 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
 
 /** `jobs wait` on a batch: the next settlement of a live one, or a finished one's block (from its records) at once. */
 async function waitBatch(root: string, batch: string, progress: Progress, seconds?: number): Promise<string> {
-  const live = batches.get(batch);
+  const found = batches.get(batch);
+  const live = found?.root === root ? found : undefined;
   if (live) {
     if (seconds === undefined) return live.look(true, progress);
     const waited = await waitOrTimeout(live.look(true, progress), seconds);
@@ -1030,7 +1038,7 @@ function landedSince(root: string, job: string, since: Date) {
   return records(root).filter((r) => r.job !== job && r.landed && Date.parse(r.timing?.endedAt ?? "") >= since.getTime());
 }
 
-export type LandInput = { job: string; action: "apply" | "discard" };
+export type LandInput = { job: string; action: "apply" | "discard"; root?: string };
 
 /**
  * The `land` tool (spec: Tool contracts, A13): `apply` 3-way applies unlanded jobs' worktree changes to the working
@@ -1038,7 +1046,7 @@ export type LandInput = { job: string; action: "apply" | "discard" };
  * per job. Records are updated (`landed`, `worktree`, `discarded`) so research's unlanded note and cleanup stay truthful.
  */
 export async function landJobs(input: LandInput, ctx: WorkerContext): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(input.root);
   const ids = input.job.split(",").map((s) => s.trim()).filter(Boolean);
   if (!ids.length) return failBlock('land needs a job id, or several in landing order, e.g. "j7f3a,j7f3b"');
   let config: Config;
@@ -1115,7 +1123,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
   const dir = join(root, ".cheapag", "jobs", id);
   const record = readRecord(dir);
   if (!record) throw new Error(`job ${id} not found`);
-  if (running.has(id)) throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
+  if (liveJob(root, id)) throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
   if (record.status === "RUNNING" || record.status === "BLOCKED") throw new Error(`job ${id} is ${record.status} in another session (server pid ${record.pid ?? "unknown"})`);
   if (record.landed) throw new Error(`job ${id} already landed`);
   if (record.discarded) throw new Error(`job ${id} was already discarded`);
@@ -1154,6 +1162,8 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
 /** A job paused on a worker question. It lives only in this process, as does its paused session. */
 export type BlockedJob = {
   job: string;
+  /** The repository the job runs in: ids are unique per repository, and one server can run jobs in several. */
+  root: string;
   questions: Question[];
   /** Answers the questions (one answer each) and resumes the session; resolves with the job's next block (final, or BLOCKED again). */
   resume: (answers: string[], progress: Progress) => Promise<string>;
@@ -1165,9 +1175,11 @@ const blocked = new Map<string, BlockedJob>();
 export const blockedJobs = (): ReadonlyMap<string, BlockedJob> => blocked;
 
 /** `reply`: a letter picks that option's label, anything else is passed through as free text (spec D8). */
-export async function reply(input: { job: string; answer: string }, progress: Progress): Promise<string> {
-  const entry = blocked.get(input.job);
-  if (!entry) return failBlock(notWaiting(input.job));
+export async function reply(input: { job: string; answer: string; root?: string }, progress: Progress): Promise<string> {
+  const root = callRoot(input.root);
+  const found = blocked.get(input.job);
+  const entry = found?.root === root ? found : undefined;
+  if (!entry) return failBlock(notWaiting(root, input.job));
   if (!input.answer.trim()) return failBlock("empty answer; reply with an option letter or free text"); // the job stays BLOCKED
   // one question also takes the numbered form ("1a", "1: text") that several questions need
   const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(input.answer);
@@ -1200,8 +1212,8 @@ function answerEach(answer: string, questions: Question[]): string[] | string {
 }
 
 /** Why `job` cannot take a reply, from its record on disk. */
-function notWaiting(job: string) {
-  const file = join(projectRoot(process.cwd()), ".cheapag", "jobs", job, "result.json");
+function notWaiting(root: string, job: string) {
+  const file = join(root, ".cheapag", "jobs", job, "result.json");
   if (!/^j[0-9a-z]{4}$/.test(job) || !existsSync(file)) return `no job ${job}; reply only to a BLOCKED job's id`;
   const { status } = JSON.parse(readFileSync(file, "utf8")) as { status: string };
   return status === "BLOCKED"
@@ -1214,7 +1226,8 @@ function newJob(root: string) {
   for (;;) {
     const job = newId("j");
     const dir = join(root, ".cheapag", "jobs", job);
-    if (existsSync(dir)) continue;
+    // unique across repositories too: a live job in another root keeps its id
+    if (existsSync(dir) || running.has(job)) continue;
     mkdirSync(dir, { recursive: true });
     return { job, dir };
   }

@@ -188,6 +188,10 @@ Optional. Put a `cheapag.json` in a project:
 | `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
 | `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
 
+## Orchestrators and git worktrees
+
+Cheap Agent works in the repository your session started in. If one session runs several tasks, each in its own git worktree (an orchestrator handing tickets to subagents, say), pass `root` with the worktree's absolute path on `delegate`, `research`, `jobs`, `land` and `reply`. Jobs then run, land and keep their records in that worktree, and the session's own checkout is untouched. Each worktree needs its own consent (`/cheapag:allow` there, or a copied `.cheapag/consent.json`). Without `root`, nothing changes.
+
 ## Run the cheap model on your own machine
 
 Any OpenAI-compatible server works as the worker: llama.cpp (`llama-server`), Strata, Ollama, LM Studio, vLLM, or a LiteLLM gateway. Run `npx cheap-agent login` and pick **Local server**. It asks for:

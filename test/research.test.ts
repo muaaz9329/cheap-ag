@@ -43,7 +43,6 @@ test.each([
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   onTestFinished(() => { vi.restoreAllMocks(); });
-  vi.spyOn(workspace, "projectRoot").mockReturnValue(repo.dir);
   vi.spyOn(consent, "consentGate").mockReturnValue({ route: routing.fullRoute("opencode-go") });
   vi.spyOn(routing, "recordSpend").mockImplementation(() => {});
   const releaseHold = vi.fn();
@@ -69,7 +68,7 @@ test.each([
     observe(tree.path);
     throw busy;
   });
-  const text = await runResearch({ question: "where is the code?" }, {
+  const text = await runResearch({ question: "where is the code?", root: repo.dir }, {
     provider: { provider: "opencode-go", via: "login" },
     opencode: async () => ({ url: "http://unused.invalid", password: "unused", version: "test" }),
     progress: () => {},
