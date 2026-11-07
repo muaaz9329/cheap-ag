@@ -6,7 +6,7 @@ import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from
 import { loadConfig } from "../src/config.js";
 import { PROVIDERS } from "../src/credentials.js";
 import { parsePlan } from "../src/plan.js";
-import { clock, fullRoute, modelName, PRESETS, presetOf, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import { clock, effectiveModels, fullRoute, modelName, PRESETS, presetOf, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
 import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
@@ -358,4 +358,11 @@ test("opencode (Zen) presets: cheapest and balanced implement on Flash, stronges
   expect(routeModels(route).map(modelName)).not.toContain("opencode/qwen3.7-plus");
   expect(routeModels(route).every((m) => m.providerID === "opencode")).toBe(true);
   expect(modelName(fullRoute("opencode", { implement: "opencode-go/glm-5.3" }).implement)).toBe("opencode/deepseek-v4.1-flash");
+});
+
+test("effectiveModels: the preset's models, with an explicit models role winning", () => {
+  expect(effectiveModels("opencode-go", { preset: "strongest", models: {} })).toEqual(PRESETS["opencode-go"].strongest);
+  expect(effectiveModels("opencode-go", { models: { medium: "opencode-go/glm-5.3" } })).toEqual({ medium: "opencode-go/glm-5.3" });
+  expect(effectiveModels("opencode-go", { preset: "strongest", models: { implement: "opencode-go/kimi-k3" } }))
+    .toEqual({ implement: "opencode-go/kimi-k3", medium: PRESETS["opencode-go"].strongest.medium });
 });

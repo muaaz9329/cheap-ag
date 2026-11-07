@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { localServer } from "./config.js";
+import { localServer, type Config } from "./config.js";
 import { LOGIN_COMMAND, providerLabel, type Provider } from "./credentials.js";
 import type { RunResult, Session } from "./worker.js";
 
@@ -121,6 +121,12 @@ export type Difficulty = (typeof DIFFICULTIES)[number];
 
 /** The model a job implements on: hard takes the hard model, else the medium one; medium the medium one; easy or no hint `implement`. */
 export const tierModel = (r: Route, d?: Difficulty) => (d === "hard" ? r.hard ?? r.medium : d === "medium" ? r.medium : undefined) ?? r.implement;
+
+/** The models config in force: the chosen preset's models (none for local) with an explicit `models` role winning over it. */
+export function effectiveModels(provider: ProviderId, config: Pick<Config, "preset" | "models">): ModelsConfig {
+  const preset = provider === "local" || !config.preset ? undefined : PRESETS[provider][config.preset];
+  return { ...preset, ...config.models };
+}
 
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {

@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import type { ModelsConfig } from "./routing.js";
+import { PRESET_NAMES, type ModelsConfig, type Preset } from "./routing.js";
 
 /** Optional settings: the repo's `cheapag.json` overrides the user's `~/.config/cheapag/config.json` (spec E4). */
 export type Config = {
   test_cmd?: string; integration_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
-  models: ModelsConfig; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks; takeover: TakeOver;
+  models: ModelsConfig; preset?: Preset; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks; takeover: TakeOver;
 };
 /** Who implements a hard task (ticket 26): the worker on `models.hard`, Claude itself, or Claude's own Sonnet subagent. */
 export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
@@ -32,7 +32,7 @@ const DEFAULTS: Config = {
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 
-/** The user-level config every repo's `cheapag.json` overrides; `cheapag login` writes its `models` (the preset). */
+/** The user-level config every repo's `cheapag.json` overrides; `cheapag login` writes its `preset`. */
 export const userConfigFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
 
 /**
@@ -92,10 +92,14 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local, preset } = value as Record<string, unknown>;
   if (local !== undefined) {
     if (file !== userConfigFile()) throw new Error(`${file}: local can only be set in ${userConfigFile()}, never in a repo`);
     parseLocal(local, file);
+  }
+  if (preset !== undefined) {
+    if (file !== userConfigFile()) throw new Error(`${file}: preset can only be set in ${userConfigFile()}`);
+    if (!PRESET_NAMES.includes(preset as Preset)) throw new Error(`${file}: preset must be one of ${PRESET_NAMES.join(", ")}`);
   }
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
@@ -158,6 +162,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     limits: caps,
     retention: keep,
     ...(models !== undefined && { models: roles as ModelsConfig }),
+    ...(preset !== undefined && { preset: preset as Preset }),
     ...(escalation_skip_at !== undefined && { escalation_skip_at }),
     ...(guard_lines !== undefined && { guard_lines }),
     ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
