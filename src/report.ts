@@ -33,6 +33,8 @@ export type JobRecord = {
   missing: string[];
   reason?: string;
   worktree: string | null;
+  /** Removing a landed job's worktree failed; the job's status is unaffected (its change already landed). */
+  cleanupError?: string;
   usage: { turns: number; costUsd: number };
   /** Absent when verification never ran: the headline then has no `tests=`. */
   tests?: "pass" | "fail" | "none";
@@ -201,6 +203,7 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (has("missing") && r.missing.length) lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
   if (has("worktree") && r.worktree) lines.push(`worktree: ${r.worktree}/`);
+  if (r.cleanupError) lines.push(`cleanup error: ${oneLine(r.cleanupError)} (the change landed; only its worktree folder was left behind)`);
   if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map((l) => (keep.has(l) ? l.replaceAll("\t", "  ") : fit(l))).join("\n");
 }

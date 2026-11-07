@@ -197,6 +197,19 @@ function runGroup(g: GroupRun) {
   // the job's model, then its allowed fallbacks: a provider limit moves the session on to the next one
   const models = chain(model, route.fallbacks.filter((m) => modelName(m) !== modelName(model)));
   let billing: JobRecord["billing"];
+  let cleanupError: string | undefined;
+  /**
+   * Removes a landed job's worktree. The change is already in the working tree, so a failure here (Windows refusing to
+   * delete a folder something still holds open) is recorded on the job, never turned into a FAIL.
+   */
+  const cleanUp = async (tree: Worktree) => {
+    try {
+      await releaseDirectory(tree.path);
+      removeWorktree(root, tree);
+    } catch (err) {
+      cleanupError = (err as Error).message;
+    }
+  };
   // whoever is waiting on this job right now: delegate first, then each reply
   let progress = g.progress;
   // the same line goes to progress.txt for anything watching the folder; best effort, with or without an MCP progress token
@@ -345,6 +358,7 @@ function runGroup(g: GroupRun) {
       // tree: what the worktree's diff is measured against, so `land apply` can land it later
       baseline: { head: worktree?.head ?? null, stash: worktree?.stash ?? null, tree: worktree?.base ?? null },
       worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
+      cleanupError,
       sessionID: session?.sessionID ?? null,
       // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
       tests: silent ? undefined : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
@@ -430,8 +444,7 @@ function runGroup(g: GroupRun) {
       landing = true;
       pauseClock();
       if (!(await land(root, job, diff.patch, diff.changed.map((c) => c.path)))) {
-        await releaseDirectory(worktree.path);
-        removeWorktree(root, worktree);
+        await cleanUp(worktree);
         return;
       }
       why = "redo could not reconcile";
@@ -589,10 +602,8 @@ function runGroup(g: GroupRun) {
           landing = true; // from here on, caps and cancel no longer apply (until a redo works again)
           pauseClock();
           const clash = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
-          if (!clash) {
-            await releaseDirectory(worktree.path);
-            removeWorktree(root, worktree);
-          } else await redo(diff.patch, clash, work);
+          if (!clash) await cleanUp(worktree);
+          else await redo(diff.patch, clash, work);
         }
       }
     } catch (err) {
