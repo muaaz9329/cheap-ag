@@ -85,6 +85,7 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
     questionReplies: [] as { requestID: string; answers?: string[][]; rejected: boolean }[],
     permissionReplies: [] as { requestID: string; reply: string; message?: string }[],
     aborts: [] as string[],
+    forks: [] as { from: string; to: string }[],
     disposed: [] as string[],
   };
 
@@ -261,6 +262,15 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
       sessions.set(session.id, session);
       recorded.sessions.push({ id: session.id, directory, agent: session.agent, model: session.model, permission: session.permission });
       return json(res, { id: session.id, slug: session.id, projectID: "fake", directory, title: "fake session", version, time: { created: Date.now(), updated: Date.now() } });
+    }
+
+    if ((m = route.match(/^POST \/session\/([^/]+)\/fork$/))) {
+      const from = sessions.get(m[1]);
+      if (!from) return notFound(res, `session ${m[1]} not found`);
+      const copy: Session = { ...from, id: id("ses"), status: { type: "idle" } };
+      sessions.set(copy.id, copy);
+      recorded.forks.push({ from: from.id, to: copy.id });
+      return json(res, { id: copy.id, slug: copy.id, projectID: "fake", directory: copy.directory, title: "fake session", version, permission: copy.permission, time: { created: Date.now(), updated: Date.now() } });
     }
 
     if (route === "GET /session/status") {

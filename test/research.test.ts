@@ -50,6 +50,7 @@ test.each([
   vi.spyOn(opencode, "holdOpencode").mockReturnValue(releaseHold);
   vi.spyOn(worker, "openSession").mockResolvedValue({
     sessionID: "research-fault",
+    rotate: async () => false,
     run: async () => status === "FAIL" ? { text: "", error: "API rejected request (400)" } : block("status: answer\nconfidence: high\nnotes: useful answer"),
     totals: () => ({ sessionID: "research-fault", turns: 0, usage: { costUsd: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0 }, rejections: [], spend: {} }),
   });

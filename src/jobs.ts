@@ -8,7 +8,7 @@ import { failBlock, renderBatch, renderJob, type BatchRecord, type JobRecord } f
 import { loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
-import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
+import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, routeModels, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
 import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
@@ -43,9 +43,12 @@ const FIX_WORDS = /\b(bug|fix(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|error|crash(?:
  * `brief`: a research scout brief (ticket 23.4), resolved to its text, handed to every worker of the delegation.
  * `source`: the user's request or the issue, verbatim (ticket 28), so the worker can check the step against it.
  */
-export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; source?: string; difficulty?: Difficulty };
+export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; source?: string; difficulty?: Difficulty; model?: string };
 /** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
 export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
+
+/** An allowed model by full `provider/id` or bare id. */
+const pickModel = (route: Route, name?: string) => (name ? routeModels(route).find((m) => modelName(m) === name || m.id === name) : undefined);
 
 /** A brief longer than this is cut in the worker's prompt. */
 const MAX_BRIEF = 6_000;
@@ -107,11 +110,12 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   if (req.task !== undefined) {
     const made = inlinePlan(root, req);
     if ("fail" in made) return failBlock(made.fail);
-    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty };
-  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty };
+    input = { plan: made.plan, steps: "1", note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty, model: req.model };
+  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, note: req.note, wait: req.wait, brief: brief.text, source, difficulty: req.difficulty, model: req.model };
   else return failBlock("give task (what to change, files, how to check), or plan and steps");
   // only the caller's path: an inline task's own plan lives under .cheapag/plans/
   if (req.task === undefined && input.plan.split(/[\\/]/).filter((p) => p && p !== ".")[0] === ".cheapag") return failBlock(`plan ${input.plan} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; save plans under .plan/`);
+  if (input.model && !pickModel(route, input.model)) return failBlock(`model ${input.model} is not allowed here; allowed: ${routeModels(route).map((m) => m.id).join(", ")}; run /cheapag:allow to add it`);
   const planFile = join(root, input.plan);
   if (isAbsolute(input.plan) || !inside(root, planFile)) return failBlock(`plan ${input.plan} must be a path inside the repository, relative to its root`);
   if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
@@ -186,7 +190,7 @@ function runGroup(g: GroupRun) {
   const stepIds = g.group.label;
   // a step's own difficulty: wins over the call's; in a range the hardest step decides (ticket 26)
   const difficulty = [...DIFFICULTIES].reverse().find((d) => steps.some((s) => s.fields.difficulty === d)) ?? input.difficulty;
-  const model = tierModel(route, difficulty);
+  const model = pickModel(route, input.model) ?? tierModel(route, difficulty);
   // against the implement model, so a tier model shows as model= in the headline
   const requested = modelName(route.implement);
   const startedAt = new Date();
@@ -479,10 +483,12 @@ function runGroup(g: GroupRun) {
       });
       finalize("RUNNING"); // now with the worktree, so a restart can point at it
       const provider = g.provider.provider;
-      // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET
+      // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET;
+      // a transient provider error retries, falls back the same way, then stops as PROVIDER
       const routed = async (text: string, on?: typeof escalation, interrupt?: AbortSignal) => {
         const r = await runRouted(session!, text, models, provider, on, interrupt);
         if (r.budget) stopped ??= { cap: "provider", reason: r.budget };
+        if (r.provider) stopped ??= { cap: "down", reason: r.provider };
         return r;
       };
       /** One prompt through the normal path: the run, then verify with up to 2 self-fixes and 1 escalation. `tag` prefixes tried: lines. */
@@ -859,8 +865,8 @@ async function checkRepro(cwd: string, claim: string | undefined, allowed: strin
   return failsWithout ? { repro: "fail→pass" } : unverified(`\`${claim}\` also passes without the fix`);
 }
 
-type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider"; reason: string };
-const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provider: "BUDGET" } as const;
+type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider" | "down"; reason: string };
+const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provider: "BUDGET", down: "PROVIDER" } as const;
 
 /**
  * Jobs running in this server process, by id: how `jobs cancel` and `jobs wait` reach them. `done` resolves to the final

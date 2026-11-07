@@ -154,28 +154,50 @@ export type Limit = { model: string; reason?: string; message: string; next: num
 export type Chain = { first: WorkerModel; current: WorkerModel; rest: WorkerModel[]; limits: Limit[]; used: string[] };
 export const chain = (first: WorkerModel, fallbacks: WorkerModel[]): Chain => ({ first, current: first, rest: [...fallbacks], limits: [], used: [] });
 
+const RETRY = "The previous attempt hit a provider capacity error. Continue the current step from where it left off.";
 const CONTINUE = "The previous model hit a usage limit and was stopped. Continue the current step from where it left off.";
 
 /**
  * One prompt on the chain's current model. On a provider limit the worker has already aborted the session (never waiting
- * out the retry); the same session continues on the next fallback. `budget` is set when the job must stop as BUDGET:
- * every allowed model is limited, or (OpenRouter) the credit is gone, which no other model can help with.
- * With `escalation`, the prompt runs on that model alone: a limit there is returned (in `limit`), never fallen back from.
+ * out the retry); the same session continues on the next fallback. A transient provider error is retried once in a forked
+ * session, then stops with `provider`: the user chooses, no silent fallback. `budget` is set when the job must stop as BUDGET: every allowed model is limited, or
+ * (OpenRouter) the credit is gone, which no other model can help with. `provider` is set when the current model keeps failing
+ * instead. With `escalation`, the prompt runs on that model alone: a limit there is returned (in `limit`),
+ * never fallen back from, and a transient error is not retried either.
  */
-export async function runRouted(session: Pick<Session, "run">, prompt: string, c: Chain, provider: ProviderId, escalation?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult & { budget?: string }> {
+export async function runRouted(session: Pick<Session, "run" | "rotate">, prompt: string, c: Chain, provider: ProviderId, escalation?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult & { budget?: string; provider?: string }> {
   // the first model is the session's own; once moved, every prompt names the fallback explicitly
-  let result = await session.run(prompt, escalation ?? (c.current === c.first ? undefined : c.current), interrupt);
+  const model = () => escalation ?? (c.current === c.first ? undefined : c.current);
+  let text = prompt;
+  let result = await session.run(text, model(), interrupt);
   if (escalation && result.limit) c.limits.push(result.limit);
-  while (result.limit && !escalation) {
+  while (!escalation) {
+    if (isTransient(result)) {
+      // OpenCode's own retries are already past, and Go pins a session to one backend cell: retry once in a forked session
+      if (await session.rotate()) result = await session.run(RETRY, model(), interrupt);
+      if (isTransient(result)) {
+        const others = c.rest.map((m) => m.id).join(", ") || "none";
+        return { ...result, provider: `${c.current.id} is failing (last error: ${(result.error ?? `HTTP ${result.httpStatus}`).slice(0, 120)}); other models: ${others}` };
+      }
+    }
+    if (!result.limit) break;
     c.limits.push(result.limit);
     const next = c.rest.shift();
     if (!next) return { ...result, budget: exhausted(provider, c.limits) };
     c.current = next;
     c.used.push(modelName(next));
-    result = await session.run(CONTINUE, next, interrupt);
+    text = CONTINUE;
+    result = await session.run(text, model(), interrupt);
   }
   if (provider === "openrouter" && result.httpStatus === 402) return { ...result, budget: "OpenRouter credits exhausted" };
   return result;
+}
+
+/** A provider error worth retrying: an overload, a rate limit, a timeout, or a 5xx. Auth/config errors are not. */
+const TRANSIENT = /overloaded|at capacity|rate limit|too many requests|timed? ?out|try again|temporar|upstream request failed|ECONN|socket hang up|fetch failed/i;
+function isTransient(result: Pick<RunResult, "error" | "httpStatus">) {
+  const status = result.httpStatus;
+  return status === 408 || status === 429 || (status !== undefined && status >= 500) || (!!result.error && TRANSIENT.test(result.error));
 }
 
 /** The BUDGET reason once every allowed model is limited, with the earliest reset the provider gave. */

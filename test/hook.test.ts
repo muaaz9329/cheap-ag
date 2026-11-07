@@ -232,6 +232,12 @@ test("context: CHEAPAG_NO_UPDATE_CHECK=1 skips the check even when the cache has
 const FAIL_BLOCK = "FAIL jab12 step=1 files=0 +0/-0 tests=pass turns=12 cost=$0.003\nfound: django/db/models/query.py:only(), proxy model pk\nreason: no reproduction test by turn 12";
 const read = { file_path: "a.ts" };
 
+test("takeover: a PROVIDER result starts no take-over: the provider is down, so Claude must not hand it to Sonnet", () => {
+  const { run, result } = setup();
+  result("PROVIDER jab12 step=1 files=0 +0/-0 turns=0 cost=$0\nreason: opencode is down or overloaded on every allowed model: a, b (last error: overloaded); retry in a few minutes");
+  expect(run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" })).toBeNull();
+});
+
 test("takeover self: after a FAIL, the call past limits.takeover_calls in that prompt is denied; cheapag's tools never count; a new prompt is free", () => {
   const { run, result, repo } = setup();
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "self", limits: { takeover_calls: 3 } }));

@@ -55,7 +55,7 @@ export async function openSession(opts: {
     directory, agent: opts.agent ?? WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id }, ...(opts.permission && { permission: opts.permission }),
   });
   if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
-  const sessionID = created.data.id;
+  let sessionID = created.data.id;
   const calls = new Set<string>();
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
@@ -86,7 +86,8 @@ export async function openSession(opts: {
       let limit: Limit | undefined;
 
       const prompted = await client.session.promptAsync({
-        sessionID, directory, parts: [{ type: "text", text: prompt }],
+        // the agent on every prompt, not just at create: a forked session (rotate) must keep the worker's rules
+        sessionID, directory, agent: opts.agent ?? WORKER_AGENT, parts: [{ type: "text", text: prompt }],
         ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
       });
       if (prompted.error) throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
@@ -197,7 +198,23 @@ export async function openSession(opts: {
     return { sessionID, turns: calls.size, usage, rejections: [...rejections], spend };
   }
 
-  return { sessionID, run, totals };
+  /**
+   * Moves the session to a fork (new id, same history): OpenCode Go pins a session id to one backend cell, so a fork can
+   * land on a healthy one. False, keeping the old id, when the fork fails. The fork's own permission is kept when it
+   * has one; otherwise the ruleset is re-applied, so the worker never gets looser rules than the original.
+   */
+  async function rotate(): Promise<boolean> {
+    const forked = await client.session.fork({ sessionID, directory }).catch(() => undefined);
+    if (!forked?.data) return false;
+    if (opts.permission && !forked.data.permission) {
+      const updated = await client.session.update({ sessionID: forked.data.id, directory, permission: opts.permission }).catch(() => undefined);
+      if (!updated?.data) return false;
+    }
+    sessionID = forked.data.id;
+    return true;
+  }
+
+  return { get sessionID() { return sessionID; }, run, rotate, totals };
 }
 
 export type Session = Awaited<ReturnType<typeof openSession>>;
