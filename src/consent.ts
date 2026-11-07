@@ -50,8 +50,8 @@ export function routeMoved(root: string, consent: Consent) {
 }
 
 /** `preset=` for ping and status: the preset the effective `models` here match (the repo's config too, inside one). */
-export function presetHere(provider: Provider["provider"]) {
-  let root = process.cwd();
+export function presetHere(provider: Provider["provider"], cwd = process.cwd()) {
+  let root = cwd;
   try {
     root = projectRoot(root);
   } catch {} // outside a repo only the user's config applies

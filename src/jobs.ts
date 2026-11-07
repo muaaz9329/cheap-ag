@@ -12,7 +12,7 @@ import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted,
 import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
-  conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
+  callRoot, conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
@@ -45,7 +45,7 @@ const FIX_WORDS = /\b(bug|fix(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|error|crash(?:
  */
 export type DelegateInput = { plan: string; steps: string; note?: string; wait?: boolean; brief?: string; source?: string; difficulty?: Difficulty };
 /** What the tool takes: a plan file and steps, or (one step, no plan file) an inline task with optional files and done-when. */
-export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string };
+export type DelegateRequest = Partial<DelegateInput> & { task?: string; files?: string; done_when?: string; root?: string };
 
 /** A brief longer than this is cut in the worker's prompt. */
 const MAX_BRIEF = 6_000;
@@ -95,7 +95,7 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
 export type WorkerContext = { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: Progress };
 
 export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(req.root);
   // first: an unapproved repo gets CONSENT before any job, worktree, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
@@ -871,11 +871,11 @@ const STOPPED = { minutes: "TIMEOUT", cost: "BUDGET", cancel: "CANCELLED", provi
  */
 const running = new Map<string, { stop: (why: Stop) => void; done: Promise<string>; batch: string | null; settles: () => Promise<void>; block: () => string; parked: () => boolean }>();
 
-export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string; seconds?: number };
+export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: string; seconds?: number; root?: string };
 
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(input.root);
   if (input.action === "list") {
     const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
     if (!all.length) return "no jobs yet";
@@ -1030,7 +1030,7 @@ function landedSince(root: string, job: string, since: Date) {
   return records(root).filter((r) => r.job !== job && r.landed && Date.parse(r.timing?.endedAt ?? "") >= since.getTime());
 }
 
-export type LandInput = { job: string; action: "apply" | "discard" };
+export type LandInput = { job: string; action: "apply" | "discard"; root?: string };
 
 /**
  * The `land` tool (spec: Tool contracts, A13): `apply` 3-way applies unlanded jobs' worktree changes to the working
@@ -1038,7 +1038,7 @@ export type LandInput = { job: string; action: "apply" | "discard" };
  * per job. Records are updated (`landed`, `worktree`, `discarded`) so research's unlanded note and cleanup stay truthful.
  */
 export async function landJobs(input: LandInput, ctx: WorkerContext): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(input.root);
   const ids = input.job.split(",").map((s) => s.trim()).filter(Boolean);
   if (!ids.length) return failBlock('land needs a job id, or several in landing order, e.g. "j7f3a,j7f3b"');
   let config: Config;
@@ -1165,9 +1165,9 @@ const blocked = new Map<string, BlockedJob>();
 export const blockedJobs = (): ReadonlyMap<string, BlockedJob> => blocked;
 
 /** `reply`: a letter picks that option's label, anything else is passed through as free text (spec D8). */
-export async function reply(input: { job: string; answer: string }, progress: Progress): Promise<string> {
+export async function reply(input: { job: string; answer: string; root?: string }, progress: Progress): Promise<string> {
   const entry = blocked.get(input.job);
-  if (!entry) return failBlock(notWaiting(input.job));
+  if (!entry) return failBlock(notWaiting(callRoot(input.root), input.job));
   if (!input.answer.trim()) return failBlock("empty answer; reply with an option letter or free text"); // the job stays BLOCKED
   // one question also takes the numbered form ("1a", "1: text") that several questions need
   const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(input.answer);
@@ -1200,8 +1200,8 @@ function answerEach(answer: string, questions: Question[]): string[] | string {
 }
 
 /** Why `job` cannot take a reply, from its record on disk. */
-function notWaiting(job: string) {
-  const file = join(projectRoot(process.cwd()), ".cheapag", "jobs", job, "result.json");
+function notWaiting(root: string, job: string) {
+  const file = join(root, ".cheapag", "jobs", job, "result.json");
   if (!/^j[0-9a-z]{4}$/.test(job) || !existsSync(file)) return `no job ${job}; reply only to a BLOCKED job's id`;
   const { status } = JSON.parse(readFileSync(file, "utf8")) as { status: string };
   return status === "BLOCKED"
