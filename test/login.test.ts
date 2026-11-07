@@ -1,4 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -317,6 +318,67 @@ tty("re-running login adds a provider; the earlier one keeps precedence and that
   expect(r.output).toContain("Currently using: OpenCode Go.");
   expect(r.output).toContain("Note: OpenCode Go is also saved and is used first.");
   expect(r.saved.sort()).toEqual(["opencode-go", "openrouter"]);
+}, slow(90_000));
+
+/** A local server's model list (`/v1/models`) and llama.cpp's `/props`: 128K shared by 2 slots. */
+async function localModels() {
+  const http = createServer((req, res) => {
+    if (req.url === "/v1/models") return res.end(JSON.stringify({ object: "list", data: [{ id: "bonsai-9b-mtp" }, { id: "qwen3.6-35b-a3b" }] }));
+    if (req.url === "/props") return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 131072 }, total_slots: 2 }));
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  onTestFinished(() => void http.close());
+  return `http://127.0.0.1:${(http.address() as { port: number }).port}`;
+}
+
+tty("a local server: login finds /v1 under the bare URL, lists its models, detects the context per slot, and needs no key", async () => {
+  const url = await localModels();
+  const r = await runLogin({
+    claude: "registered",
+    config: { models: PRESETS.openrouter.balanced },
+    steps: [
+      { expect: "Provider", send: "5\r" },
+      { expect: "ServerURL", send: `${url}\r` },
+      { expect: "APIkeyfile", send: "\r" },
+      { expect: "oranid,Enter=bonsai", send: "2\r" },
+      { expect: "Contextwindow", send: "\r" },
+    ],
+  });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).toContain("5) Local server (any OpenAI-compatible URL");
+  expect(r.output).toContain("1) bonsai-9b-mtp");
+  expect(r.output).toContain("Context window in tokens (detected) [Enter = 65536]");
+  // the hosted preset stays for a later switch back; the local server is its own entry
+  expect(r.config).toEqual({ models: PRESETS.openrouter.balanced, local: { base_url: `${url}/v1`, model: "qwen3.6-35b-a3b", context: 65536 } });
+  expect(r.saved).toEqual([]); // nothing in OpenCode's credential store
+  expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "local", id: "qwen3.6-35b-a3b" });
+  expect(r.output).toContain("✓ local/qwen3.6-35b-a3b answered");
+}, slow(90_000));
+
+tty("a local server's key file must exist; it is saved as a path, never read", async () => {
+  const url = await localModels();
+  const r = await runLogin({
+    claude: "registered",
+    steps: [
+      { expect: "Provider", send: "5\r" },
+      { expect: "ServerURL", send: `${url}/v1\r` },
+      { expect: "APIkeyfile", send: "/nonexistent/llama.key\r" },
+    ],
+  });
+  expect(r.exit).toBe("EXIT 1");
+  expect(r.output).toContain("✗ no such file: give the absolute path of a file holding only the key");
+  expect(r.output.split("/nonexistent/llama.key").length).toBe(2); // only the typed echo, never repeated
+  expect(r.config).toBeUndefined();
+}, slow(60_000));
+
+tty("logging in to a hosted provider removes the local server, which would otherwise keep precedence", async () => {
+  const r = await runLogin({ claude: "registered", config: { local: { base_url: "http://127.0.0.1:1/v1", model: "m" } } });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).toContain("Currently using: Local server.");
+  expect(r.output).toContain("✓ Local server setting removed");
+  expect(r.config).toEqual({ models: PRESETS.openrouter.balanced });
+  expect(r.fake.recorded.sessions[0].model?.providerID).toBe("openrouter");
 }, slow(90_000));
 
 test("writePlugin on win32 emits double-quoted, forward-slash commands with no sh gate", () => {

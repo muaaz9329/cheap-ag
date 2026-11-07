@@ -12,6 +12,7 @@ export type Reply = { tool: string; args: Record<string, unknown> } | { text: st
 export async function startFakeLlm() {
   const replies: Reply[] = [];
   const requests: any[] = [];
+  const headers: IncomingMessage["headers"][] = [];
   let seq = 0;
 
   const http = createServer(async (req: IncomingMessage, res) => {
@@ -25,6 +26,7 @@ export async function startFakeLlm() {
       return;
     }
     requests.push(body);
+    headers.push(req.headers);
     // title generation and other tool-less side requests get a plain answer and do not consume the script
     const reply: Reply = body.tools?.length ? (replies.shift() ?? { text: "Done." }) : { text: "Fake title" };
     const id = `chatcmpl-${++seq}`;
@@ -49,6 +51,8 @@ export async function startFakeLlm() {
     /** OpenRouter-style base URL (`…/api/v1`). */
     url: `http://127.0.0.1:${(http.address() as { port: number }).port}/api/v1`,
     requests,
+    /** Each request's HTTP headers, in step with `requests`. */
+    headers,
     /** Queues the model's next steps; a step with no reply left answers "Done." and ends the run. */
     script: (...steps: Reply[]) => void replies.push(...steps),
     close: () => new Promise<void>((resolve) => { http.closeAllConnections(); http.close(() => resolve()); }),

@@ -1,8 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { localServer } from "./config.js";
 
-/** Credentials come only from saved logins in OpenCode's store, written by `cheapag login` (ADR-0004). */
+/**
+ * Credentials come only from saved logins in OpenCode's store, written by `cheapag login` (ADR-0004). The local
+ * server needs none: it counts as set up once the user config names it, and OpenCode reads its key file, if any.
+ */
 
 /** Providers in detection order; `label` is what `cheapag login` shows. */
 export const PROVIDERS = [
@@ -10,9 +14,10 @@ export const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
   { id: "commandcode", label: "Command Code" },
+  { id: "local", label: "Local server" },
 ] as const;
 
-export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" };
+export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" | "config" };
 
 export const LOGIN_COMMAND = "npx cheap-agent login";
 export const NO_PROVIDER = `FAIL reason: no worker provider; run ${LOGIN_COMMAND}`;
@@ -30,13 +35,23 @@ export function savedProviders(): Provider["provider"][] {
   } catch {
     return []; // an unreadable auth file is the same as no login
   }
-  return PROVIDERS.map((p) => p.id).filter((id) => id in saved);
+  return PROVIDERS.map((p) => p.id).filter((id) => id in saved && id !== "local");
+}
+
+/** Whether the user config names a usable local server; a damaged one counts as none here, loadConfig reports it. */
+export function localConfigured() {
+  try {
+    return !!localServer();
+  } catch {
+    return false;
+  }
 }
 
 export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
 
-/** The provider the worker uses: the first saved login. */
+/** The provider the worker uses: a configured local server (set up on purpose, so it wins), else the first saved login. */
 export function detectProvider(): Provider | undefined {
+  if (localConfigured()) return { provider: "local", via: "config" };
   const [first] = savedProviders();
   return first && { provider: first, via: "login" };
 }

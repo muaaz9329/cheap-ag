@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { arch } from "node:os";
 import { dirname, join } from "node:path";
+import { localServer } from "./config.js";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { gitBash, killProcessGroup, opencodePlatform } from "./platform.js";
@@ -146,6 +147,18 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "commandcode") {
     Object.assign(providerConfig, COMMAND_CODE, {
       models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }])),
+    });
+  }
+  // a local server is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} reference
+  // OpenCode resolves itself, so the key is never in this config or in Cheap Agent's memory
+  if (provider.provider === "local") {
+    const local = localServer()!;
+    const limit = local.context ? { limit: { context: local.context, output: local.output ?? Math.min(32_768, Math.floor(local.context / 4)) } } : {};
+    Object.assign(providerConfig, {
+      npm: "@ai-sdk/openai-compatible",
+      name: "Local server",
+      options: { baseURL: local.base_url, ...(local.api_key_file && { apiKey: `{file:${local.api_key_file}}` }) },
+      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...(models[m.id] ?? {}) }])),
     });
   }
   const config = {

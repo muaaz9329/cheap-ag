@@ -97,7 +97,7 @@ $cheapag:allow
 **You need:**
 - [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex)
 - [Node.js](https://nodejs.org) 20+
-- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com), [OpenCode Go](https://opencode.ai) or [Command Code](https://commandcode.ai) (Command Code needs a plan with API access; OpenCode Go needs Regions set to Global in its console for the DeepSeek models)
+- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com), [OpenCode Go](https://opencode.ai) or [Command Code](https://commandcode.ai) (Command Code needs a plan with API access; OpenCode Go needs Regions set to Global in its console for the DeepSeek models). Or no key at all: [run the cheap model on your own machine](#run-the-cheap-model-on-your-own-machine).
 
 A few dollars lasts hundreds of tasks. It runs on macOS, Linux and Windows.
 
@@ -187,6 +187,28 @@ Optional. Put a `cheapag.json` in a project:
 | `takeover` | `"sonnet"` | Who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (your frontier model, capped at 15 tool calls). Claude Code only; Codex finishes it itself. |
 | `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
 | `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
+
+## Run the cheap model on your own machine
+
+Any OpenAI-compatible server works as the worker: llama.cpp (`llama-server`), Strata, Ollama, LM Studio, vLLM, or a LiteLLM gateway. Run `npx cheap-agent login` and pick **Local server**. It asks for:
+
+- **The server URL**, e.g. `http://127.0.0.1:8080/v1` (llama.cpp), `http://127.0.0.1:11434/v1` (Ollama), `http://127.0.0.1:1234/v1` (LM Studio). A bare host gets `/v1` added when that is where the API answers.
+- **An API key file**, only if the server checks a key (llama.cpp `--api-key`, Strata `API_KEY`, LiteLLM). Give the path to a file that holds just the key. OpenCode reads it; Cheap Agent never does, and the key never lands in a config.
+- **The model**, picked from the server's own list.
+- **The context window** a single request gets. It's detected from llama.cpp (split across its parallel slots) and LM Studio. Set it, so OpenCode can compact a long job before the server rejects it.
+
+It's saved as `local` in `~/.config/cheapag/config.json`, and only there: a repo's `cheapag.json` can't point the worker at another server. While it's set, the local server is used even if you're also logged in to a hosted provider. Logging in to a hosted provider removes it.
+
+```json
+{ "local": { "base_url": "http://127.0.0.1:8080/v1", "model": "qwen3.6-35b-a3b", "context": 131072, "api_key_file": "/home/me/.config/llama.key" } }
+```
+
+`"output"` sets the most tokens per reply, when `"context"` is set (default: a quarter of the context, at most 32k). There are no fallbacks and no stronger model to escalate to, unless `models.escalation` names one on the same server (`"local/<id>"`, e.g. a second model behind LiteLLM). `models.medium` and `models.hard` work the same way.
+
+Things to know:
+- **The model has to be good at tool calls.** The worker reads, edits, runs tests and must call `finish`. Small models often can't. A model that does well on agentic coding benchmarks is the minimum.
+- **It's slower.** Raise `limits.max_minutes` (default 20) if jobs time out. With one slot on the server, set `limits.max_parallel` to `1` so batch steps don't queue behind each other.
+- **Consent still applies.** `/cheapag:allow` shows the server URL, and asks again if the URL changes. A proxy like LiteLLM may forward code to a hosted provider; that's up to its config.
 
 ## FAQ
 
