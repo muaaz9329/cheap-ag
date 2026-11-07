@@ -14,6 +14,20 @@ const ch = (status: string, path: string, add: number, del = 0) => ({ status, pa
 // headline counts come from changed[]; D5 shows no changed: section for these, D3 renders it because it is non-empty
 const TWO_FILES = [ch("M", "src/api/login.ts", 28, 3), ch("M", "test/login.test.ts", 3)];
 
+test.each(["ANSWER", "FAIL"] as const)("%s reports a retained research worktree separately from its worker result", (status) => {
+  const record = {
+    format: "cheapag/1" as const, job: "rbusy", status, filesRead: 1, usage: { turns: 2, costUsd: 0 },
+    answer: status === "ANSWER" ? "useful answer" : "", refs: [], unlanded: [],
+    reason: status === "FAIL" ? "worker error: API rejected request (400)" : undefined,
+    cleanupError: "EBUSY: resource busy or locked", worktree: ".cheapag/worktrees/rbusy",
+  };
+  const text = renderResearch(record);
+  expect(text).toContain(`cleanup error: ${record.cleanupError}`);
+  expect(text).toContain("worktree: .cheapag/worktrees/rbusy/\nlog: .cheapag/jobs/rbusy/");
+  if (status === "FAIL") expect(text).toContain(`reason: ${record.reason}`);
+  else expect(text).toContain("notes:\nuseful answer");
+});
+
 describe("D5 status blocks", () => {
   test("found: (ticket 29) sits after error: and before tried: on FAIL, first on PARTIAL; a long note wraps at 200 chars and is never cut", () => {
     const note = `src/a.ts:parse drops the last token; ${"ruled out the lexer ".repeat(15).trim()}.`;
