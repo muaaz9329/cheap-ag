@@ -5,7 +5,7 @@ import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, startServer, tempRepo } from "./harness.js";
 import { isAlive } from "../src/platform.js";
 
-const plan = (doneWhen: string, doText = "export hello = 2") => `# Hello\n\n## 1 hello two\nfiles: src/hello.ts, README.md\ndo: ${doText}\ndone-when: ${doneWhen}\n`;
+const plan = (doneWhen: string, doText = "export hello = 2", kind?: string) => `# Hello\n\n## 1 hello two\nfiles: src/hello.ts, README.md\ndo: ${doText}\ndone-when: ${doneWhen}\n${kind ? `kind: ${kind}\n` : ""}`;
 /** Passes once src/hello.ts exports 2. */
 const CHECK = `import { readFileSync } from "node:fs";
 if (readFileSync("src/hello.ts", "utf8").trim() !== "export const hello = 2;") { console.log(" ✗ hello › equals 2"); process.exit(1); }
@@ -20,11 +20,11 @@ setTimeout(() => {}, 60_000);
 const LONG: Action = { wait: 60_000 }; // a model step that only an abort ends
 
 /** A repo with the plan and config files written, a fake worker scripted per prompt, and a server on both. */
-async function scenario(opts: { scripts: Action[][]; doneWhen?: string; doText?: string; repoConfig?: unknown; userConfig?: unknown }) {
+async function scenario(opts: { scripts: Action[][]; doneWhen?: string; doText?: string; kind?: string; repoConfig?: unknown; userConfig?: unknown }) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   mkdirSync(join(repo.dir, ".plan"));
-  writeFileSync(join(repo.dir, ".plan", "p.md"), plan(opts.doneWhen ?? "hello is 2", opts.doText));
+  writeFileSync(join(repo.dir, ".plan", "p.md"), plan(opts.doneWhen ?? "hello is 2", opts.doText, opts.kind));
   writeFileSync(join(repo.dir, "check.mjs"), CHECK);
   const pidFile = join(repo.dir, ".git", "slow.pid");
   writeFileSync(join(repo.dir, "slow.mjs"), SLOW(pidFile));
@@ -103,7 +103,7 @@ test("fail fast: a step with checks and no test file by repro_by_turns → FAIL 
   const text = await delegate();
   const job = jobOf(text);
   expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=0 `));
-  expect(text).toContain("\nreason: no reproduction test by turn 2; the worker was still exploring\n");
+  expect(text).toContain("\nreason: nothing edited by turn 2; the worker was still exploring\n");
   expect(fake.recorded.aborts).toHaveLength(1);
 });
 
@@ -123,20 +123,52 @@ test("fail fast skips a feature step: no bug to reproduce, so no test is demande
   expect(text).not.toContain("no reproduction test");
 });
 
-test("fail fast gives a started fix double the turns, then stops it as never proven", async () => {
+test("fail fast follows kind: change even when the step says fix", async () => {
+  const { delegate } = await scenario({
+    doText: "fix the bug: hello should be 2",
+    kind: "change",
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[
+      { tool: "read" }, { tool: "grep" }, { tool: "read" }, { tool: "grep" },
+      { edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" },
+      { finish: { summary: "changed", risks: [], review: [], missing: [], repro: "n/a" } as never },
+    ]],
+  });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^OK /);
+  expect(text).not.toContain("nothing edited");
+});
+
+test("fail fast follows kind: fix even when the step has only feature wording", async () => {
+  const { fake, delegate } = await scenario({
+    doText: "add a goodbye export",
+    kind: "fix",
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[{ tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG, { tool: "write" }]],
+  });
+  const text = await delegate();
+  expect(text.split("\n")[0]).toMatch(/^FAIL /);
+  expect(text).toContain("\nreason: nothing edited by turn 2; the worker was still exploring\n");
+  expect(fake.recorded.aborts).toHaveLength(1);
+});
+
+test("fail fast never stops a started fix: an edit lifts it and the job runs on", async () => {
   const { delegate } = await scenario({
     doText: "fix the bug: hello should be 2",
     doneWhen: "`node check.mjs` passes",
     repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
     scripts: [[
       { edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" },
-      { tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG,
+      { tool: "read" }, { tool: "grep" }, { tool: "read" },
+      { finish: { summary: "fixed", risks: [], review: [], missing: [], repro: "n/a" } as never },
     ]],
   });
   const text = await delegate();
-  // a turn-cap stop with passing checks is PARTIAL: the reason rides in missing:
-  expect(text.split("\n")[0]).toMatch(/^PARTIAL \w+ step=1 files=1 .* turns=4 /);
-  expect(text).toContain("no reproduction test by turn 4; the fix was started but never proven");
+  expect(text.split("\n")[0]).toMatch(/^(OK|PARTIAL) \w+ step=1 files=1 /);
+  expect(text.split("\n")[0]).not.toMatch(/ turns=4 /);
+  expect(text).not.toContain("nothing edited");
 });
 
 test("a stopped job asks the worker for its findings once; the FAIL block carries them as found:, leading when the worker gave no summary", async () => {
@@ -151,7 +183,7 @@ test("a stopped job asks the worker for its findings once; the FAIL block carrie
   });
   const text = await delegate();
   expect(text).toContain("\nfound: Bug in src/hello.ts:hello, it returns 1. Ruled out the config loader.\n");
-  expect(text).toContain("\nreason: no reproduction test by turn 2;");
+  expect(text).toContain("\nreason: nothing edited by turn 2;");
   expect(fake.recorded.prompts).toHaveLength(2);
 });
 

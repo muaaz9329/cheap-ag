@@ -265,23 +265,20 @@ function runGroup(g: GroupRun) {
   const overTurns = () => {
     if (session && session.totals().turns - turnBase >= turnCap) stop({ cap: "turns", reason: `turn cap (${turnCap}) reached` });
   };
-  // fail fast (ticket 28): a step with checks that has no test file in its worktree by repro_by_turns stops now, so Claude
-  // takes over without a 40-turn failed job in its context (v2 hard tier: FAIL sessions averaged 482k Claude tokens, stock 385k)
-  // shortcut: counts any test file in the worktree's status, carried-over dirty ones included; tighten to the job's own edits if that misfires
+  // fail fast (ticket 28): a step with checks that has edited nothing by repro_by_turns stops now, so Claude takes over
+  // without a 40-turn failed job in its context; any edit, source or test, lifts the stop and the job runs to its normal cap
   // ticket 37: only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
-  const isFix = g.fix || FIX_WORDS.test([...steps.map((s) => `${s.title} ${s.fields.do ?? ""}`), input.source ?? ""].join("\n"));
-  let reproSeen = false;
+  const kind = steps.find((s) => s.fields.kind)?.fields.kind;
+  const isFix = g.fix || (kind ? kind === "fix" : FIX_WORDS.test([...steps.map((s) => `${s.title} ${s.fields.do ?? ""}`), input.source ?? ""].join("\n")));
+  let edited = false;
   let carried = new Set<string>(); // paths already dirty when the worktree opened (carried over from the repo): not the worker's edits
   const dirty = () => git(worktree!.path, ["status", "--porcelain"]).split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
   const reproDue = () => {
-    if (reproSeen || !isFix || !cmds.length || !worktree || !session || session.totals().turns < limits.repro_by_turns * scale) return;
-    // a started fix (a changed non-test file) gets double the turns to prove it; the worker may just not have written its test yet
-    const files = dirty();
-    const started = files.some((f) => !TEST_FILE.test(f) && !carried.has(f));
-    const by = limits.repro_by_turns * scale * (started ? 2 : 1);
+    if (edited || !isFix || !cmds.length || !worktree || !session) return;
+    const by = limits.repro_by_turns * scale;
     if (session.totals().turns < by) return;
-    reproSeen = files.some((f) => TEST_FILE.test(f));
-    if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${by}; ${started ? "the fix was started but never proven" : "the worker was still exploring"}` });
+    edited = dirty().some((f) => !carried.has(f));
+    if (!edited) stop({ cap: "turns", reason: `nothing edited by turn ${by}; the worker was still exploring` });
   };
   // the minute cap counts working time only: the clock is paused while the job waits BLOCKED on a reply
   let clockLeft = limits.max_minutes * 60_000;
@@ -837,7 +834,7 @@ async function checkRepro(cwd: string, claim: string | undefined, allowed: strin
   if (!claim || /^n\/?a\b/i.test(claim)) return {};
   if (/^none\b/i.test(claim)) return { repro: "none", risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}` };
   const runs = (cmd: string) => runVerify(cwd, [cmd], () => {}, signal).then((r) => r[0]?.ok ?? false);
-  const unverified = (why: string) => ({ repro: "unverified" as const, risk: `reproduction not verified: ${why}` });
+  const unverified = (why: string) => ({ repro: "unverified" as const, risk: `nothing to do (the checks passed), reproduction not verified: ${why}` }); // the action first: risks are clipped at 120 chars
   if (!allowed.some((a) => claim === a || claim.startsWith(a + " "))) return unverified(`\`${claim}\` is not one of this job's check commands`);
   if (!(await runs(claim))) return unverified(`\`${claim}\` fails on the fixed code`);
   const fix = changed.filter((p) => !TEST_FILE.test(p));

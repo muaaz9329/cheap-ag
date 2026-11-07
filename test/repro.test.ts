@@ -50,7 +50,8 @@ test("a reproduction that fails without the fix and passes with it: OK repro=fai
 test("a reproduction that also passes on the original code: repro=unverified with a risk", async () => {
   const { text, record } = await delegate("node test/hello.test.mjs", PASSES_ANYWAY);
   expect(record.repro).toBe("unverified");
-  expect(text).toContain("reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
+  expect(record.risks[0]).toBe("nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
+  expect(text).toContain("nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
 });
 
 test("no reproduction: repro=none with the worker's reason as a risk", async () => {
