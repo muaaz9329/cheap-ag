@@ -1,8 +1,10 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, onTestFinished, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { callText, hermeticHome, serverEntry, startServer, tempRepo } from "./harness.js";
+import { startPeriodicCleanup } from "../src/cleanup.js";
+import { loadConfig } from "../src/config.js";
 import { createWorktree } from "../src/workspace.js";
 
 const DAY = 86_400_000;
@@ -47,31 +49,31 @@ function repoWithState() {
     expect(readFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 42;\n"); // the real dependency dir
     for (const f of ["consent.json", "opencode/opencode.json", "land.lock"]) expect(exists(f)).toBe(true);
   };
-  return { repo, job, clean, failed, exists, status, untouched };
+  return { repo, home, env, job, clean, failed, exists, status, untouched };
 }
 
 test("cheapag clean: age rules, live jobs kept, links unlinked first, worktree metadata pruned, state files untouched", () => {
   const { repo, job, clean, exists, status, untouched } = repoWithState();
-  job("jold1", "FAIL", 8, { worktree: true }); // unlanded worktree past 7 days; record still young
-  job("jnew1", "FAIL", 2, { worktree: true });
+  job("jold1", "FAIL", 8, { worktree: true }); // worktree past 2 days, record past 7
+  job("jnew1", "FAIL", 1, { worktree: true });
   job("jlog1", "OK", 31);
-  job("jlog2", "OK", 29);
+  job("jlog2", "OK", 3);
   job("jrun1", "RUNNING", 60, { pid: process.pid, worktree: true }); // live: never removed, however old
   job("jblk1", "BLOCKED", 60, { pid: process.pid });
-  job("jdead", "RUNNING", 10, { worktree: true }); // its server died: recovered, then aged normally
+  job("jdead", "RUNNING", 4, { worktree: true }); // its server died: recovered, then aged normally
   const out = clean();
-  expect(out.split("\n")[0]).toBe("✓ removed 3, kept 8");
+  expect(out.split("\n")[0]).toBe("✓ removed 4, kept 7");
   expect(out).toContain("  removed worktree jold1: unlanded, 8d old\n");
   expect(out).toContain("  removed job jlog1: 31d old\n");
   expect(out).toContain("  kept worktree jrun1: RUNNING job in flight\n");
   expect(out).toContain("  kept job jblk1: BLOCKED job in flight\n");
-  expect(out).toContain("  kept worktree jnew1: 2d old, kept 7d\n");
+  expect(out).toContain("  kept worktree jnew1: 1d old, kept 2d\n");
   expect(exists("worktrees/jold1")).toBe(false);
   expect(exists("worktrees/jdead")).toBe(false);
   expect(exists("worktrees/jnew1/node_modules")).toBe(true);
   expect(exists("worktrees/jrun1/node_modules")).toBe(true);
-  expect(exists("jobs/jlog1")).toBe(false);
-  for (const id of ["jold1", "jnew1", "jlog2", "jrun1", "jblk1", "jdead"]) expect(exists(`jobs/${id}`)).toBe(true);
+  expect(exists("jobs/jlog1") || exists("jobs/jold1")).toBe(false);
+  for (const id of ["jnew1", "jlog2", "jrun1", "jblk1", "jdead"]) expect(exists(`jobs/${id}`)).toBe(true);
   expect(status("jdead")).toBe("CANCELLED");
   expect(status("jrun1")).toBe("RUNNING");
   const worktrees = repo.git("worktree", "list", "--porcelain");
@@ -81,7 +83,7 @@ test("cheapag clean: age rules, live jobs kept, links unlinked first, worktree m
 
   // --all: everything not in flight goes
   const all = clean("--all");
-  expect(all.split("\n")[0]).toBe("✓ removed 5, kept 3");
+  expect(all.split("\n")[0]).toBe("✓ removed 4, kept 3");
   expect(all).toContain("  removed worktree jnew1: --all\n");
   expect(exists("worktrees/jrun1/node_modules")).toBe(true);
   expect(exists("jobs/jrun1") && exists("jobs/jblk1")).toBe(true);
@@ -165,6 +167,26 @@ test("cleanup runs at server start, after crash recovery", async () => {
   onTestFinished(server.close);
   expect(exists("jobs/jlog1") || exists("jobs/jdead")).toBe(false);
   expect(exists("jobs/jlog2") && exists("consent.json")).toBe(true);
+});
+
+test("retention defaults are 2 unlanded-worktree days and 7 job-log days", () => {
+  const { repo, env } = repoWithState();
+  for (const [key, value] of Object.entries(env)) if (key.startsWith("XDG_")) vi.stubEnv(key, value);
+  onTestFinished(() => { vi.unstubAllEnvs(); });
+  expect(loadConfig(repo.dir).retention).toEqual({ unlanded_worktree_days: 2, job_log_days: 7 });
+});
+
+test("periodic cleanup removes an old job folder while the server runs, and leaves live jobs alone", async () => {
+  const { repo, env, job, exists } = repoWithState();
+  for (const [key, value] of Object.entries(env)) if (key.startsWith("XDG_")) vi.stubEnv(key, value);
+  onTestFinished(() => { vi.unstubAllEnvs(); });
+  job("jold1", "OK", 8);
+  job("jnew1", "OK", 1);
+  job("jrun1", "RUNNING", 60, { pid: process.pid });
+  const timer = startPeriodicCleanup(repo.dir, loadConfig(repo.dir), 10);
+  onTestFinished(() => clearInterval(timer));
+  await vi.waitFor(() => expect(exists("jobs/jold1")).toBe(false));
+  expect(exists("jobs/jnew1") && exists("jobs/jrun1")).toBe(true);
 });
 
 test("gitignore hint: once per server process on the first result, and never when .cheapag/ is ignored", async () => {

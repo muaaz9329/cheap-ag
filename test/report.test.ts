@@ -217,6 +217,11 @@ describe("D5 status blocks", () => {
     ));
   });
 
+  test("PROVIDER: reason, then the next: line asking the user", () => {
+    const text = renderJob(job({ job: "jp1x2", status: "PROVIDER", steps: "1", reason: "deepseek-v4.1-flash is failing (last error: overloaded); other models: none" }));
+    expect(text).toContain("reason: deepseek-v4.1-flash is failing (last error: overloaded); other models: none\nnext: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)");
+  });
+
   test("TIMEOUT: reason, missing, worktree", () => {
     expect(renderJob(job({
       job: "j1t0a", status: "TIMEOUT", steps: "6", tests: "none", usage: { turns: 31, costUsd: 0.012 },

@@ -121,13 +121,13 @@ tty("login saves the key through the bundled OpenCode, live-checks it, and regis
   expect(r.output).toContain("3) strongest");
   expect(r.output).toContain("4) custom (set models yourself in cheapag.json)");
   expect(r.output).toContain("Models [1-4, Enter = balanced]:");
-  expect(r.config).toEqual({ models: PRESETS.openrouter.balanced });
+  expect(r.config).toEqual({ preset: "balanced" });
 }, slow(90_000));
 
-tty("picking strongest writes its models to the user config, and the live check runs its implement model", async () => {
+tty("picking strongest writes its preset to the user config, and the live check runs its implement model", async () => {
   const r = await runLogin({ claude: "registered", preset: "strongest" });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.config).toEqual({ models: PRESETS.openrouter.strongest });
+  expect(r.config).toEqual({ preset: "strongest" });
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "z-ai/glm-5.3" });
   expect(r.output).toContain("✓ openrouter/z-ai/glm-5.3 answered");
 }, slow(90_000));
@@ -135,7 +135,7 @@ tty("picking strongest writes its models to the user config, and the live check 
 tty("a number on the worker-models list picks that preset: 3 is strongest", async () => {
   const r = await runLogin({ claude: "registered", preset: "3" });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.config).toEqual({ models: PRESETS.openrouter.strongest });
+  expect(r.config).toEqual({ preset: "strongest" });
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "z-ai/glm-5.3" });
 }, slow(90_000));
 
@@ -143,14 +143,36 @@ tty("re-running login offers the current preset; Enter keeps it and the config's
   const r = await runLogin({ claude: "registered", config: { test_cmd: "make check", models: PRESETS.openrouter.strongest } });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("Models [1-4, Enter = strongest]");
-  expect(r.config).toEqual({ test_cmd: "make check", models: PRESETS.openrouter.strongest });
+  expect(r.config).toEqual({ test_cmd: "make check", preset: "strongest" });
+}, slow(90_000));
+
+tty("an old config holding exactly a preset's models is migrated to its name when login runs", async () => {
+  const r = await runLogin({ claude: "registered", config: { models: PRESETS.openrouter.balanced } });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).toContain("✓ worker models: balanced preset (follows new releases)");
+  expect(r.config).toEqual({ preset: "balanced" });
+}, slow(90_000));
+
+tty("a config with custom models is left alone by the migration", async () => {
+  const r = await runLogin({
+    claude: "registered",
+    config: { models: { implement: "opencode-go/kimi-k3" } },
+    steps: [
+      { expect: "Provider", send: "1\r" },
+      { expect: "Workermodels", send: "\r" },
+      { expect: "EnteryourAPIkey", send: `${KEY}\r` },
+    ],
+  });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).not.toContain("follows new releases");
+  expect(r.config).toEqual({ models: { implement: "opencode-go/kimi-k3" } });
 }, slow(90_000));
 
 tty("--preset sets the models without asking; an answer that is no preset changes nothing", async () => {
   const r = await runLogin({ claude: "registered", args: ["--preset", "cheapest"] });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).not.toContain("Worker models:\n");
-  expect(r.config).toEqual({ models: PRESETS.openrouter.cheapest });
+  expect(r.config).toEqual({ preset: "cheapest" });
   const bad = await runLogin({ claude: "registered", preset: "fastest" });
   expect(bad.exit).toMatch(/^EXIT 1 UNMATCHED/); // never got to the key
   expect(bad.output).toContain('✗ "fastest" is not one of cheapest, balanced, strongest, custom; nothing changed');
@@ -159,15 +181,15 @@ tty("--preset sets the models without asking; an answer that is no preset change
 
 test("without a terminal, login sets the preset for the saved provider: the flag, custom, the balanced fallback, a bad name", async () => {
   const strongest = await scriptedLogin(["--preset", "strongest"]);
-  expect([strongest.code, strongest.config]).toEqual([0, { models: PRESETS.openrouter.strongest }]);
-  expect(strongest.stdout).toBe(`✓ Worker models: strongest (implement openrouter/z-ai/glm-5.3), saved in ${strongest.file}\n`);
+  expect([strongest.code, strongest.config]).toEqual([0, { preset: "strongest" }]);
+  expect(strongest.stdout).toBe(`✓ Worker models: strongest preset (implement openrouter/z-ai/glm-5.3), saved in ${strongest.file}; follows new releases\n`);
 
   const custom = await scriptedLogin(["--preset", "custom"]);
   expect([custom.code, custom.config]).toEqual([0, undefined]);
   expect(custom.stdout).toContain('Worker models: custom, nothing written; set "models" in a repo\'s cheapag.json');
 
   const fallback = await scriptedLogin([]);
-  expect([fallback.code, fallback.config]).toEqual([0, { models: PRESETS.openrouter.balanced }]);
+  expect([fallback.code, fallback.config]).toEqual([0, { preset: "balanced" }]);
   expect(fallback.stdout.split("\n")[0]).toBe("No terminal to ask in: worker models stay balanced for OpenRouter; pass --preset to choose");
 
   for (const args of [["--preset", "fastest"], ["--preset"], ["--zdr"]]) {
@@ -377,7 +399,7 @@ tty("logging in to a hosted provider removes the local server, which would other
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("Currently using: Local server.");
   expect(r.output).toContain("✓ Local server setting removed");
-  expect(r.config).toEqual({ models: PRESETS.openrouter.balanced });
+  expect(r.config).toEqual({ preset: "balanced" });
   expect(r.fake.recorded.sessions[0].model?.providerID).toBe("openrouter");
 }, slow(90_000));
 
