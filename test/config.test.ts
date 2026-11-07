@@ -23,3 +23,10 @@ test("preset: a user config preset loads, an unknown one names the allowed value
   expect(() => loadConfig(setup({ preset: "fast" }).dir)).toThrow("preset must be one of cheapest, balanced, strongest");
   expect(() => loadConfig(setup({}, { preset: "balanced" }).dir)).toThrow(/preset can only be set in .*config\.json/);
 });
+
+test("models.variants: a map of full model names to efforts loads; a non-string effort is refused", () => {
+  const variants = { "opencode-go/deepseek-v4.1-flash": "high", "opencode-go/glm-5.3": "max" };
+  expect(loadConfig(setup({ models: { variants } }).dir).models.variants).toEqual(variants);
+  expect(() => loadConfig(setup({ models: { variants: { "opencode-go/glm-5.3": 2 } } }).dir))
+    .toThrow('models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}');
+});

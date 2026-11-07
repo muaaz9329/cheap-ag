@@ -133,6 +133,12 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     if (roles[role] !== undefined && !name(roles[role])) throw new Error(`${file}: models.${role} must be a provider/model name, e.g. opencode-go/deepseek-v4.1-flash`);
   }
   if (roles.fallback !== undefined && (!Array.isArray(roles.fallback) || !roles.fallback.every(name))) throw new Error(`${file}: models.fallback must be a list of provider/model names`);
+  if (roles.variants !== undefined) {
+    const variants = roles.variants;
+    if (typeof variants !== "object" || variants === null || Array.isArray(variants) || Object.values(variants).some((v) => typeof v !== "string")) {
+      throw new Error(`${file}: models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}`);
+    }
+  }
   if (escalation_skip_at !== undefined && (typeof escalation_skip_at !== "number" || !(escalation_skip_at > 0 && escalation_skip_at <= 1))) {
     throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
   }

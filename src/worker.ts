@@ -85,10 +85,12 @@ export async function openSession(opts: {
       let httpStatus: number | undefined;
       let limit: Limit | undefined;
 
+      const variant = (model ?? opts.model).variant;
       const prompted = await client.session.promptAsync({
         // the agent on every prompt, not just at create: a forked session (rotate) must keep the worker's rules
         sessionID, directory, agent: opts.agent ?? WORKER_AGENT, parts: [{ type: "text", text: prompt }],
         ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
+        ...(variant && { variant }),
       });
       if (prompted.error) throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
       // after the prompt, so an abort can never race ahead of it

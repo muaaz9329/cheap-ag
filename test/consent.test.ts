@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
-import { expect, onTestFinished, test } from "vitest";
+import { basename, dirname, join } from "node:path";
+import { expect, onTestFinished, test, vi } from "vitest";
+import { acceptRoute } from "../src/consent.js";
 import { startFakeOpencode } from "./fake-opencode.js";
 import { allowRepo, callText, hermeticHome as makeHome, homeEnv, serverEntry, startServer, tempRepo, type Logins } from "./harness.js";
 
@@ -112,19 +113,29 @@ test("a consent given for one provider asks again after switching to another", a
   expect(text).toContain(`retention: depends on the upstream provider OpenRouter routes to; "deny data collection" is always on;`);
 });
 
-test("switching the worker preset after consent asks again; allowing the new route lets the job run", async () => {
+test("on one provider a model change after consent never asks again: the job runs on the new model", async () => {
   const { repo, fake, server, delegate } = await scenario({ allow: [] });
   // the developer re-runs login from a script on the server's own user config
-  const env = homeEnv(server.home);
-  execFileSync(process.execPath, [serverEntry, "login", "--preset", "strongest"], { env, stdio: "pipe" });
-  const text = await delegate();
-  expect(text).toMatch(/^CONSENT /);
-  expect(text).toContain("send: code from this repo → OpenCode Go: glm-5.3, qwen3.8-flash, deepseek-v4-pro (+fallbacks qwen3.7-plus, kimi-k3, deepseek-v4.1-flash)\n");
-  expectUntouched(repo, fake);
-  expect(allowRepo(repo.dir, env)).toContain("models: opencode-go/glm-5.3, opencode-go/qwen3.8-flash");
+  execFileSync(process.execPath, [serverEntry, "login", "--preset", "strongest"], { env: homeEnv(server.home), stdio: "pipe" });
   fake.script({ edit: "hello.txt", content: "hi\n" }, FINISH);
   expect(await delegate()).toMatch(/^OK /);
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
+  expect(readFileSync(join(repo.dir, "hello.txt"), "utf8")).toBe("hi\n");
+});
+
+test("on OpenRouter a model change after consent asks again until acceptRoute records it", async () => {
+  const { repo, fake, server, delegate } = await scenario({ logins: { openrouter: "k" }, allow: [] });
+  const config = join(server.home, "config", "cheapag", "config.json");
+  mkdirSync(dirname(config), { recursive: true });
+  writeFileSync(config, JSON.stringify({ models: { implement: "openrouter/z-ai/glm-5.3" } }));
+  expect(await delegate()).toMatch(/^CONSENT /);
+  expectUntouched(repo, fake);
+  vi.stubEnv("XDG_CONFIG_HOME", join(server.home, "config"));
+  onTestFinished(() => void vi.unstubAllEnvs());
+  acceptRoute(repo.dir);
+  fake.script({ edit: "hello.txt", content: "hi\n" }, FINISH);
+  expect(await delegate()).toMatch(/^OK /);
+  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "z-ai/glm-5.3" });
 });
 
 test("OpenRouter zero-retention only adds its zdr routing preference to every model, on top of deny data collection", async () => {

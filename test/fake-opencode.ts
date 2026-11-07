@@ -65,7 +65,31 @@ type Run = { session: Session; model: Model; userMessageID: string; assistantID:
 // stands in for whatever model the real server would pick from its config
 const DEFAULT_MODEL: Model = { providerID: "fake", modelID: "fake-default" };
 
-export async function startFakeOpencode(opts: { version?: string } = {}) {
+/** `GET /config/providers` as the real server answers it (only the fields Cheap Agent reads). */
+type FakeModel = { id: string; name: string; toolcall: boolean; input: number; output: number; context: number; variants?: string[] };
+type FakeProvider = { id: string; models: FakeModel[] };
+
+const DEFAULT_PROVIDERS: FakeProvider[] = [{
+  id: "opencode-go",
+  models: [
+    { id: "big-reasoner", name: "Big Reasoner", toolcall: true, input: 0.9, output: 2.7, context: 256_000, variants: ["high", "max"] },
+    { id: "small-flash", name: "Small Flash", toolcall: true, input: 0.14, output: 0.28, context: 128_000 },
+    { id: "chat-only", name: "Chat Only", toolcall: false, input: 0.05, output: 0.1, context: 32_000 },
+  ],
+}];
+
+const catalogOf = (providers: FakeProvider[]) => ({
+  default: {},
+  providers: providers.map((p) => ({
+    id: p.id, name: p.id, source: "api", env: [], options: {},
+    models: Object.fromEntries(p.models.map((m) => [m.id, {
+      id: m.id, providerID: p.id, name: m.name, capabilities: { toolcall: m.toolcall }, cost: { input: m.input, output: m.output, cache: { read: 0, write: 0 } },
+      limit: { context: m.context, output: 8192 }, variants: m.variants && Object.fromEntries(m.variants.map((v) => [v, {}])),
+    }])),
+  })),
+});
+
+export async function startFakeOpencode(opts: { version?: string; providers?: FakeProvider[] } = {}) {
   const version = opts.version ?? OPENCODE_PIN;
   let seq = 0;
   const id = (prefix: string) => `${prefix}_fake${String(++seq).padStart(4, "0")}`;
@@ -247,6 +271,8 @@ export async function startFakeOpencode(opts: { version?: string } = {}) {
     let m: RegExpMatchArray | null;
 
     if (route === "GET /global/health") return json(res, { healthy: true, version });
+
+    if (route === "GET /config/providers") return json(res, catalogOf(opts.providers ?? DEFAULT_PROVIDERS));
 
     if (route === "GET /event") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });

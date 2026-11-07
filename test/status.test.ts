@@ -75,11 +75,18 @@ test("cheapag status names the preset: the user's, a repo's cheapag.json over it
 });
 
 test("cheapag status says consent no longer covers the models after a preset change, as the next job would", () => {
-  const { repo, env, status } = setup({ "opencode-go": "k" });
+  const { repo, env, status } = setup({ openrouter: "k" });
   allowRepo(repo.dir, env);
   expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS.openrouter.strongest }));
   expect(status().split("\n")[1]).toBe("consent: given for other worker models (preset or models changed); run /cheapag:allow");
+});
+
+test("cheapag status on opencode-go keeps consent valid after a preset change (ticket 45)", () => {
+  const { repo, env, status } = setup({ "opencode-go": "k" });
+  allowRepo(repo.dir, env);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
 });
 
 test("cheapag status with no login, no jobs and no spend; outside a repository; bad arguments", () => {

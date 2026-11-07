@@ -37,14 +37,25 @@ export function writeConsent(root: string, consent: Consent) {
   writeFileSync(file(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
 }
 
+/** Records the current route as the repo's consented one (after a model pick on OpenRouter); nothing without consent. */
+export function acceptRoute(root: string) {
+  const consent = readConsent(root);
+  if (consent) writeConsent(root, consent);
+}
+
 // a local model is named with its server: pointing the same model id at another URL is another recipient
 const routeNames = (r: Route) => {
   const at = r.implement.providerID === "local" ? `@${localServer()?.base_url}` : "";
   return routeModels(r).map((m) => modelName(m) + at);
 };
 
-/** The models config now routes to other models than the consent was shown (not judged on a damaged config, which the job's own load reports; a record from before routes were kept has none). */
+/**
+ * The models config now routes to other models than the consent was shown (not judged on a damaged config, which the job's own load reports; a record from before routes were kept has none).
+ * Within one provider the code goes to the same company, so a model change never asks again; OpenRouter (the model picks the upstream)
+ * and a local server (a URL is a recipient) keep the route check.
+ */
 export function routeMoved(root: string, consent: Consent) {
+  if (consent.provider !== "openrouter" && consent.provider !== "local") return false;
   const models = configuredModels(root, consent.provider);
   return !!models && !!consent.route && String(consent.route) !== String(routeNames(fullRoute(consent.provider, models)));
 }

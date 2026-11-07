@@ -221,9 +221,7 @@ test("config models override the role defaults; a model for another provider is 
 test("config models: the job runs on the configured implement model; a malformed models entry is a FAIL before any job", async () => {
   const { repo, fake, server, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/glm-5.3" } }));
-  expect(await delegate()).toMatch(/^CONSENT /); // another route than the one allowed
-  allowRepo(repo.dir, homeEnv(server.home));
-  expect(await delegate()).toMatch(/^OK /);
+  expect(await delegate()).toMatch(/^OK /); // same provider: another model never asks for consent again
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
 
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { fallback: "opencode-go/kimi-k3" } }));
@@ -244,6 +242,14 @@ test("tierModel: hard → models.hard ?? models.medium ?? implement; medium → 
   expect(ids({ hard: "openrouter/x/y" })).toEqual([flash, flash, flash, flash]); // another provider's: ignored
   // the tier models are models the route may send code to, so consent (the CONSENT block, cheapag allow) names them
   expect(routeModels(fullRoute("opencode-go", { hard: "opencode-go/minimax-m3" })).map(modelName)).toContain("opencode-go/minimax-m3");
+});
+
+test("models.variants: a full model name's effort becomes the WorkerModel's variant; a model without an entry has none", () => {
+  const route = fullRoute("opencode-go", { implement: "opencode-go/glm-5.3", variants: { "opencode-go/glm-5.3": "high" } });
+  expect(route.implement.variant).toBe("high");
+  expect(route.fallbacks.find((m) => m.id === "qwen3.7-plus")!.variant).toBeUndefined();
+  expect(route.research!.variant).toBeUndefined();
+  expect(fullRoute("opencode-go", { implement: "opencode-go/glm-5.3" }).implement.variant).toBeUndefined();
 });
 
 test("plan steps accept difficulty:; any other value is a plan error", () => {

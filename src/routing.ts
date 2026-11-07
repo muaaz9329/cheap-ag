@@ -8,7 +8,7 @@ import type { RunResult, Session } from "./worker.js";
 /** Routing: which model each role runs, fallbacks on provider limits, escalation eligibility, and the local spend ledger. */
 
 /** A model as OpenCode's session.create takes it, plus per-model OpenCode options written into the generated config. */
-export type WorkerModel = { providerID: string; id: string; options?: Record<string, unknown> };
+export type WorkerModel = { providerID: string; id: string; options?: Record<string, unknown>; variant?: string };
 type ProviderId = Provider["provider"];
 
 // verified on OpenCode 1.19.0: options.provider becomes OpenRouter's request-body routing preference, so upstreams that
@@ -113,7 +113,7 @@ export type Route = {
 };
 
 /** Config (spec E4) `models`: full `provider/model` names; a role set for another provider than the one logged in is ignored. */
-export type ModelsConfig = { implement?: string; medium?: string; hard?: string; research?: string; escalation?: string; fallback?: string[] };
+export type ModelsConfig = { implement?: string; medium?: string; hard?: string; research?: string; escalation?: string; fallback?: string[]; variants?: Record<string, string> };
 
 /** Claude's rating of a task from the issue (ticket 26): easy < 15 min, medium < 1 h, hard > 1 h of an engineer new to the code. */
 export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
@@ -134,15 +134,21 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
   const own = (name?: string) => (name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined);
   const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
   const [research, ...researchFallbacks] = [own(models.research) ?? roles.research[0], ...roles.research.slice(1)];
-  const tier = (name?: string) => (own(name) ? model(provider, own(name)!) : undefined);
+  // a full model name's effort (an OpenCode variant), attached wherever a role or fallback is built from a name
+  const withVariant = (m: WorkerModel) => {
+    const variant = models.variants?.[modelName(m)];
+    return variant === undefined ? m : { ...m, variant };
+  };
+  const routed = (id: string) => withVariant(model(provider, id));
+  const tier = (name?: string) => (own(name) ? routed(own(name)!) : undefined);
   return {
-    implement: model(provider, own(models.implement) ?? roles.implement[0]),
+    implement: routed(own(models.implement) ?? roles.implement[0]),
     medium: tier(models.medium),
     hard: tier(models.hard),
-    fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map((id) => model(provider, id)),
-    escalation: tier(models.escalation) ?? (roles.escalation ? model(provider, roles.escalation) : undefined),
-    research: model(provider, research),
-    researchFallbacks: researchFallbacks.map((id) => model(provider, id)),
+    fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map(routed),
+    escalation: tier(models.escalation) ?? (roles.escalation ? routed(roles.escalation) : undefined),
+    research: routed(research),
+    researchFallbacks: researchFallbacks.map(routed),
   };
 }
 
