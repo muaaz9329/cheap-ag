@@ -14,8 +14,8 @@ export const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
   { id: "commandcode", label: "Command Code" },
-  { id: "local", label: "Custom endpoint" },
   { id: "opencode", label: "OpenCode Zen" },
+  { id: "local", label: "Custom endpoint" },
 ] as const;
 
 export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" | "config" };

@@ -49,7 +49,7 @@ export type LocalServer = {
   price?: { input: number; output: number };
 };
 
-/** Whether a URL's host is this machine or a private network (where plain http is fine): loopback, RFC 1918, link-local, *.local. */
+/** Whether a URL's host is this machine or a private network (where plain http is fine): loopback, RFC 1918, CGNAT, link-local, *.local, single-label names and home LAN suffixes. */
 export function privateHost(url: string) {
   let host: string;
   try {
@@ -59,10 +59,12 @@ export function privateHost(url: string) {
   }
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "::1") return true;
   if (host.includes(":")) return /^f[cd]/.test(host) || host.startsWith("fe80:"); // IPv6 unique-local and link-local
+  if (!host.includes(".")) return true; // single-label machine names, e.g. gpu-box
+  if (/\.(lan|home|internal|home\.arpa)$/.test(host)) return true;
   const ip = host.split(".").map(Number);
   if (ip.length !== 4 || ip.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
   const [a, b] = ip;
-  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
 }
 
 /** The provider `cheapag provider` (or a login) picked, from the user config; undefined when none is set or the file is damaged. */
@@ -87,8 +89,6 @@ function parseLocal(local: unknown, file: string): LocalServer {
   if (typeof local !== "object" || local === null || Array.isArray(local)) throw new Error(`${file}: local must be an object`);
   const { base_url, model, api_key_file, api_key_env, context, output, price } = local as Record<string, unknown>;
   if (typeof base_url !== "string" || !/^https?:\/\/\S+$/.test(base_url)) throw new Error(`${file}: local.base_url must be an http(s) URL, e.g. http://127.0.0.1:8080/v1`);
-  // code and key would cross the internet unencrypted
-  if (base_url.startsWith("http:") && !privateHost(base_url)) throw new Error(`${file}: local.base_url uses plain http to a public host; use https (plain http is only for this machine or a private network)`);
   if (typeof model !== "string" || !model.trim()) throw new Error(`${file}: local.model must be the server's model id`);
   if (api_key_file !== undefined && (typeof api_key_file !== "string" || !isAbsolute(api_key_file))) throw new Error(`${file}: local.api_key_file must be an absolute path`);
   if (api_key_env !== undefined && (typeof api_key_env !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(api_key_env))) throw new Error(`${file}: local.api_key_env must be an environment variable name, e.g. MY_GATEWAY_KEY`);

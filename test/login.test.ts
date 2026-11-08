@@ -358,7 +358,7 @@ tty("a local server: login finds /v1 under the bare URL, lists its models, detec
     claude: "registered",
     config: { models: PRESETS.openrouter.balanced },
     steps: [
-      { expect: "Provider", send: "5\r" },
+      { expect: "Provider", send: "6\r" },
       { expect: "ServerURL", send: `${url}\r` },
       { expect: "APIkey,if", send: "\r" },
       { expect: "Model:", send: "2\r" },
@@ -367,7 +367,7 @@ tty("a local server: login finds /v1 under the bare URL, lists its models, detec
     ],
   });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).toContain("5) Custom endpoint  (any OpenAI-compatible URL");
+  expect(r.output).toContain("6) Custom endpoint  (any OpenAI-compatible URL");
   expect(r.output).toContain("❯ 1) bonsai-9b-mtp");
   expect(r.output).toContain("Model: qwen3.6-35b-a3b");
   expect(r.output).toContain("Context window in tokens (detected) [Enter = 65536]");
@@ -383,7 +383,7 @@ tty("a local server's key file must exist; it is saved as a path, never read", a
   const r = await runLogin({
     claude: "registered",
     steps: [
-      { expect: "Provider", send: "5\r" },
+      { expect: "Provider", send: "6\r" },
       { expect: "ServerURL", send: `${url}/v1\r` },
       { expect: "APIkey,if", send: "/nonexistent/llama.key\r" },
     ],

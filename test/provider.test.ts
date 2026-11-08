@@ -38,7 +38,7 @@ test("with no argument it lists the providers set up, marks the one in use, and 
   const r = await run([]);
   expect(r.code).toBe(0);
   expect(r.out).toContain("Providers set up:\n  opencode-go  OpenCode Go  (in use)\n  openrouter  OpenRouter\n");
-  expect(r.out).toContain("Not set up: DeepSeek, Command Code, Custom endpoint, OpenCode Zen. Add one with npx cheap-agent login");
+  expect(r.out).toContain("Not set up: DeepSeek, Command Code, OpenCode Zen, Custom endpoint. Add one with npx cheap-agent login");
 }, slow(30_000));
 
 test("switching moves the repo's consent with its mode, shows what it covers, live-checks, and the choice sticks", async () => {

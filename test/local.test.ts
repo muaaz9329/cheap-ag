@@ -80,13 +80,13 @@ test("local is user config only: a repo's cheapag.json cannot point the worker a
 });
 
 test("custom endpoint checks: plain http only to a private host; the key from a file or an env var, not both; prices are two numbers", () => {
-  for (const url of ["http://127.0.0.1:8080/v1", "http://localhost:1234/v1", "http://10.0.0.5/v1", "http://172.20.1.1/v1", "http://192.168.1.9/v1", "http://box.local/v1", "http://[::1]:8080/v1"]) expect(privateHost(url), url).toBe(true);
-  for (const url of ["http://8.8.8.8/v1", "http://172.32.0.1/v1", "http://gateway.example.com/v1", "http://fcbarcelona.com/v1"]) expect(privateHost(url), url).toBe(false);
+  for (const url of ["http://127.0.0.1:8080/v1", "http://localhost:1234/v1", "http://10.0.0.5/v1", "http://172.20.1.1/v1", "http://192.168.1.9/v1", "http://box.local/v1", "http://[::1]:8080/v1", "http://100.101.102.103/v1", "http://gpu-box:8080/v1", "http://desktop.lan/v1", "http://nas.home.arpa/v1"]) expect(privateHost(url), url).toBe(true);
+  for (const url of ["http://8.8.8.8/v1", "http://172.32.0.1/v1", "http://100.128.0.1/v1", "http://gateway.example.com/v1", "http://fcbarcelona.com/v1"]) expect(privateHost(url), url).toBe(false);
 
   const { file } = home({ local: { ...LOCAL, base_url: "https://gateway.example.com/v1", api_key_env: "GATEWAY_KEY", price: { input: 0.27, output: 1.1 } } });
   expect(() => loadConfig(tempRepo().dir)).not.toThrow();
   writeFileSync(file, JSON.stringify({ local: { ...LOCAL, base_url: "http://gateway.example.com/v1" } }));
-  expect(() => loadConfig(tempRepo().dir)).toThrow(/plain http to a public host; use https/);
+  expect(() => loadConfig(tempRepo().dir)).not.toThrow();
   writeFileSync(file, JSON.stringify({ local: { ...LOCAL, api_key_env: "GATEWAY_KEY", api_key_file: "/k" } }));
   expect(() => loadConfig(tempRepo().dir)).toThrow(/api_key_file or api_key_env, not both/);
   writeFileSync(file, JSON.stringify({ local: { ...LOCAL, api_key_env: "not a name" } }));

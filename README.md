@@ -47,7 +47,7 @@ Set up Cheap Agent (npm: cheap-agent) for me.
    ~/.config/cheapag/config.json, keeping what else is there.
 4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice,
    or custom>, and which provider to pick with the arrow keys or its number (1 OpenCode Go, 2 OpenRouter,
-   3 DeepSeek, 4 Command Code, 5 Custom endpoint, 6 OpenCode Zen). I run it and type my API key there. Never ask for my key.
+   3 DeepSeek, 4 Command Code, 5 OpenCode Zen, 6 Custom endpoint). I run it and type my API key there. Never ask for my key.
 5. When I say done, check `claude mcp list` shows cheapag, then tell me to run
    /cheapag:allow in a new Claude Code session in my project.
 ```
