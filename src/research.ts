@@ -11,7 +11,7 @@ import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
-import { createWorktree, git, hasCommits, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
+import { callRoot, createWorktree, git, hasCommits, removeWorktree, type Worktree } from "./workspace.js";
 import { checkAllows } from "./verify.js";
 
 /**
@@ -28,14 +28,14 @@ const DEFAULT_WORDS = 200;
 /** At most this many refs: the refs line must stay within the 200-char line rule. */
 const MAX_REFS = 5;
 
-export type ResearchInput = { question: string; paths?: string; max_words?: number };
+export type ResearchInput = { question: string; paths?: string; max_words?: number; root?: string };
 type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence" | "repro" | "deadEnds" | "partial">;
 
 export async function research(
   input: ResearchInput,
   ctx: { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
 ): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(input.root);
   // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;

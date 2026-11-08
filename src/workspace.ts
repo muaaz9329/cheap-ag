@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isAlive, link, normalisePath, removeLink } from "./platform.js";
 
 /** Workspace (ADR-0003): baseline, worktree per job, diff, and landing; the only writer to the user's tree. */
@@ -23,6 +23,17 @@ export function projectRoot(cwd: string) {
   } catch {
     throw new Error(`${cwd} is not inside a git repository`);
   }
+}
+
+/**
+ * The repository a tool call works in: its `root` argument when given, else the server's cwd. An orchestrator session
+ * passes `root` to send jobs into a git worktree other than the one it started in; it must be absolute, so it never
+ * depends on the server's cwd.
+ */
+export function callRoot(root?: string) {
+  if (root === undefined) return projectRoot(process.cwd());
+  if (!isAbsolute(root)) throw new Error(`root ${root} must be an absolute path`);
+  return projectRoot(root);
 }
 
 /** Whether the repository has at least one commit: a fresh `git init` has none, so HEAD cannot be resolved. */
