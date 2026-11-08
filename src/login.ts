@@ -8,6 +8,7 @@ import { loadConfig, localServer, privateHost, userConfigFile, type LocalServer 
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, OPENCODE_DB, opencodeBinary, stopOpencode } from "./opencode.js";
 import { runCli } from "./platform.js";
+import { select } from "./prompt.js";
 import { installPlugin, stableNode } from "./install.js";
 import { effectiveModels, fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig, type Preset } from "./routing.js";
 import { runSession } from "./worker.js";
@@ -72,13 +73,12 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   out("Cheap Agent login");
   const current = detectProvider();
   if (current) out(`Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`);
-  PROVIDERS.forEach((p, i) => out(`  ${i + 1}) ${p.label}${p.id === "local" ? " (any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)" : ""}`));
-  const answer = await ask(`Provider [1-${PROVIDERS.length}]: `);
-  const picked = PROVIDERS[Number(answer) - 1];
-  if (!picked) {
-    out(`✗ "${answer}" is not one of 1-${PROVIDERS.length}; nothing changed`);
-    return 1;
-  }
+  // arrow keys or a number, Enter picks; the provider in use starts highlighted
+  const picked = PROVIDERS[await select(
+    "Provider:",
+    PROVIDERS.map((p) => ({ label: p.label, hint: p.id === "local" ? "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)" : undefined })),
+    Math.max(0, PROVIDERS.findIndex((p) => p.id === current?.provider)),
+  )];
   if (picked.id === "local") {
     if (flag) out("--preset does not apply to a local server: its model is asked for below");
     if (!(await localLogin(out))) return 1;
@@ -87,12 +87,8 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     const preset = currentPreset(picked.id) ?? "balanced";
     let choice = flag ?? "";
     if (flag === undefined) {
-      out("Worker models:");
-      CHOICES.forEach((name, i) =>
-        out(`  ${i + 1}) ${name}${name === "balanced" ? " (recommended)" : name === "custom" ? " (set models yourself in cheapag.json)" : ""}`),
-      );
-      const answer = await ask(`Models [1-${CHOICES.length}, Enter = ${preset}]: `);
-      choice = answer ? (CHOICES[Number(answer) - 1] ?? answer) : preset;
+      const hint = (name: Choice) => (name === "balanced" ? "(recommended)" : name === "custom" ? "(set models yourself in cheapag.json)" : undefined);
+      choice = CHOICES[await select("Worker models:", CHOICES.map((name) => ({ label: name, hint: hint(name) })), CHOICES.indexOf(preset))];
     }
     if (!isChoice(choice)) {
       out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
@@ -226,11 +222,8 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
 
   let model: string | undefined;
   if (Array.isArray(listed) && listed.length) {
-    out("Models on this server:");
-    listed.forEach((id, i) => out(`  ${i + 1}) ${id}`));
     const fallback = keep && listed.includes(keep.model) ? keep.model : listed[0];
-    const answer = await ask(`Model [1-${listed.length} or an id, Enter = ${fallback}]: `);
-    model = answer ? (listed[Number(answer) - 1] ?? answer) : fallback;
+    model = listed[await select("Model:", listed.map((id) => ({ label: id })), listed.indexOf(fallback))];
   } else {
     if (listed === "auth") out("The server wants a key to list its models; type the model id instead.");
     model = (await ask(`Model id, as the server names it${keep ? ` [Enter = ${keep.model}]` : ""}: `)) || keep?.model;

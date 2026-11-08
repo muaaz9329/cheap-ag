@@ -114,18 +114,17 @@ tty("login saves the key through the bundled OpenCode, live-checks it, and regis
   // the live check ran the implement model on the provider just saved
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" });
   expect(r.output).not.toContain(KEY.slice(10)); // OpenCode masks the input; nothing echoes it
-  // Enter on the worker-models question took balanced, the default
-  expect(r.output).toContain("Worker models:");
+  // Enter on the worker-models list took balanced, highlighted first
   expect(r.output).toContain("1) cheapest");
-  expect(r.output).toContain("2) balanced (recommended)");
+  expect(r.output).toContain("❯ 2) balanced  (recommended)");
   expect(r.output).toContain("3) strongest");
-  expect(r.output).toContain("4) custom (set models yourself in cheapag.json)");
-  expect(r.output).toContain("Models [1-4, Enter = balanced]:");
+  expect(r.output).toContain("4) custom  (set models yourself in cheapag.json)");
+  expect(r.output).toContain("Worker models: balanced");
   expect(r.config).toEqual({ preset: "balanced" });
 }, slow(90_000));
 
-tty("picking strongest writes its preset to the user config, and the live check runs its implement model", async () => {
-  const r = await runLogin({ claude: "registered", preset: "strongest" });
+tty("the down arrow from balanced picks strongest: its preset is written and the live check runs its implement model", async () => {
+  const r = await runLogin({ claude: "registered", preset: "\x1b[B" });
   expect(r.exit).toBe("EXIT 0");
   expect(r.config).toEqual({ preset: "strongest" });
   expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "z-ai/glm-5.3" });
@@ -142,7 +141,8 @@ tty("a number on the worker-models list picks that preset: 3 is strongest", asyn
 tty("re-running login offers the current preset; Enter keeps it and the config's other keys", async () => {
   const r = await runLogin({ claude: "registered", config: { test_cmd: "make check", models: PRESETS.openrouter.strongest } });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).toContain("Models [1-4, Enter = strongest]");
+  expect(r.output).toContain("❯ 3) strongest");
+  expect(r.output).toContain("Worker models: strongest");
   expect(r.config).toEqual({ test_cmd: "make check", preset: "strongest" });
 }, slow(90_000));
 
@@ -168,15 +168,11 @@ tty("a config with custom models is left alone by the migration", async () => {
   expect(r.config).toEqual({ models: { implement: "opencode-go/kimi-k3" } });
 }, slow(90_000));
 
-tty("--preset sets the models without asking; an answer that is no preset changes nothing", async () => {
+tty("--preset sets the models without asking", async () => {
   const r = await runLogin({ claude: "registered", args: ["--preset", "cheapest"] });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).not.toContain("Worker models:\n");
   expect(r.config).toEqual({ preset: "cheapest" });
-  const bad = await runLogin({ claude: "registered", preset: "fastest" });
-  expect(bad.exit).toMatch(/^EXIT 1 UNMATCHED/); // never got to the key
-  expect(bad.output).toContain('✗ "fastest" is not one of cheapest, balanced, strongest, custom; nothing changed');
-  expect(bad.config).toBeUndefined();
 }, slow(90_000));
 
 test("without a terminal, login sets the preset for the saved provider: the flag, custom, the balanced fallback, a bad name", async () => {
@@ -363,14 +359,15 @@ tty("a local server: login finds /v1 under the bare URL, lists its models, detec
       { expect: "Provider", send: "5\r" },
       { expect: "ServerURL", send: `${url}\r` },
       { expect: "APIkey,if", send: "\r" },
-      { expect: "oranid,Enter=bonsai", send: "2\r" },
+      { expect: "Model:", send: "2\r" },
       { expect: "Contextwindow", send: "\r" },
       { expect: "PriceinUSD", send: "0.27/1.10\r" },
     ],
   });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).toContain("5) Custom endpoint (any OpenAI-compatible URL");
-  expect(r.output).toContain("1) bonsai-9b-mtp");
+  expect(r.output).toContain("5) Custom endpoint  (any OpenAI-compatible URL");
+  expect(r.output).toContain("❯ 1) bonsai-9b-mtp");
+  expect(r.output).toContain("Model: qwen3.6-35b-a3b");
   expect(r.output).toContain("Context window in tokens (detected) [Enter = 65536]");
   // the hosted preset stays for a later switch back; the local server is its own entry
   expect(r.config).toEqual({ models: PRESETS.openrouter.balanced, local: { base_url: `${url}/v1`, model: "qwen3.6-35b-a3b", context: 65536, price: { input: 0.27, output: 1.1 } } });
