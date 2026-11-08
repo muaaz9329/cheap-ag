@@ -14,7 +14,7 @@ export const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
   { id: "commandcode", label: "Command Code" },
-  { id: "local", label: "Local server" },
+  { id: "local", label: "Custom endpoint" },
   { id: "opencode", label: "OpenCode Zen" },
 ] as const;
 
@@ -57,7 +57,7 @@ export function detectProvider(): Provider | undefined {
   return first && { provider: first, via: "login" };
 }
 
-/** Strips key-shaped strings (OpenRouter's sk-or-v1-…, DeepSeek/OpenAI-style sk-…) from anything that leaves the process. */
+/** Strips key-shaped strings (OpenRouter's sk-or-v1-…, DeepSeek/OpenAI-style sk-…, Cheaper Inference's ci_live_…) from anything that leaves the process. */
 export function redact(text: string) {
-  return text.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]");
+  return text.replace(/\b(?:sk-|ci_live_)[A-Za-z0-9_-]{16,}/g, "[redacted]");
 }

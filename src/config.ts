@@ -36,12 +36,34 @@ const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
 export const userConfigFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
 
 /**
- * A local OpenAI-compatible server for the worker (llama.cpp, Strata, Ollama, LM Studio, vLLM, LiteLLM): `local` in the
+ * A custom OpenAI-compatible endpoint for the worker: a local server (llama.cpp, Strata, Ollama, LM Studio, vLLM) or a
+ * hosted gateway (LiteLLM, Azure, any vendor's OpenAI-compatible API): `local` in the
  * user config only, so a repo's cheapag.json can never point the worker at another endpoint. `model` is the server's
- * model id; `api_key_file` names a file OpenCode reads the key from (Cheap Agent never reads it); `context` and `output`
+ * model id; `api_key_file` names a file and `api_key_env` an environment variable OpenCode reads the key from (Cheap Agent
+ * never reads either); `context` and `output`
  * are the model's token limits, which OpenCode needs to compact a long session before the server rejects it.
  */
-export type LocalServer = { base_url: string; model: string; api_key_file?: string; context?: number; output?: number };
+export type LocalServer = {
+  base_url: string; model: string; api_key_file?: string; api_key_env?: string; context?: number; output?: number;
+  /** USD per million tokens, for spend tracking and the job cost cap; without it a job's cost reads $0. */
+  price?: { input: number; output: number };
+};
+
+/** Whether a URL's host is this machine or a private network (where plain http is fine): loopback, RFC 1918, link-local, *.local. */
+export function privateHost(url: string) {
+  let host: string;
+  try {
+    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "::1") return true;
+  if (host.includes(":")) return /^f[cd]/.test(host) || host.startsWith("fe80:"); // IPv6 unique-local and link-local
+  const ip = host.split(".").map(Number);
+  if (ip.length !== 4 || ip.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = ip;
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+}
 
 /** The user config's `local` server, undefined when none is set; throws on a damaged one. */
 export function localServer(): LocalServer | undefined {
@@ -53,16 +75,23 @@ export function localServer(): LocalServer | undefined {
 
 function parseLocal(local: unknown, file: string): LocalServer {
   if (typeof local !== "object" || local === null || Array.isArray(local)) throw new Error(`${file}: local must be an object`);
-  const { base_url, model, api_key_file, context, output } = local as Record<string, unknown>;
+  const { base_url, model, api_key_file, api_key_env, context, output, price } = local as Record<string, unknown>;
   if (typeof base_url !== "string" || !/^https?:\/\/\S+$/.test(base_url)) throw new Error(`${file}: local.base_url must be an http(s) URL, e.g. http://127.0.0.1:8080/v1`);
+  // code and key would cross the internet unencrypted
+  if (base_url.startsWith("http:") && !privateHost(base_url)) throw new Error(`${file}: local.base_url uses plain http to a public host; use https (plain http is only for this machine or a private network)`);
   if (typeof model !== "string" || !model.trim()) throw new Error(`${file}: local.model must be the server's model id`);
   if (api_key_file !== undefined && (typeof api_key_file !== "string" || !isAbsolute(api_key_file))) throw new Error(`${file}: local.api_key_file must be an absolute path`);
+  if (api_key_env !== undefined && (typeof api_key_env !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(api_key_env))) throw new Error(`${file}: local.api_key_env must be an environment variable name, e.g. MY_GATEWAY_KEY`);
+  if (api_key_file !== undefined && api_key_env !== undefined) throw new Error(`${file}: local takes api_key_file or api_key_env, not both`);
+  const p = price as { input?: unknown; output?: unknown } | undefined;
+  if (p !== undefined && (typeof p !== "object" || p === null || ![p.input, p.output].every((v) => typeof v === "number" && v >= 0))) throw new Error(`${file}: local.price must be { "input": <USD per million tokens>, "output": <USD per million tokens> }`);
   for (const [key, v] of [["context", context], ["output", output]] as const) {
     if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v <= 0)) throw new Error(`${file}: local.${key} must be a positive whole number of tokens`);
   }
   return {
     base_url: base_url.replace(/\/+$/, ""), model: model.trim(),
-    ...(api_key_file !== undefined && { api_key_file }), ...(context !== undefined && { context: context as number }), ...(output !== undefined && { output: output as number }),
+    ...(api_key_file !== undefined && { api_key_file }), ...(api_key_env !== undefined && { api_key_env: api_key_env as string }),
+    ...(p !== undefined && { price: { input: p.input as number, output: p.output as number } }), ...(context !== undefined && { context: context as number }), ...(output !== undefined && { output: output as number }),
   };
 }
 

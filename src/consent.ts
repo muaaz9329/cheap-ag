@@ -150,11 +150,11 @@ function consentBlock(root: string, provider: Provider["provider"], full: Route)
   const retentionLine = provider === "openrouter"
     ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
     : local
-    ? `your own server; it keeps what it is set up to keep (a proxy such as LiteLLM may forward to a hosted provider)`
+    ? `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`
     : models.map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`).join("; ");
   return renderConsent({
     repo: basename(root),
-    send: `code from this repo → ${local ? `local server at ${local.base_url}` : providerLabel(provider)}: ${ids}`,
+    send: `code from this repo → ${local ? `custom endpoint at ${local.base_url}` : providerLabel(provider)}: ${ids}`,
     retention: retentionLine,
     approve: "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself",
   });
