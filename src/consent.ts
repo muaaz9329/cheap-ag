@@ -61,8 +61,8 @@ export function routeMoved(root: string, consent: Consent) {
 }
 
 /** `preset=` for ping and status: the preset the effective `models` here match (the repo's config too, inside one). */
-export function presetHere(provider: Provider["provider"]) {
-  let root = process.cwd();
+export function presetHere(provider: Provider["provider"], cwd = process.cwd()) {
+  let root = cwd;
   try {
     root = projectRoot(root);
   } catch {} // outside a repo only the user's config applies
@@ -156,6 +156,18 @@ function consentBlock(root: string, provider: Provider["provider"], full: Route)
     repo: basename(root),
     send: `code from this repo → ${local ? `custom endpoint at ${local.base_url}` : providerLabel(provider)}: ${ids}`,
     retention: retentionLine,
-    approve: "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself",
+    // the caller passed the root, so "this root" names it; a path here would push the line past the 200-char cap
+    approve: sessionRepo(root)
+      ? "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself"
+      : "ask the user to run npx cheap-agent allow in a terminal in this root (/cheapag:allow approves the session's repo); add --zdr-only or --models a,b to narrow it; never approve yourself",
   });
+}
+
+/** Whether `root` is the repo the server (the session) runs in, which is the one /cheapag:allow approves. */
+function sessionRepo(root: string) {
+  try {
+    return projectRoot(process.cwd()) === root;
+  } catch {
+    return false; // the session is outside any repo: only a terminal in `root` can approve it
+  }
 }

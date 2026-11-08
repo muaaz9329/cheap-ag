@@ -191,6 +191,10 @@ Optional. Put a `cheapag.json` in a project:
 | `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
 | `retention` | `{ "unlanded_worktree_days": 2, "job_log_days": 7 }` | Days cleanup keeps an unlanded worktree and a job's log folder. It runs at server start and every hour. |
 
+## Orchestrators and git worktrees
+
+Cheap Agent works in the repository your session started in. If one session runs several tasks, each in its own git worktree (an orchestrator handing tickets to subagents, say), pass `root` with the worktree's absolute path on `delegate`, `research`, `jobs`, `land` and `reply`. Jobs then run, land and keep their records in that worktree, and the session's own checkout is untouched. Each worktree needs its own consent (`/cheapag:allow` there, or a copied `.cheapag/consent.json`). Without `root`, nothing changes.
+
 ## Use any OpenAI-compatible endpoint
 
 The worker can run on any OpenAI-compatible API: your own server (llama.cpp's `llama-server`, Strata, Ollama, LM Studio, vLLM), a gateway (LiteLLM, Azure), or a vendor's API. Run `npx cheap-agent login` and pick **Custom endpoint**. It asks for:
