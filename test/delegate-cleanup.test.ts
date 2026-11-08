@@ -13,7 +13,6 @@ test("a landed job whose worktree can't be removed stays OK, landed, with the cl
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   onTestFinished(() => { vi.restoreAllMocks(); });
-  vi.spyOn(workspace, "projectRoot").mockReturnValue(repo.dir);
   vi.spyOn(consent, "consentGate").mockReturnValue({ route: routing.fullRoute("opencode-go") });
   vi.spyOn(routing, "recordSpend").mockImplementation(() => {});
   const fake = await startFakeOpencode();
@@ -28,7 +27,8 @@ test("a landed job whose worktree can't be removed stays OK, landed, with the cl
     throw locked;
   });
 
-  const text = await delegate({ task: "Add src/kept.ts exporting kept = 1", files: "src/kept.ts", done_when: "kept is exported" }, {
+  // root, not a projectRoot spy: delegate resolves its repo through callRoot, which a spy on the module export cannot reach
+  const text = await delegate({ task: "Add src/kept.ts exporting kept = 1", files: "src/kept.ts", done_when: "kept is exported", root: repo.dir }, {
     provider: { provider: "opencode-go", via: "login" },
     opencode: async () => ({ url: fake.url, password: "unused", version: "test" }),
     progress: () => {},
