@@ -65,6 +65,16 @@ export function privateHost(url: string) {
   return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
 }
 
+/** The provider `cheapag provider` (or a login) picked, from the user config; undefined when none is set or the file is damaged. */
+export function chosenProvider(): string | undefined {
+  try {
+    const value = JSON.parse(readFileSync(userConfigFile(), "utf8")) as { provider?: unknown };
+    return typeof value?.provider === "string" ? value.provider : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The user config's `local` server, undefined when none is set; throws on a damaged one. */
 export function localServer(): LocalServer | undefined {
   const file = userConfigFile();
@@ -121,7 +131,11 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local, preset } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local, preset, provider } = value as Record<string, unknown>;
+  if (provider !== undefined) {
+    if (file !== userConfigFile()) throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
+    if (typeof provider !== "string") throw new Error(`${file}: provider must be a provider id, e.g. opencode-go; switch with cheapag provider`);
+  }
   if (local !== undefined) {
     if (file !== userConfigFile()) throw new Error(`${file}: local can only be set in ${userConfigFile()}, never in a repo`);
     parseLocal(local, file);

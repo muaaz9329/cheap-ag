@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { localServer } from "./config.js";
+import { chosenProvider, localServer } from "./config.js";
 
 /**
  * Credentials come only from saved logins in OpenCode's store, written by `cheapag login` (ADR-0004). The local
@@ -50,8 +50,19 @@ export function localConfigured() {
 
 export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
 
-/** The provider the worker uses: a configured local server (set up on purpose, so it wins), else the first saved login. */
+/** Supported providers ready to use: saved logins, plus the custom endpoint when the user config names one; in detection order. */
+export function usableProviders(): Provider["provider"][] {
+  const saved = savedProviders();
+  return PROVIDERS.map((p) => p.id).filter((id) => (id === "local" ? localConfigured() : saved.includes(id)));
+}
+
+/**
+ * The provider the worker uses: the one `cheapag provider` picked, while it is still set up; else a configured custom
+ * endpoint (set up on purpose, so it wins), else the first saved login.
+ */
 export function detectProvider(): Provider | undefined {
+  const chosen = PROVIDERS.find((p) => p.id === chosenProvider())?.id;
+  if (chosen && usableProviders().includes(chosen)) return { provider: chosen, via: chosen === "local" ? "config" : "login" };
   if (localConfigured()) return { provider: "local", via: "config" };
   const [first] = savedProviders();
   return first && { provider: first, via: "login" };

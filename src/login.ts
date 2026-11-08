@@ -104,6 +104,8 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     if (!savePreset(picked.id, choice, out) || !dropLocal(out, picked.label)) return 1;
   }
 
+  // another provider set up earlier would otherwise keep winning: point the user config at the one just logged in to
+  if (detectProvider()?.provider !== picked.id && !setUserKey("provider", picked.id, out)) return 1;
   const provider: Provider = { provider: picked.id, via: picked.id === "local" ? "config" : "login" };
   const check = await liveCheck(provider);
   out(check.ok ? `✓ ${check.line}` : `✗ ${check.line}`);
@@ -111,8 +113,6 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     const hint = regionHint(check.line);
     if (hint) out(hint);
   }
-  const active = detectProvider()!;
-  if (active.provider !== provider.provider) out(`Note: ${label(active.provider)} is also saved and is used first.`);
   if (!check.ok) return 1; // the login stays saved; fix the cause and run login again
 
   await register(out);
@@ -304,6 +304,19 @@ async function contextOf(base: string, model: string): Promise<number | undefine
   return Number.isInteger(loaded) && loaded > 0 ? loaded : undefined;
 }
 
+/** Sets one key of the user config, other keys kept; undefined removes it. False (and said) when the file cannot be written. */
+export function setUserKey(key: string, value: unknown, out: (line?: string) => void) {
+  try {
+    const { [key]: _, ...rest } = readUser();
+    mkdirSync(dirname(userConfigFile()), { recursive: true });
+    writeFileSync(userConfigFile(), JSON.stringify(value === undefined ? rest : { ...rest, [key]: value }, null, 2) + "\n");
+    return true;
+  } catch (err) {
+    out(`✗ ${userConfigFile()}: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 /** After a login to a hosted provider: removes the user config's `local`, which would otherwise keep winning over it. */
 function dropLocal(out: (line?: string) => void, provider: string) {
   try {
@@ -319,7 +332,7 @@ function dropLocal(out: (line?: string) => void, provider: string) {
 }
 
 /** One tiny real call to the implement model the user's config now picks, through the bundled OpenCode, in a throwaway directory. */
-async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
+export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
   const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;

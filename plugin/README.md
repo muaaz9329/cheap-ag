@@ -1,6 +1,6 @@
 # Cheap Agent plugin for Claude Code
 
-Gives Claude the Cheap Agent MCP server (`delegate`, `research`, `reply`, `jobs`, `land`), the plan-writing skill, `/cheapag:status`, and the user-only commands `/cheapag:allow`, `/cheapag:clean` and `/cheapag:hook`.
+Gives Claude the Cheap Agent MCP server (`delegate`, `research`, `reply`, `jobs`, `land`), the plan-writing skill, `/cheapag:status`, and the user-only commands `/cheapag:allow`, `/cheapag:model`, `/cheapag:provider`, `/cheapag:clean` and `/cheapag:hook`.
 
 ## Worker models
 

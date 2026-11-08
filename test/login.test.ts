@@ -330,11 +330,13 @@ test("login refuses a non-interactive stdin instead of hanging", async () => {
   expect(r.stdout).toBe("✗ npx cheap-agent login needs an interactive terminal (the key is typed into a hidden prompt)\n");
 });
 
-tty("re-running login adds a provider; the earlier one keeps precedence and that is said", async () => {
+tty("re-running login adds a provider and switches to it; the earlier one stays saved for cheapag provider", async () => {
   const r = await runLogin({ claude: "registered", logins: { "opencode-go": "g" } });
   expect(r.exit).toBe("EXIT 0");
   expect(r.output).toContain("Currently using: OpenCode Go.");
-  expect(r.output).toContain("Note: OpenCode Go is also saved and is used first.");
+  expect(r.output).not.toContain("is also saved and is used first");
+  expect(r.config).toEqual({ preset: "balanced", provider: "openrouter" });
+  expect(r.fake.recorded.sessions[0].model).toMatchObject({ providerID: "openrouter" });
   expect(r.saved.sort()).toEqual(["opencode-go", "openrouter"]);
 }, slow(90_000));
 

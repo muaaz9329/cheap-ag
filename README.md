@@ -175,6 +175,8 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 | `/cheapag:status` | `$cheapag:status` | Recent jobs, and what the cheap model has cost you. |
 | `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
 | `/cheapag:clean` | `$cheapag:clean` | Tidy up old job folders. |
+| `/cheapag:model` | `$cheapag:model` | Pick the worker's main and fallback models, each with an effort. |
+| `/cheapag:provider` | `$cheapag:provider` | Switch to another provider you've already logged in to, with no key prompt. This project's consent moves with it, and you see what it now covers. If the new provider fails its check, nothing changes. Add a new provider with `npx cheap-agent login`. |
 
 While a job runs, Claude Code shows the worker's latest step under the tool call, and Codex shows it each time it checks in (about every 15 seconds). To follow every step in a second terminal, run `npx cheap-agent watch`.
 
