@@ -1201,12 +1201,19 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
     const files = conflictPaths(clash);
     throw new Error(`landing conflict${files.length ? ` in ${files.join(", ")}` : ""}, working tree untouched; discard it, or fix the overlap and delegate again`);
   }
-  await releaseDirectory(worktree.path); // release before the worktree is removed
-  removeWorktree(root, worktree);
-  save({ landed: true, changed: diff.changed });
+  // the change is in the working tree now: a folder Windows won't delete yet must not undo the landing's record (#22)
+  let cleanupError: string | undefined;
+  try {
+    await releaseDirectory(worktree.path); // release before the worktree is removed
+    removeWorktree(root, worktree);
+  } catch (err) {
+    cleanupError = (err as Error).message.replace(/\s+/g, " ");
+  }
+  save({ landed: true, changed: diff.changed, ...(cleanupError && { cleanupError }) });
   const add = diff.changed.reduce((n, c) => n + c.add, 0);
   const del = diff.changed.reduce((n, c) => n + c.del, 0);
-  return `OK ${id} applied files=${diff.changed.length} +${add}/-${del}`;
+  const note = cleanupError ? `\ncleanup error: ${cleanupError} (the change landed; only its worktree folder was left behind)` : "";
+  return `OK ${id} applied files=${diff.changed.length} +${add}/-${del}${note}`;
 }
 
 /** A job paused on a worker question. It lives only in this process, as does its paused session. */
