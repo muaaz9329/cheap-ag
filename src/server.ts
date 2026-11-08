@@ -109,6 +109,12 @@ export async function serve(host: "claude" | "codex" = "claude") {
     } catch {
       // a bad config (delegate reports that): nothing to clean
     }
+    // and hourly while the server runs, so a long session frees old worktrees and logs (ticket 49); once per repo, like the rest
+    try {
+      startPeriodicCleanup(dir, loadConfig(dir), 60 * 60_000);
+    } catch {
+      // a bad config (delegate reports that): no periodic cleanup
+    }
   };
   /**
    * The repository a call works in, resolved once per call (see `callRoot`; throws for a relative root or one outside a
@@ -280,13 +286,6 @@ export async function serve(host: "claude" | "codex" = "claude") {
     prepare(projectRoot(process.cwd()));
   } catch {
     // not a repository: nothing to recover or clean
-  }
-  // and hourly while the server runs, so a long session frees old worktrees and logs (ticket 49)
-  try {
-    const root = projectRoot(process.cwd());
-    startPeriodicCleanup(root, loadConfig(root), 60 * 60_000);
-  } catch {
-    // not a repository, or a bad config (delegate reports that): no periodic cleanup
   }
   // CHEAPAG_DEBUG_SHUTDOWN=1 traces each shutdown point to stderr (CI logs); silent otherwise
   const shutdownLog = (line: string) => {
