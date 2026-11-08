@@ -1,3 +1,4 @@
+import { gunzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,13 +44,13 @@ test.each([
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   onTestFinished(() => { vi.restoreAllMocks(); });
-  vi.spyOn(workspace, "projectRoot").mockReturnValue(repo.dir);
   vi.spyOn(consent, "consentGate").mockReturnValue({ route: routing.fullRoute("opencode-go") });
   vi.spyOn(routing, "recordSpend").mockImplementation(() => {});
   const releaseHold = vi.fn();
   vi.spyOn(opencode, "holdOpencode").mockReturnValue(releaseHold);
   vi.spyOn(worker, "openSession").mockResolvedValue({
     sessionID: "research-fault",
+    rotate: async () => false,
     run: async () => status === "FAIL" ? { text: "", error: "API rejected request (400)" } : block("status: answer\nconfidence: high\nnotes: useful answer"),
     totals: () => ({ sessionID: "research-fault", turns: 0, usage: { costUsd: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0 }, rejections: [], spend: {} }),
   });
@@ -69,7 +70,7 @@ test.each([
     observe(tree.path);
     throw busy;
   });
-  const text = await runResearch({ question: "where is the code?" }, {
+  const text = await runResearch({ question: "where is the code?", root: repo.dir }, {
     provider: { provider: "opencode-go", via: "login" },
     opencode: async () => ({ url: "http://unused.invalid", password: "unused", version: "test" }),
     progress: () => {},
@@ -142,6 +143,10 @@ test("answers from the main checkout, uncommitted work included, with validated 
     "confidence: high",
     `log: .cheapag/jobs/${id}/`,
   ].join("\n"));
+  // an answer's event log is gzipped; an UNSURE one stays plain (checked in its own test)
+  const logDir = join(repo.dir, ".cheapag", "jobs", id);
+  expect(existsSync(join(logDir, "events.jsonl"))).toBe(false);
+  for (const line of gunzipSync(readFileSync(join(logDir, "events.jsonl.gz"))).toString("utf8").trim().split("\n")) JSON.parse(line);
 
   // its own agent and ruleset (read, search, test commands; never edit), in a throwaway worktree, on the research model
   const [session] = fake.recorded.sessions;

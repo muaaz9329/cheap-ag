@@ -21,6 +21,7 @@ done-when: <condition>; <condition>         ← required; `backticked` = execute
 dont: <constraint>; <constraint>
 needs: <step id>, ...
 difficulty: easy | medium | hard            ← picks the worker model; wins over delegate's
+kind: fix | change                          ← fix: a bug to reproduce; change: no reproduction expected
 model: <model>
 deps: <package@range>                       ← the step needs a new package
 ```
@@ -35,6 +36,7 @@ deps: <package@range>                       ← the step needs a new package
 - **One change per step:** a do: that lists three or more numbered items is refused at delegate; split it into 3a, 3b, … and order them with needs:.
 - **Details as bullets:** write a do: as - bullets or prose; numbered or lettered items count as separate changes, and three or more get the task refused. `do: 1. extract X 2. move Y 3. update the import` is refused; `- extract X`, `- move Y`, `- update the import` is accepted.
 - **Checks:** give every step an executable `done-when` (a test command, a type check), not only prose. Name the one test file or test id the step concerns, never the whole suite.
+- **Kind:** say `kind: fix` for a bug to reproduce or `kind: change` when no reproduction is expected; otherwise the worker infers it from the step's wording.
 - **Source:** put the user's request or the issue verbatim in the shared context, or pass it as `delegate(source=…)` (text or a file path): the worker checks your steps against it and reports where they disagree.
 - **Scope:** `files:` lists every file or directory the step may touch, accurately. It also decides which steps can run in parallel.
 - **Constraints:** add `dont:` for the mistakes you expect (new dependencies, touching auth, changing public APIs).

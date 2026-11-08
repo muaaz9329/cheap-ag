@@ -1,14 +1,14 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { localServer } from "./config.js";
+import { localServer, type Config } from "./config.js";
 import { LOGIN_COMMAND, providerLabel, type Provider } from "./credentials.js";
 import type { RunResult, Session } from "./worker.js";
 
 /** Routing: which model each role runs, fallbacks on provider limits, escalation eligibility, and the local spend ledger. */
 
 /** A model as OpenCode's session.create takes it, plus per-model OpenCode options written into the generated config. */
-export type WorkerModel = { providerID: string; id: string; options?: Record<string, unknown> };
+export type WorkerModel = { providerID: string; id: string; options?: Record<string, unknown>; variant?: string };
 type ProviderId = Provider["provider"];
 
 // verified on OpenCode 1.19.0: options.provider becomes OpenRouter's request-body routing preference, so upstreams that
@@ -113,7 +113,7 @@ export type Route = {
 };
 
 /** Config (spec E4) `models`: full `provider/model` names; a role set for another provider than the one logged in is ignored. */
-export type ModelsConfig = { implement?: string; medium?: string; hard?: string; research?: string; escalation?: string; fallback?: string[] };
+export type ModelsConfig = { implement?: string; medium?: string; hard?: string; research?: string; escalation?: string; fallback?: string[]; variants?: Record<string, string> };
 
 /** Claude's rating of a task from the issue (ticket 26): easy < 15 min, medium < 1 h, hard > 1 h of an engineer new to the code. */
 export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
@@ -122,21 +122,33 @@ export type Difficulty = (typeof DIFFICULTIES)[number];
 /** The model a job implements on: hard takes the hard model, else the medium one; medium the medium one; easy or no hint `implement`. */
 export const tierModel = (r: Route, d?: Difficulty) => (d === "hard" ? r.hard ?? r.medium : d === "medium" ? r.medium : undefined) ?? r.implement;
 
+/** The models config in force: the chosen preset's models (none for local) with an explicit `models` role winning over it. */
+export function effectiveModels(provider: ProviderId, config: Pick<Config, "preset" | "models">): ModelsConfig {
+  const preset = provider === "local" || !config.preset ? undefined : PRESETS[provider][config.preset];
+  return { ...preset, ...config.models };
+}
+
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {
   const roles = rolesOf(provider);
   const own = (name?: string) => (name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined);
   const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
   const [research, ...researchFallbacks] = [own(models.research) ?? roles.research[0], ...roles.research.slice(1)];
-  const tier = (name?: string) => (own(name) ? model(provider, own(name)!) : undefined);
+  // a full model name's effort (an OpenCode variant), attached wherever a role or fallback is built from a name
+  const withVariant = (m: WorkerModel) => {
+    const variant = models.variants?.[modelName(m)];
+    return variant === undefined ? m : { ...m, variant };
+  };
+  const routed = (id: string) => withVariant(model(provider, id));
+  const tier = (name?: string) => (own(name) ? routed(own(name)!) : undefined);
   return {
-    implement: model(provider, own(models.implement) ?? roles.implement[0]),
+    implement: routed(own(models.implement) ?? roles.implement[0]),
     medium: tier(models.medium),
     hard: tier(models.hard),
-    fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map((id) => model(provider, id)),
-    escalation: tier(models.escalation) ?? (roles.escalation ? model(provider, roles.escalation) : undefined),
-    research: model(provider, research),
-    researchFallbacks: researchFallbacks.map((id) => model(provider, id)),
+    fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map(routed),
+    escalation: tier(models.escalation) ?? (roles.escalation ? routed(roles.escalation) : undefined),
+    research: routed(research),
+    researchFallbacks: researchFallbacks.map(routed),
   };
 }
 
@@ -154,28 +166,50 @@ export type Limit = { model: string; reason?: string; message: string; next: num
 export type Chain = { first: WorkerModel; current: WorkerModel; rest: WorkerModel[]; limits: Limit[]; used: string[] };
 export const chain = (first: WorkerModel, fallbacks: WorkerModel[]): Chain => ({ first, current: first, rest: [...fallbacks], limits: [], used: [] });
 
+const RETRY = "The previous attempt hit a provider capacity error. Continue the current step from where it left off.";
 const CONTINUE = "The previous model hit a usage limit and was stopped. Continue the current step from where it left off.";
 
 /**
  * One prompt on the chain's current model. On a provider limit the worker has already aborted the session (never waiting
- * out the retry); the same session continues on the next fallback. `budget` is set when the job must stop as BUDGET:
- * every allowed model is limited, or (OpenRouter) the credit is gone, which no other model can help with.
- * With `escalation`, the prompt runs on that model alone: a limit there is returned (in `limit`), never fallen back from.
+ * out the retry); the same session continues on the next fallback. A transient provider error is retried once in a forked
+ * session, then stops with `provider`: the user chooses, no silent fallback. `budget` is set when the job must stop as BUDGET: every allowed model is limited, or
+ * (OpenRouter) the credit is gone, which no other model can help with. `provider` is set when the current model keeps failing
+ * instead. With `escalation`, the prompt runs on that model alone: a limit there is returned (in `limit`),
+ * never fallen back from, and a transient error is not retried either.
  */
-export async function runRouted(session: Pick<Session, "run">, prompt: string, c: Chain, provider: ProviderId, escalation?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult & { budget?: string }> {
+export async function runRouted(session: Pick<Session, "run" | "rotate">, prompt: string, c: Chain, provider: ProviderId, escalation?: WorkerModel, interrupt?: AbortSignal): Promise<RunResult & { budget?: string; provider?: string }> {
   // the first model is the session's own; once moved, every prompt names the fallback explicitly
-  let result = await session.run(prompt, escalation ?? (c.current === c.first ? undefined : c.current), interrupt);
+  const model = () => escalation ?? (c.current === c.first ? undefined : c.current);
+  let text = prompt;
+  let result = await session.run(text, model(), interrupt);
   if (escalation && result.limit) c.limits.push(result.limit);
-  while (result.limit && !escalation) {
+  while (!escalation) {
+    if (isTransient(result)) {
+      // OpenCode's own retries are already past, and Go pins a session to one backend cell: retry once in a forked session
+      if (await session.rotate()) result = await session.run(RETRY, model(), interrupt);
+      if (isTransient(result)) {
+        const others = c.rest.map((m) => m.id).join(", ") || "none";
+        return { ...result, provider: `${c.current.id} is failing (last error: ${(result.error ?? `HTTP ${result.httpStatus}`).slice(0, 120)}); other models: ${others}` };
+      }
+    }
+    if (!result.limit) break;
     c.limits.push(result.limit);
     const next = c.rest.shift();
     if (!next) return { ...result, budget: exhausted(provider, c.limits) };
     c.current = next;
     c.used.push(modelName(next));
-    result = await session.run(CONTINUE, next, interrupt);
+    text = CONTINUE;
+    result = await session.run(text, model(), interrupt);
   }
   if (provider === "openrouter" && result.httpStatus === 402) return { ...result, budget: "OpenRouter credits exhausted" };
   return result;
+}
+
+/** A provider error worth retrying: an overload, a rate limit, a timeout, or a 5xx. Auth/config errors are not. */
+const TRANSIENT = /overloaded|at capacity|rate limit|too many requests|timed? ?out|try again|temporar|upstream request failed|ECONN|socket hang up|fetch failed/i;
+function isTransient(result: Pick<RunResult, "error" | "httpStatus">) {
+  const status = result.httpStatus;
+  return status === 408 || status === 429 || (status !== undefined && status >= 500) || (!!result.error && TRANSIENT.test(result.error));
 }
 
 /** The BUDGET reason once every allowed model is limited, with the earliest reset the provider gave. */

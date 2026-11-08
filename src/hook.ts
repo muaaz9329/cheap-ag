@@ -27,6 +27,10 @@ const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
 const TEST_CMD = /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 // sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
+// asking the user and loading a tool are free in both take-over modes (ticket 51)
+const ASK_TOOLS = new Set(["AskUserQuestion", "ToolSearch"]);
+// the desktop app's own tools, e.g. mcp__ccd_turn__wrap_up, are the user's session, not the repo
+const DESKTOP_TOOL = "mcp__ccd_";
 // edits outside the repo cannot touch the worker's worktree, so the taker may make them (the Sonnet branch only)
 const OUTSIDE_EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const READ_PARTS = ["git diff", "git log", "git show", "git status", "cat", "head", "tail", "ls", "grep", "rg", "wc", "find", "pwd", "echo"];
@@ -204,9 +208,11 @@ const stateFile = (root: string, session: string) => join(root, ".cheapag", "hoo
 const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
 
 /**
- * The prompt rules (tickets 29, 30), for the main loop only:
- * - after a FAIL, PARTIAL or TIMEOUT, takeover "sonnet" leaves only the Agent tool (to hand the step to a Sonnet subagent)
- *   and cheapag's tools; "self" denies the call after limits.takeover_calls (resolved take-overs used at most 13).
+ * The prompt rules (tickets 29, 30, 51), for the main loop only:
+ * - after a FAIL, PARTIAL or TIMEOUT, takeover "ask" (the default) allows only reads, one AskUserQuestion, tool loading
+ *   and the desktop app's tools; "sonnet" leaves the Agent tool (to hand the step to a Sonnet subagent), reads, the same
+ *   asking/loading tools and cheapag's tools; "self" denies the call after limits.takeover_calls (resolved take-overs
+ *   used at most 13).
  * - after an OK whose checks passed, re-running tests is denied: unverified OKs were as correct as verified ones.
  * A new user prompt clears both. cheapag's own tools and a subagent's calls are never counted or denied.
  */
@@ -222,12 +228,26 @@ function budget(input: Input): string | undefined {
   }
   if (state.prompt !== input.prompt_id) return; // a new user prompt starts fresh
   const config = loadConfig(root);
+  if (state.notDone && config.takeover === "ask") {
+    if (input.tool_name === "AskUserQuestion") {
+      // the user is being asked: whatever they pick is theirs
+      writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
+      return;
+    }
+    if (ASK_TOOLS.has(input.tool_name ?? "") || (input.tool_name ?? "").startsWith(DESKTOP_TOOL)) return;
+    if (READ_TOOLS.has(input.tool_name ?? "")) return;
+    if (OUTSIDE_EDITS.has(input.tool_name ?? "") && outside(root, input.cwd, input.tool_input)) return;
+    const command = input.tool_input?.command;
+    if (input.tool_name === "Bash" && typeof command === "string" && readOnly(command)) return;
+    return "The worker did not finish this step: ask the user first (continue with Claude, retry the worker on another model, or stop) with one question, then do what they pick.";
+  }
   if (state.notDone && config.takeover === "sonnet") {
     if (input.tool_name === "Agent" || input.tool_name === "Task") {
       // the hand-off is happening: one per FAIL, so the guard is off once the taker takes over
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
       return;
     }
+    if (ASK_TOOLS.has(input.tool_name ?? "") || (input.tool_name ?? "").startsWith(DESKTOP_TOOL)) return;
     if (READ_TOOLS.has(input.tool_name ?? "")) return;
     if (OUTSIDE_EDITS.has(input.tool_name ?? "") && outside(root, input.cwd, input.tool_input)) return;
     const command = input.tool_input?.command;

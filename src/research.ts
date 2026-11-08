@@ -4,14 +4,14 @@ import { isAbsolute, basename, join, relative } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
 import { redact, type Provider } from "./credentials.js";
-import { records } from "./jobs.js";
+import { gzipEvents, records } from "./jobs.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
 import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
-import { createWorktree, git, hasCommits, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
+import { callRoot, createWorktree, git, hasCommits, removeWorktree, type Worktree } from "./workspace.js";
 import { checkAllows } from "./verify.js";
 
 /**
@@ -28,14 +28,14 @@ const DEFAULT_WORDS = 200;
 /** At most this many refs: the refs line must stay within the 200-char line rule. */
 const MAX_REFS = 5;
 
-export type ResearchInput = { question: string; paths?: string; max_words?: number };
+export type ResearchInput = { question: string; paths?: string; max_words?: number; root?: string };
 type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence" | "repro" | "deadEnds" | "partial">;
 
 export async function research(
   input: ResearchInput,
   ctx: { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
 ): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const root = callRoot(input.root);
   // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
@@ -90,6 +90,7 @@ export async function research(
   let text = "";
   let error: string | undefined;
   let budget: string | undefined;
+  let providerDown: string | undefined;
   // set from event callbacks: keep TS from narrowing it to undefined
   let stopped = undefined as { status: "FAIL" | "BUDGET"; reason: string; cap?: "turns" } | undefined;
   let partialText = "";
@@ -124,7 +125,7 @@ export async function research(
     });
     try {
       // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
-      ({ text, error, budget } = await runRouted(session, prompt, models, ctx.provider.provider));
+      ({ text, error, budget, provider: providerDown } = await runRouted(session, prompt, models, ctx.provider.provider));
       // only a turn cap recovers: the worker read the code, so one no-tool prompt gets what it found (minute/cost caps are about spend)
       if (stopped?.cap === "turns") partialText = await partialAnswer(session);
     } finally {
@@ -147,12 +148,14 @@ export async function research(
   const recovered = stopped?.cap === "turns" && partialText ? verifyRepro(parseAnswer(partialText, root, scope, maxWords), ran) : undefined;
   let answer: Answer = recovered ? { ...recovered, partial: true }
     : stopped ? { status: stopped.status, answer: "", refs: [] }
+    : providerDown ? { status: "FAIL", answer: "", refs: [] }
     : budget ? { status: "BUDGET", answer: "", refs: [] }
     : error ? { status: "FAIL", answer: "", refs: [] }
     : verifyRepro(parseAnswer(text, root, scope, maxWords), ran) ?? { status: "FAIL", answer: "", refs: [] };
   // a path resolved by basename says so in the notes, so Claude learns the entry was approximate
   if (resolvedPaths.length) answer = { ...answer, answer: [...resolvedPaths, answer.answer].filter(Boolean).join("\n") };
   const reason = stopped?.reason
+    ?? (providerDown ? `provider down: ${providerDown}` : undefined)
     ?? budget
     ?? (error ? `worker error: ${error}` : answer.status === "FAIL" ? "the research worker gave no answer" : undefined);
   const final = models.current;
@@ -182,6 +185,7 @@ export async function research(
       write("result.txt", block + "\n");
     }
   }
+  if (answer.status === "ANSWER") gzipEvents(dir);
   return block;
 }
 

@@ -10,13 +10,13 @@ import type { Changed } from "./workspace.js";
  *   Then summary, changed, risks, review, the status's own sections, and `log:` last.
  * - Status sections (STATUS_SECTIONS): OK none · PARTIAL found, missing, worktree · FAIL error, found, tried, reason, worktree ·
  *   BLOCKED question {text, options ≤ 4} · CONFLICT conflict[], worktree · CANCELLED reason, worktree ·
- *   TIMEOUT found, reason, missing, worktree · BUDGET found, reason, worktree. `found` (a stopped worker's note, ≤ 600 chars) wraps, never cut.
+ *   TIMEOUT found, reason, missing, worktree · BUDGET found, reason, worktree · PROVIDER found, reason, worktree. `found` (a stopped worker's note, ≤ 600 chars) wraps, never cut.
  * - RUNNING is one line: `RUNNING <job> step=<steps> turns=<usage.turns>`.
  * - CONSENT has no job: `renderConsent` (used for research too). Research: `renderResearch` (D7). Batch: `renderBatch` (D6).
  * Paths in records are already repo-relative with forward slashes (builders use `normalisePath`).
  */
 
-export type JobStatus = "OK" | "PARTIAL" | "FAIL" | "BLOCKED" | "CONFLICT" | "RUNNING" | "CANCELLED" | "TIMEOUT" | "BUDGET";
+export type JobStatus = "OK" | "PARTIAL" | "FAIL" | "BLOCKED" | "CONFLICT" | "RUNNING" | "CANCELLED" | "TIMEOUT" | "BUDGET" | "PROVIDER";
 type Range = { path: string; start: number; end: number };
 
 /** The fields the renderer reads from a job record (the on-disk record, D10, is a superset). */
@@ -114,6 +114,7 @@ const STATUS_SECTIONS: Record<Exclude<JobStatus, "RUNNING">, Section[]> = {
   CANCELLED: ["reason", "worktree"],
   TIMEOUT: ["found", "reason", "missing", "worktree"],
   BUDGET: ["found", "reason", "worktree"],
+  PROVIDER: ["found", "reason", "worktree"],
 };
 // ticket 34: a batch block shows a settled job's action sections only (OK keeps risks:); every other status renders as today
 const COMPACT_SECTIONS: Partial<Record<Exclude<JobStatus, "RUNNING">, Section[]>> = {
@@ -122,8 +123,8 @@ const COMPACT_SECTIONS: Partial<Record<Exclude<JobStatus, "RUNNING">, Section[]>
   FAIL: ["error", "found", "tried", "reason", "worktree"],
 };
 // D6 urgency; CANCELLED is not ranked by the spec and sits with BUDGET/TIMEOUT
-const URGENCY: JobStatus[] = ["BLOCKED", "CONFLICT", "FAIL", "BUDGET", "TIMEOUT", "CANCELLED", "PARTIAL", "RUNNING", "OK"];
-const rank = (s: JobStatus) => (s === "TIMEOUT" || s === "CANCELLED" ? URGENCY.indexOf("BUDGET") : URGENCY.indexOf(s));
+const URGENCY: JobStatus[] = ["BLOCKED", "CONFLICT", "FAIL", "BUDGET", "PROVIDER", "TIMEOUT", "CANCELLED", "PARTIAL", "RUNNING", "OK"];
+const rank = (s: JobStatus) => (s === "PROVIDER" || s === "TIMEOUT" || s === "CANCELLED" ? URGENCY.indexOf("BUDGET") : URGENCY.indexOf(s));
 
 /** The summary a worker that never reported gets (src/worker.ts). */
 export const NO_SUMMARY = "(worker gave no summary)";
@@ -201,6 +202,7 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   if (has("found") && r.found && !lead) lines.push(...wrap(`found: ${oneLine(r.found)}`));
   if (has("tried") && r.tried?.length) lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
+  if (r.status === "PROVIDER") lines.push("next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)");
   if (has("missing") && r.missing.length) lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
   if (has("worktree") && r.worktree) lines.push(`worktree: ${r.worktree}/`);
   if (r.cleanupError) lines.push(`cleanup error: ${oneLine(r.cleanupError)} (the change landed; only its worktree folder was left behind)`);
