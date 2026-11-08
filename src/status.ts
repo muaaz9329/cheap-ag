@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +38,7 @@ export function status(args: string[]): number {
       : consent.provider !== provider ? `given for ${providerLabel(consent.provider)}, not the current provider; run /cheapag:allow`
       : routeMoved(root, consent) ? "given for other worker models (preset or models changed); run /cheapag:allow"
       : `${describe(consent)} (since ${consent.approvedAt.slice(0, 10)})`}`);
+    out(storageLine(root));
     const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
     const inFlight = (r: (typeof all)[number]) => r.status === "RUNNING" || r.status === "BLOCKED";
     const live = all.filter((r) => inFlight(r) && !!r.pid && isAlive(r.pid));
@@ -62,6 +63,59 @@ export function status(args: string[]): number {
     out(`  ${model}  ${windows.map((w) => `${w.window} $${w.spent.toFixed(2)}${w.capUsd ? `/$${w.capUsd.toFixed(2)} (${Math.round((w.spent / w.capUsd) * 100)}%)` : ""}`).join("  ")}`);
   }
   return 0;
+}
+
+const KB = 1024;
+const MB = 1024 * KB;
+const GB = 1024 * MB;
+
+/** `storage: <size> in .cheapag (n job folders, m worktrees)`, plus the clean hint once the folder passes 1GB. */
+function storageLine(root: string): string {
+  const state = join(root, ".cheapag");
+  const jobs = join(state, "jobs");
+  const trees = join(state, "worktrees");
+  let bytes = 0;
+  const walk = (path: string) => {
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch {
+      return;
+    }
+    // never follow symlinks: a worktree links dependency dirs, which are not its own storage
+    if (info.isSymbolicLink()) return;
+    if (info.isFile()) {
+      bytes += info.size;
+      return;
+    }
+    if (!info.isDirectory()) return;
+    let names: string[];
+    try {
+      names = readdirSync(path);
+    } catch {
+      return;
+    }
+    for (const name of names) walk(join(path, name));
+  };
+  walk(jobs);
+  walk(trees);
+  const folders = (dir: string) => {
+    try {
+      return readdirSync(dir).filter((name) => {
+        try {
+          return lstatSync(join(dir, name)).isDirectory();
+        } catch {
+          return false;
+        }
+      }).length;
+    } catch {
+      return 0;
+    }
+  };
+  const size = bytes >= GB ? `${(bytes / GB).toFixed(1)} GB`
+    : bytes >= MB ? `${(bytes / MB).toFixed(1)} MB`
+    : `${(bytes / KB).toFixed(1)} KB`;
+  return `storage: ${size} in .cheapag (${folders(jobs)} job folders, ${folders(trees)} worktrees)${bytes > GB ? " · run: npx cheap-agent clean" : ""}`;
 }
 
 /**

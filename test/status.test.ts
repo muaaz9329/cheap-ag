@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, ftruncateSync, mkdirSync, openSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { expect, onTestFinished, test } from "vitest";
@@ -51,6 +51,7 @@ test("cheapag status: running jobs, recent results newest first, consent, spend 
   expect(lines[0]).toBe(`cheapag ${version} provider=opencode-go preset=balanced`);
   expect(lines[1]).toMatch(/^consent: zero-retention only \(since \d{4}-\d\d-\d\d\)$/);
   expect(lines.slice(2)).toEqual([
+    expect.stringMatching(/^storage: [\d.]+ KB in \.cheapag \(5 job folders, 0 worktrees\)$/),
     "running:",
     "  RUNNING jrun1 step=1 turns=3",
     "  BLOCKED jwait step=1 files=0 +0/-0 tests=pass turns=3 cost=$0.010 waiting=25m",
@@ -74,20 +75,44 @@ test("cheapag status names the preset: the user's, a repo's cheapag.json over it
 });
 
 test("cheapag status says consent no longer covers the models after a preset change, as the next job would", () => {
-  const { repo, env, status } = setup({ "opencode-go": "k" });
+  const { repo, env, status } = setup({ openrouter: "k" });
   allowRepo(repo.dir, env);
   expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS.openrouter.strongest }));
   expect(status().split("\n")[1]).toBe("consent: given for other worker models (preset or models changed); run /cheapag:allow");
+});
+
+test("cheapag status on opencode-go keeps consent valid after a preset change (ticket 45)", () => {
+  const { repo, env, status } = setup({ "opencode-go": "k" });
+  allowRepo(repo.dir, env);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
 });
 
 test("cheapag status with no login, no jobs and no spend; outside a repository; bad arguments", () => {
   const { repo, env, status } = setup();
-  expect(status()).toBe(`cheapag ${version} provider=none (run npx cheap-agent login)\nconsent: not given; run /cheapag:allow\nrunning: none\nrecent: none\nspend: none tracked in the last 30 days\n`);
+  expect(status()).toBe(`cheapag ${version} provider=none (run npx cheap-agent login)\nconsent: not given; run /cheapag:allow\nstorage: 0.0 KB in .cheapag (0 job folders, 0 worktrees)\nrunning: none\nrecent: none\nspend: none tracked in the last 30 days\n`);
   const outside = join(repo.dir, ".git"); // inside .git, rev-parse --show-toplevel fails
   expect(status(outside)).toContain("repo: not a git repository (no jobs or consent here)\nspend: none");
   const r = spawnSync(process.execPath, [serverEntry, "status", "--x"], { cwd: repo.dir, env, encoding: "utf8" });
   expect([r.status, r.stdout]).toEqual([1, "✗ usage: cheapag status\n"]);
+});
+
+test("cheapag status shows the size of .cheapag and points to clean above 1GB", () => {
+  const { repo, env, status } = setup();
+  const jobs = join(repo.dir, ".cheapag", "jobs");
+  mkdirSync(join(jobs, "jbig1"), { recursive: true });
+  writeFileSync(join(jobs, "jbig1", "events.jsonl"), Buffer.alloc(2 * 1024 * 1024));
+  expect(status()).toContain("storage: 2.0 MB in .cheapag (1 job folders, 0 worktrees)");
+  expect(status()).not.toContain("run: npx cheap-agent clean");
+
+  const trees = join(repo.dir, ".cheapag", "worktrees");
+  mkdirSync(join(trees, "jbig1"), { recursive: true });
+  const fd = openSync(join(trees, "jbig1", "huge.bin"), "w");
+  ftruncateSync(fd, 2 * 1024 * 1024 * 1024);
+  closeSync(fd);
+  expect(status().split("\n").find((line) => line.startsWith("storage: ")))
+    .toMatch(/^storage: [\d.]+ GB in \.cheapag \(1 job folders, 1 worktrees\) · run: npx cheap-agent clean$/);
 });
 
 test("cheapag status shows the prefix of this repo's last Claude Code session, from its transcript", () => {
