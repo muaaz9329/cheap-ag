@@ -149,16 +149,19 @@ function opencodeConfig(provider: Provider, route: Route) {
       models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }])),
     });
   }
-  // a local server is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} reference
+  // a custom endpoint is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} or {env:} reference
   // OpenCode resolves itself, so the key is never in this config or in Cheap Agent's memory
   if (provider.provider === "local") {
     const local = localServer()!;
     const limit = local.context ? { limit: { context: local.context, output: local.output ?? Math.min(32_768, Math.floor(local.context / 4)) } } : {};
+    const apiKey = local.api_key_file ? `{file:${local.api_key_file}}` : local.api_key_env ? `{env:${local.api_key_env}}` : undefined;
+    // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
+    const cost = local.price ? { cost: { input: local.price.input, output: local.price.output } } : {};
     Object.assign(providerConfig, {
       npm: "@ai-sdk/openai-compatible",
-      name: "Local server",
-      options: { baseURL: local.base_url, ...(local.api_key_file && { apiKey: `{file:${local.api_key_file}}` }) },
-      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...(models[m.id] ?? {}) }])),
+      name: "Custom endpoint",
+      options: { baseURL: local.base_url, ...(apiKey && { apiKey }) },
+      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...(models[m.id] ?? {}) }])),
     });
   }
   const config = {

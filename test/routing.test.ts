@@ -346,8 +346,8 @@ test("commandcode presets: cheapest and balanced implement on Flash, strongest o
 
 // ---- opencode (Zen) presets and role defaults ----
 
-test("opencode (Zen) is listed last so login numbers 1-5 and Go's detection priority are unchanged", () => {
-  expect(PROVIDERS.map((p) => p.id)).toEqual(["opencode-go", "openrouter", "deepseek", "commandcode", "local", "opencode"]);
+test("opencode (Zen) is listed before the custom endpoint, after the hosted providers, so login numbers 1-4 and Go's detection priority are unchanged", () => {
+  expect(PROVIDERS.map((p) => p.id)).toEqual(["opencode-go", "openrouter", "deepseek", "commandcode", "opencode", "local"]);
 });
 
 test("opencode (Zen) presets: cheapest and balanced implement on Flash, strongest on GLM; roles default Flash with V4 Pro escalation and no Go-only fallback", () => {

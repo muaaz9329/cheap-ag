@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { localServer } from "./config.js";
+import { chosenProvider, localServer } from "./config.js";
 
 /**
  * Credentials come only from saved logins in OpenCode's store, written by `cheapag login` (ADR-0004). The local
@@ -14,8 +14,8 @@ export const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
   { id: "commandcode", label: "Command Code" },
-  { id: "local", label: "Local server" },
   { id: "opencode", label: "OpenCode Zen" },
+  { id: "local", label: "Custom endpoint" },
 ] as const;
 
 export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" | "config" };
@@ -50,14 +50,25 @@ export function localConfigured() {
 
 export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
 
-/** The provider the worker uses: a configured local server (set up on purpose, so it wins), else the first saved login. */
+/** Supported providers ready to use: saved logins, plus the custom endpoint when the user config names one; in detection order. */
+export function usableProviders(): Provider["provider"][] {
+  const saved = savedProviders();
+  return PROVIDERS.map((p) => p.id).filter((id) => (id === "local" ? localConfigured() : saved.includes(id)));
+}
+
+/**
+ * The provider the worker uses: the one `cheapag provider` picked, while it is still set up; else a configured custom
+ * endpoint (set up on purpose, so it wins), else the first saved login.
+ */
 export function detectProvider(): Provider | undefined {
+  const chosen = PROVIDERS.find((p) => p.id === chosenProvider())?.id;
+  if (chosen && usableProviders().includes(chosen)) return { provider: chosen, via: chosen === "local" ? "config" : "login" };
   if (localConfigured()) return { provider: "local", via: "config" };
   const [first] = savedProviders();
   return first && { provider: first, via: "login" };
 }
 
-/** Strips key-shaped strings (OpenRouter's sk-or-v1-…, DeepSeek/OpenAI-style sk-…) from anything that leaves the process. */
+/** Strips key-shaped strings (OpenRouter's sk-or-v1-…, DeepSeek/OpenAI-style sk-…, Cheaper Inference's ci_live_…) from anything that leaves the process. */
 export function redact(text: string) {
-  return text.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]");
+  return text.replace(/\b(?:sk-|ci_live_)[A-Za-z0-9_-]{16,}/g, "[redacted]");
 }

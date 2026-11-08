@@ -4,10 +4,11 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { loadConfig, localServer, userConfigFile, type LocalServer } from "./config.js";
+import { loadConfig, localServer, privateHost, userConfigFile, type LocalServer } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, OPENCODE_DB, opencodeBinary, stopOpencode } from "./opencode.js";
 import { runCli } from "./platform.js";
+import { select } from "./prompt.js";
 import { installPlugin, stableNode } from "./install.js";
 import { effectiveModels, fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig, type Preset } from "./routing.js";
 import { runSession } from "./worker.js";
@@ -72,13 +73,12 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   out("Cheap Agent login");
   const current = detectProvider();
   if (current) out(`Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`);
-  PROVIDERS.forEach((p, i) => out(`  ${i + 1}) ${p.label}${p.id === "local" ? " (any OpenAI-compatible URL: llama.cpp, Strata, Ollama, LM Studio, vLLM, LiteLLM)" : ""}`));
-  const answer = await ask(`Provider [1-${PROVIDERS.length}]: `);
-  const picked = PROVIDERS[Number(answer) - 1];
-  if (!picked) {
-    out(`✗ "${answer}" is not one of 1-${PROVIDERS.length}; nothing changed`);
-    return 1;
-  }
+  // arrow keys or a number, Enter picks; the provider in use starts highlighted
+  const picked = PROVIDERS[await select(
+    "Provider:",
+    PROVIDERS.map((p) => ({ label: p.label, hint: p.id === "local" ? "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)" : undefined })),
+    Math.max(0, PROVIDERS.findIndex((p) => p.id === current?.provider)),
+  )];
   if (picked.id === "local") {
     if (flag) out("--preset does not apply to a local server: its model is asked for below");
     if (!(await localLogin(out))) return 1;
@@ -87,12 +87,8 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     const preset = currentPreset(picked.id) ?? "balanced";
     let choice = flag ?? "";
     if (flag === undefined) {
-      out("Worker models:");
-      CHOICES.forEach((name, i) =>
-        out(`  ${i + 1}) ${name}${name === "balanced" ? " (recommended)" : name === "custom" ? " (set models yourself in cheapag.json)" : ""}`),
-      );
-      const answer = await ask(`Models [1-${CHOICES.length}, Enter = ${preset}]: `);
-      choice = answer ? (CHOICES[Number(answer) - 1] ?? answer) : preset;
+      const hint = (name: Choice) => (name === "balanced" ? "(recommended)" : name === "custom" ? "(set models yourself in cheapag.json)" : undefined);
+      choice = CHOICES[await select("Worker models:", CHOICES.map((name) => ({ label: name, hint: hint(name) })), CHOICES.indexOf(preset))];
     }
     if (!isChoice(choice)) {
       out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
@@ -108,6 +104,8 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     if (!savePreset(picked.id, choice, out) || !dropLocal(out, picked.label)) return 1;
   }
 
+  // another provider set up earlier would otherwise keep winning: point the user config at the one just logged in to
+  if (detectProvider()?.provider !== picked.id && !setUserKey("provider", picked.id, out)) return 1;
   const provider: Provider = { provider: picked.id, via: picked.id === "local" ? "config" : "login" };
   const check = await liveCheck(provider);
   out(check.ok ? `✓ ${check.line}` : `✗ ${check.line}`);
@@ -115,8 +113,6 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     const hint = regionHint(check.line);
     if (hint) out(hint);
   }
-  const active = detectProvider()!;
-  if (active.provider !== provider.provider) out(`Note: ${label(active.provider)} is also saved and is used first.`);
   if (!check.ok) return 1; // the login stays saved; fix the cause and run login again
 
   await register(out);
@@ -187,10 +183,14 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
   try {
     current = localServer();
   } catch {} // a damaged entry is replaced
-  out("e.g. llama.cpp http://127.0.0.1:8080/v1, Ollama http://127.0.0.1:11434/v1, LM Studio http://127.0.0.1:1234/v1");
+  out("e.g. llama.cpp http://127.0.0.1:8080/v1, Ollama http://127.0.0.1:11434/v1, or a gateway's https://…/v1");
   let base = ((await ask(`Server URL [Enter = ${current?.base_url ?? LOCAL_URL}]: `)) || current?.base_url || LOCAL_URL).replace(/\/+$/, "");
   if (!/^https?:\/\/\S+$/.test(base)) {
     out(`✗ "${base}" is not an http(s) URL; nothing changed`);
+    return false;
+  }
+  if (base.startsWith("http:") && !privateHost(base)) {
+    out(`✗ plain http to a public host would send code and key unencrypted; use https (plain http is only for this machine or a private network); nothing changed`);
     return false;
   }
   let listed = await listModels(base);
@@ -202,21 +202,28 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
   if (listed === "unreachable") out(`! ${base}/models did not answer; is the server running? Continuing, the live check will tell.`);
 
   const keep = current?.base_url === base ? current : undefined;
-  const keyAnswer = await ask(`API key file, if the server needs a key [Enter = ${keep?.api_key_file ?? "none"}, "none" to clear]: `);
-  const keyFile = keyAnswer === "none" ? undefined : keyAnswer ? keyAnswer.replace(/^~(?=$|[\\/])/, homedir()) : keep?.api_key_file;
-  if (keyFile !== undefined && (!isAbsolute(keyFile) || !existsSync(keyFile))) {
-    // not echoed: a key pasted here by mistake stays off the screen
-    out("✗ no such file: give the absolute path of a file holding only the key; nothing changed");
-    return false;
+  const keptKey = keep?.api_key_env ?? keep?.api_key_file;
+  const keyAnswer = await ask(`API key, if the endpoint needs one: an environment variable name (e.g. MY_GATEWAY_KEY) or a key file path [Enter = ${keptKey ?? "none"}, "none" to clear]: `);
+  let keyFile = keyAnswer ? undefined : keep?.api_key_file;
+  let keyEnv = keyAnswer ? undefined : keep?.api_key_env;
+  // upper case only: a key pasted here by mistake (mixed case) must never be saved as a variable name
+  if (/^[A-Z_][A-Z0-9_]{0,63}$/.test(keyAnswer)) {
+    keyEnv = keyAnswer;
+    // only whether it is set: its value is OpenCode's to read
+    if (!process.env[keyEnv]) out(`! ${keyEnv} is not set in this shell; set it where Claude Code starts, or jobs will fail with a key error`);
+  } else if (keyAnswer && keyAnswer !== "none") {
+    keyFile = keyAnswer.replace(/^~(?=$|[\\/])/, homedir());
+    if (!isAbsolute(keyFile) || !existsSync(keyFile)) {
+      // not echoed: a key pasted here by mistake stays off the screen
+      out("✗ not an environment variable name and no such file: give a variable name, or the absolute path of a file holding only the key; nothing changed");
+      return false;
+    }
   }
 
   let model: string | undefined;
   if (Array.isArray(listed) && listed.length) {
-    out("Models on this server:");
-    listed.forEach((id, i) => out(`  ${i + 1}) ${id}`));
     const fallback = keep && listed.includes(keep.model) ? keep.model : listed[0];
-    const answer = await ask(`Model [1-${listed.length} or an id, Enter = ${fallback}]: `);
-    model = answer ? (listed[Number(answer) - 1] ?? answer) : fallback;
+    model = listed[await select("Model:", listed.map((id) => ({ label: id })), listed.indexOf(fallback))];
   } else {
     if (listed === "auth") out("The server wants a key to list its models; type the model id instead.");
     model = (await ask(`Model id, as the server names it${keep ? ` [Enter = ${keep.model}]` : ""}: `)) || keep?.model;
@@ -236,7 +243,18 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
   }
   if (context === undefined) out("! Context window unknown: OpenCode cannot compact a long job before the server rejects it. Set local.context later if jobs fail on long sessions.");
 
-  const local: LocalServer = { base_url: base, model, ...(keyFile && { api_key_file: keyFile }), ...(context && { context }) };
+  const keptPrice = keep?.model === model ? keep.price : undefined;
+  const priceAnswer = await ask(`Price in USD per million tokens, input/output, for spend tracking and the cost cap [Enter = ${keptPrice ? `${keptPrice.input}/${keptPrice.output}` : "none"}]: `);
+  const priced = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(priceAnswer);
+  if (priceAnswer && !priced) {
+    out(`✗ "${priceAnswer}" is not input/output prices, e.g. 0.27/1.10; nothing changed`);
+    return false;
+  }
+  const price = priced ? { input: Number(priced[1]), output: Number(priced[2]) } : keptPrice;
+
+  const local: LocalServer = {
+    base_url: base, model, ...(keyFile && { api_key_file: keyFile }), ...(keyEnv && { api_key_env: keyEnv }), ...(context && { context }), ...(price && { price }),
+  };
   const file = userConfigFile();
   try {
     mkdirSync(dirname(file), { recursive: true });
@@ -245,7 +263,7 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
     out(`✗ ${file}: ${(err as Error).message}; local server not saved`);
     return false;
   }
-  out(`✓ Local server: ${model} at ${base}, saved in ${file}`);
+  out(`✓ Custom endpoint: ${model} at ${base}, saved in ${file}`);
   return true;
 }
 
@@ -286,13 +304,26 @@ async function contextOf(base: string, model: string): Promise<number | undefine
   return Number.isInteger(loaded) && loaded > 0 ? loaded : undefined;
 }
 
+/** Sets one key of the user config, other keys kept; undefined removes it. False (and said) when the file cannot be written. */
+export function setUserKey(key: string, value: unknown, out: (line?: string) => void) {
+  try {
+    const { [key]: _, ...rest } = readUser();
+    mkdirSync(dirname(userConfigFile()), { recursive: true });
+    writeFileSync(userConfigFile(), JSON.stringify(value === undefined ? rest : { ...rest, [key]: value }, null, 2) + "\n");
+    return true;
+  } catch (err) {
+    out(`✗ ${userConfigFile()}: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 /** After a login to a hosted provider: removes the user config's `local`, which would otherwise keep winning over it. */
 function dropLocal(out: (line?: string) => void, provider: string) {
   try {
     const { local, ...rest } = readUser();
     if (local === undefined) return true;
     writeFileSync(userConfigFile(), JSON.stringify(rest, null, 2) + "\n");
-    out(`✓ Local server setting removed from ${userConfigFile()}; ${provider} is used now`);
+    out(`✓ Custom endpoint setting removed from ${userConfigFile()}; ${provider} is used now`);
     return true;
   } catch (err) {
     out(`✗ ${userConfigFile()}: ${(err as Error).message}`);
@@ -301,7 +332,7 @@ function dropLocal(out: (line?: string) => void, provider: string) {
 }
 
 /** One tiny real call to the implement model the user's config now picks, through the bundled OpenCode, in a throwaway directory. */
-async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
+export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
   const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;
