@@ -34,25 +34,29 @@
 
 Works in Claude Code and Codex. One login covers both.
 
-### Claude Code
+### Let agent install
 
-**Easiest:** paste this into Claude Code. It asks what you want, then gives you one command to run.
+Copy this into Claude Code or Codex and let the agent take it from there. It asks what you want, sets things up, and gives you one command to run yourself, where you type your API key.
 
 ```text
 Set up Cheap Agent (npm: cheap-agent) for me.
-1. Ask me: which provider (OpenRouter recommended, DeepSeek, OpenCode Go, Command Code or OpenCode Zen), and which
-   models (balanced is the default; cheapest, strongest, or my own provider/model).
-2. Check that node is 20+ and the claude CLI is installed.
+1. Ask me which provider (OpenRouter recommended, DeepSeek, OpenCode Go, Command Code, OpenCode Zen,
+   or Custom endpoint for a local model or any OpenAI-compatible API) and which models
+   (balanced is the default; cheapest, strongest, or my own provider/model).
+2. Check that node is 20+, and whether I use Claude Code (claude CLI), Codex (codex CLI) or both.
 3. If I picked my own model, save {"models":{"implement":"<model>"}} in
    ~/.config/cheapag/config.json, keeping what else is there.
-4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice,
-   or custom>, and which provider to pick with the arrow keys or its number (1 OpenCode Go, 2 OpenRouter,
-   3 DeepSeek, 4 Command Code, 5 OpenCode Zen, 6 Custom endpoint). I run it and type my API key there. Never ask for my key.
-5. When I say done, check `claude mcp list` shows cheapag, then tell me to run
-   /cheapag:allow in a new Claude Code session in my project.
+4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice, or custom>,
+   and which provider to pick with the arrow keys or its number (1 OpenCode Go, 2 OpenRouter,
+   3 DeepSeek, 4 Command Code, 5 OpenCode Zen, 6 Custom endpoint). If I don't use Claude Code, tell me
+   to say no when it offers to add itself there. I run it and type my API key there. Never ask for my key.
+5. When I say done: for Claude Code, check `claude mcp list` shows cheapag. For Codex, run
+   `codex plugin marketplace add muaaz9329/cheap-ag` and `codex plugin add cheapag@cheap-agent`.
+6. Tell me to open a new session in my project and run /cheapag:allow in Claude Code, or
+   $cheapag:allow in Codex (trusting the 3 cheapag hooks when it asks).
 ```
 
-**Or do it yourself:**
+### Claude Code
 
 ```bash
 npx cheap-agent
@@ -94,17 +98,71 @@ $cheapag:allow
 
 **That's it.** Ask Codex for changes like you always do.
 
-**You need:**
+### Supported providers
+
+| # | Provider | Get a key | Good to know |
+|---|---|---|---|
+| 1 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
+| 2 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
+| 3 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
+| 4 | Command Code | [commandcode.ai](https://commandcode.ai) | Needs a plan with API access. |
+| 5 | OpenCode Zen | [opencode.ai/zen](https://opencode.ai/zen) | Pay-as-you-go. |
+| 6 | Custom endpoint | Your own, if it needs one | A local model or any OpenAI-compatible API. [How](#local-model-or-your-own-endpoint) |
+
+The number is what you press at login. Log in to more than one and switch any time with `/cheapag:provider`.
+
+### Local model or your own endpoint
+
+Not on the list above? Run `npx cheap-agent login` and pick **Custom endpoint**. It works with anything that speaks the OpenAI API: llama.cpp, Ollama, LM Studio, vLLM, LiteLLM, Azure, or a vendor's API. It asks for:
+
+- **URL**, e.g. `http://127.0.0.1:11434/v1` for Ollama. Plain `http` only works on this machine or your own network.
+- **API key**, only if the endpoint needs one: the name of an environment variable, or a file, that holds it. Cheap Agent never reads the key itself.
+- **Model**, picked from the endpoint's list.
+- **Context window and prices**, both optional. Without prices, cost shows $0.
+
+The model has to be good at tool calls; small local models often aren't. If jobs time out on a slow machine, raise `limits.max_minutes` (default 20).
+
+### You need
+
 - [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex)
 - [Node.js](https://nodejs.org) 20+
-- An API key with a few dollars on it from [OpenRouter](https://openrouter.ai/keys), [DeepSeek](https://platform.deepseek.com), [OpenCode Go](https://opencode.ai), [OpenCode Zen](https://opencode.ai/zen) (pay-as-you-go) or [Command Code](https://commandcode.ai) (Command Code needs a plan with API access; OpenCode Go needs Regions set to Global in its console for the DeepSeek models). Or any OpenAI-compatible endpoint, including a model on your own machine with no key at all: [custom endpoint](#use-any-openai-compatible-endpoint).
+- An API key with a few dollars on it from one of the [supported providers](#supported-providers), or a local model with no key at all. A few dollars lasts hundreds of tasks.
 
-A few dollars lasts hundreds of tasks. It runs on macOS, Linux and Windows.
+It runs on macOS, Linux and Windows.
 
 **Windows:** you also need [Git for Windows](https://git-scm.com/downloads/win) (Git Bash). Known so far:
 - The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
 - If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
 - The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
+
+## Commands
+
+| Claude Code | Codex | What it does |
+|---|---|---|
+| `/cheapag:allow` | `$cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
+| `/cheapag:status` | `$cheapag:status` | Recent jobs, and what the cheap model has cost you. |
+| `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
+| `/cheapag:clean` | `$cheapag:clean` | Tidy up old job folders. |
+| `/cheapag:model` | `$cheapag:model` | Pick the worker's main and fallback models, each with an effort. |
+| `/cheapag:provider` | `$cheapag:provider` | Switch to another provider you've already logged in to, with no key prompt. This project's consent moves with it, and you see what it now covers. If the new provider fails its check, nothing changes. Add a new provider with `npx cheap-agent login`. |
+
+While a job runs, Claude Code shows the worker's latest step under the tool call, and Codex shows it each time it checks in (about every 15 seconds). To follow every step in a second terminal, run `npx cheap-agent watch`.
+
+## Settings
+
+Optional. Put a `cheapag.json` in a project:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `takeover` | `"ask"` | What happens when the cheap model couldn't finish a step. `"ask"`: Claude asks you first, so nothing is spent without your choice. `"sonnet"`: a Sonnet helper takes over automatically, often several hundred thousand Claude tokens on a hard task. `"self"`: Claude does it, capped at 15 tool calls (`limits.takeover_calls`). Claude Code only; Codex asks in chat (`"ask"`) or finishes it itself. |
+| `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
+| `limits.repro_by_turns` | `30` | A bug-fix step that has edited nothing by this turn is stopped early (×2 medium, ×3 hard). The default lands past the 25-turn cap, so by default the worker runs to its cap; set it lower to stop sooner. |
+| `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
+| `retention` | `{ "unlanded_worktree_days": 2, "job_log_days": 7 }` | Days cleanup keeps an unlanded worktree and a job's log folder. It runs at server start and every hour. |
+
+## Orchestrators and git worktrees
+
+Cheap Agent works in the repository your session started in. If one session runs several tasks, each in its own git worktree (an orchestrator handing tickets to subagents, say), pass `root` with the worktree's absolute path on `delegate`, `research`, `jobs`, `land` and `reply`. Jobs then run, land and keep their records in that worktree, and the session's own checkout is untouched. Each worktree needs its own consent (`/cheapag:allow` there, or a copied `.cheapag/consent.json`). Without `root`, nothing changes.
 
 ---
 
@@ -153,10 +211,6 @@ Cheap Agent shines on the work in between: real features and real fixes in real 
 
 Opus wrote one task. The cheap model did the rest, tests included.
 
-## Built with itself
-
-Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent. Claude found the problems and wrote the plans. The cheap model wrote the code in 30 jobs for **$0.29 in total**, Sonnet helpers finished what it couldn't and read OpenCode's source to find the two Windows-only bugs, and the full test suite now passes on Linux and Windows.
-
 ## How it works
 
 <p align="center">
@@ -166,58 +220,6 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 - **Every change is proven.** The cheap model must write a test that fails before its fix and passes after. Cheap Agent runs the tests itself; it doesn't take the model's word for it.
 - **Your project stays clean.** Work happens in a private copy (a git worktree). Only work that passes its checks lands; a reproduction the server could not verify lands with a risk note. It lands uncommitted, so you review the diff like any other.
 - **Your frontier model stays in charge,** but it's held to it: Cheap Agent's hooks stop it from quietly redoing work that already passed, or (in Claude Code) doing a failed step itself when Sonnet can.
-
-## Commands
-
-| Claude Code | Codex | What it does |
-|---|---|---|
-| `/cheapag:allow` | `$cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
-| `/cheapag:status` | `$cheapag:status` | Recent jobs, and what the cheap model has cost you. |
-| `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
-| `/cheapag:clean` | `$cheapag:clean` | Tidy up old job folders. |
-| `/cheapag:model` | `$cheapag:model` | Pick the worker's main and fallback models, each with an effort. |
-| `/cheapag:provider` | `$cheapag:provider` | Switch to another provider you've already logged in to, with no key prompt. This project's consent moves with it, and you see what it now covers. If the new provider fails its check, nothing changes. Add a new provider with `npx cheap-agent login`. |
-
-While a job runs, Claude Code shows the worker's latest step under the tool call, and Codex shows it each time it checks in (about every 15 seconds). To follow every step in a second terminal, run `npx cheap-agent watch`.
-
-## Settings
-
-Optional. Put a `cheapag.json` in a project:
-
-| Setting | Default | What it does |
-|---|---|---|
-| `takeover` | `"ask"` | What happens when the cheap model couldn't finish a step. `"ask"`: Claude asks you first, so nothing is spent without your choice. `"sonnet"`: a Sonnet helper takes over automatically, often several hundred thousand Claude tokens on a hard task. `"self"`: Claude does it, capped at 15 tool calls (`limits.takeover_calls`). Claude Code only; Codex asks in chat (`"ask"`) or finishes it itself. |
-| `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
-| `limits.repro_by_turns` | `30` | A bug-fix step that has edited nothing by this turn is stopped early (×2 medium, ×3 hard). The default lands past the 25-turn cap, so by default the worker runs to its cap; set it lower to stop sooner. |
-| `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
-| `retention` | `{ "unlanded_worktree_days": 2, "job_log_days": 7 }` | Days cleanup keeps an unlanded worktree and a job's log folder. It runs at server start and every hour. |
-
-## Orchestrators and git worktrees
-
-Cheap Agent works in the repository your session started in. If one session runs several tasks, each in its own git worktree (an orchestrator handing tickets to subagents, say), pass `root` with the worktree's absolute path on `delegate`, `research`, `jobs`, `land` and `reply`. Jobs then run, land and keep their records in that worktree, and the session's own checkout is untouched. Each worktree needs its own consent (`/cheapag:allow` there, or a copied `.cheapag/consent.json`). Without `root`, nothing changes.
-
-## Use any OpenAI-compatible endpoint
-
-The worker can run on any OpenAI-compatible API: your own server (llama.cpp's `llama-server`, Strata, Ollama, LM Studio, vLLM), a gateway (LiteLLM, Azure), or a vendor's API. Run `npx cheap-agent login` and pick **Custom endpoint**. It asks for:
-
-- **The URL**, e.g. `http://127.0.0.1:8080/v1` (llama.cpp), `http://127.0.0.1:11434/v1` (Ollama), or a gateway's `https://…/v1`. A bare host gets `/v1` added when that is where the API answers. Plain `http` only works for this machine or a private network; anything else needs `https`.
-- **The API key**, only if the endpoint checks one. Give the name of an environment variable that holds it (e.g. `MY_GATEWAY_KEY`, set where Claude Code starts), or the path to a file that holds just the key. OpenCode reads it; Cheap Agent never does, and the key never lands in a config.
-- **The model**, picked from the endpoint's own list.
-- **The context window** a single request gets. It's detected from llama.cpp (split across its parallel slots) and LM Studio. Set it, so OpenCode can compact a long job before the endpoint rejects it.
-- **Prices**, optional: input/output in USD per million tokens (e.g. `0.27/1.10`). Without them, spend tracking and the job cost cap see $0.
-
-It's saved as `local` in `~/.config/cheapag/config.json`, and only there: a repo's `cheapag.json` can't point the worker at another endpoint. While it's set, it's used even if you're also logged in to a hosted provider. Logging in to a hosted provider removes it.
-
-```json
-{ "local": { "base_url": "https://gateway.example.com/v1", "model": "deepseek-v4.1-flash", "api_key_env": "MY_GATEWAY_KEY", "context": 131072, "price": { "input": 0.27, "output": 1.1 } } }
-```
-
-`"api_key_file": "/home/me/.config/llama.key"` takes the key from a file instead of `api_key_env`. `"output"` sets the most tokens per reply, when `"context"` is set (default: a quarter of the context, at most 32k). There are no fallbacks and no stronger model to escalate to, unless `models.escalation` names one on the same server (`"local/<id>"`, e.g. a second model behind LiteLLM). `models.medium` and `models.hard` work the same way.
-
-Things to know:
-- **The model has to be good at tool calls.** The worker reads, edits, runs tests and must call `finish`. Small models often can't. A model that does well on agentic coding benchmarks is the minimum.
-- **A local server is slower.** Raise `limits.max_minutes` (default 20) if jobs time out. With one slot on the server, set `limits.max_parallel` to `1` so batch steps don't queue behind each other.
-- **Consent still applies.** `/cheapag:allow` shows the endpoint URL, and asks again if the URL changes. A gateway may forward code to another provider; that's up to its config and terms.
 
 ## FAQ
 
