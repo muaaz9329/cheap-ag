@@ -98,30 +98,6 @@ $cheapag:allow
 
 **That's it.** Ask Codex for changes like you always do.
 
-### Supported providers
-
-| # | Provider | Get a key | Good to know |
-|---|---|---|---|
-| 1 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
-| 2 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
-| 3 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
-| 4 | Command Code | [commandcode.ai](https://commandcode.ai) | Needs a plan with API access. |
-| 5 | OpenCode Zen | [opencode.ai/zen](https://opencode.ai/zen) | Pay-as-you-go. |
-| 6 | Custom endpoint | Your own, if it needs one | A local model or any OpenAI-compatible API. [How](#local-model-or-your-own-endpoint) |
-
-The number is what you press at login. Log in to more than one and switch any time with `/cheapag:provider`.
-
-### Local model or your own endpoint
-
-Not on the list above? Run `npx cheap-agent login` and pick **Custom endpoint**. It works with anything that speaks the OpenAI API: llama.cpp, Ollama, LM Studio, vLLM, LiteLLM, Azure, or a vendor's API. It asks for:
-
-- **URL**, e.g. `http://127.0.0.1:11434/v1` for Ollama. Plain `http` only works on this machine or your own network.
-- **API key**, only if the endpoint needs one: the name of an environment variable, or a file, that holds it. Cheap Agent never reads the key itself.
-- **Model**, picked from the endpoint's list.
-- **Context window and prices**, both optional. Without prices, cost shows $0.
-
-The model has to be good at tool calls; small local models often aren't. If jobs time out on a slow machine, raise `limits.max_minutes` (default 20).
-
 ### You need
 
 - [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex)
@@ -134,6 +110,19 @@ It runs on macOS, Linux and Windows.
 - The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
 - If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
 - The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
+
+## Supported providers
+
+| # | Provider | Get a key | Good to know |
+|---|---|---|---|
+| 1 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
+| 2 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
+| 3 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
+| 4 | Command Code | [commandcode.ai](https://commandcode.ai) | Needs a plan with API access. |
+| 5 | OpenCode Zen | [opencode.ai/zen](https://opencode.ai/zen) | Pay-as-you-go. |
+| 6 | Custom endpoint | Your own, if it needs one | A local model or any OpenAI-compatible API. [How](#local-model-or-your-own-endpoint) |
+
+The number is what you press at login. Log in to more than one and switch any time with `/cheapag:provider`.
 
 ## Commands
 
@@ -159,6 +148,17 @@ Optional. Put a `cheapag.json` in a project:
 | `limits.repro_by_turns` | `30` | A bug-fix step that has edited nothing by this turn is stopped early (×2 medium, ×3 hard). The default lands past the 25-turn cap, so by default the worker runs to its cap; set it lower to stop sooner. |
 | `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
 | `retention` | `{ "unlanded_worktree_days": 2, "job_log_days": 7 }` | Days cleanup keeps an unlanded worktree and a job's log folder. It runs at server start and every hour. |
+
+## Local model or your own endpoint
+
+Not in the list of providers? Run `npx cheap-agent login` and pick **Custom endpoint**. It works with anything that speaks the OpenAI API: llama.cpp, Ollama, LM Studio, vLLM, LiteLLM, Azure, or a vendor's API. It asks for:
+
+- **URL**, e.g. `http://127.0.0.1:11434/v1` for Ollama. Plain `http` only works on this machine or your own network.
+- **API key**, only if the endpoint needs one: the name of an environment variable, or a file, that holds it. Cheap Agent never reads the key itself.
+- **Model**, picked from the endpoint's list.
+- **Context window and prices**, both optional. Without prices, cost shows $0.
+
+The model has to be good at tool calls; small local models often aren't. If jobs time out on a slow machine, raise `limits.max_minutes` (default 20).
 
 ## Orchestrators and git worktrees
 
