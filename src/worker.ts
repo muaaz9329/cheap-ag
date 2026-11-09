@@ -87,8 +87,8 @@ export async function openSession(opts: {
 
       const variant = (model ?? opts.model).variant;
       const prompted = await client.session.promptAsync({
-        // the agent on every prompt, not just at create: a forked session (rotate) must keep the worker's rules
-        sessionID, directory, agent: opts.agent ?? WORKER_AGENT, parts: [{ type: "text", text: prompt }],
+        // OpenCode ignores the agent given at session.create, so every bench before 1.3.3 ran OpenCode's built-in build agent; passing ours on each prompt made the worker slower on bug fixes (ticket 63), so prompts carry no agent
+        sessionID, directory, parts: [{ type: "text", text: prompt }],
         ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
         ...(variant && { variant }),
       });

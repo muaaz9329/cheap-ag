@@ -151,6 +151,7 @@ test("a single step runs in a worktree and lands OK, uncommitted, with the resul
   const [session] = fake.recorded.sessions;
   expect(session.directory).toBe(join(repo.dir, ".cheapag", "worktrees", job));
   expect(session).toMatchObject({ agent: "cheapag-worker", model: { providerID: "opencode-go", id: "deepseek-v4.1-flash" } });
+  expect(fake.recorded.prompts.every((p) => p.agent === undefined)).toBe(true);
   expect(existsSync(session.directory)).toBe(false);
   // the instance for the worktree's directory is disposed before the worktree is removed
   expect(fake.recorded.disposed).toContain(join(repo.dir, ".cheapag", "worktrees", job));
