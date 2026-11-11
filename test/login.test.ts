@@ -21,7 +21,7 @@ const KEY = "sk-or-v1-loginTESTkey0123456789abcdef";
 // the terminal-driven tests need python3 and a pty, which Windows lacks; the launcher and win32 generation tests still run there
 const tty = test.skipIf(process.platform === "win32");
 
-async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object; plugin?: "installed" | "fails"; cmd?: string[]; registeredCommand?: string[]; steps?: { expect: string; send: string }[] }) {
+async function runLogin(opts: { claude: "registered" | "local" | "unregistered" | "absent"; register?: "y" | "n"; check?: Action[]; logins?: Logins; path?: string[]; preset?: string; args?: string[]; config?: object; env?: Record<string, string>; plugin?: "installed" | "fails"; cmd?: string[]; registeredCommand?: string[]; steps?: { expect: string; send: string }[] }) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   fake.script(...(opts.check ?? [{ usage: { cost: 0.0001 } }]));
@@ -61,16 +61,19 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
       writeFileSync(join(bin, "claude.cmd"), cmd.join("\r\n") + "\r\n");
     }
   }
+  // Ollama is listed first, so OpenRouter is number 3 in the provider menu
   const steps = opts.steps ?? [
-    { expect: "Provider", send: "2\r" },
+    { expect: "Provider", send: "3\r" },
     ...(opts.args ? [] : [{ expect: "Workermodels", send: `${opts.preset ?? ""}\r` }]),
     { expect: "EnteryourAPIkey", send: `${KEY}\r` },
     ...(opts.register ? [{ expect: "Y/n", send: `${opts.register}\r` }] : []),
   ];
+  // "absent" must really mean absent: the node directory can hold the developer's own claude, so it is left off then
+  const binDirs = [bin, ...(opts.path ?? []), ...(opts.claude === "absent" ? [] : [dirname(process.execPath)]), "/usr/bin", "/bin"];
   const spec = {
     cmd: opts.cmd ?? [process.execPath, serverEntry, "login", ...(opts.args ?? [])],
     cwd: home,
-    env: { ...env, CHEAPAG_OPENCODE_URL: fake.url, PATH: [bin, ...(opts.path ?? []), dirname(process.execPath), "/usr/bin", "/bin"].join(":"), TERM: "xterm" },
+    env: { ...env, ...opts.env, CHEAPAG_OPENCODE_URL: fake.url, PATH: binDirs.join(":"), TERM: "xterm" },
     steps,
     timeout: 60,
   };
@@ -158,7 +161,7 @@ tty("a config with custom models is left alone by the migration", async () => {
     claude: "registered",
     config: { models: { implement: "opencode-go/kimi-k3" } },
     steps: [
-      { expect: "Provider", send: "1\r" },
+      { expect: "Provider", send: "2\r" }, // OpenCode Go
       { expect: "Workermodels", send: "\r" },
       { expect: "EnteryourAPIkey", send: `${KEY}\r` },
     ],
@@ -358,7 +361,7 @@ tty("a local server: login finds /v1 under the bare URL, lists its models, detec
     claude: "registered",
     config: { models: PRESETS.openrouter.balanced },
     steps: [
-      { expect: "Provider", send: "6\r" },
+      { expect: "Provider", send: "7\r" },
       { expect: "ServerURL", send: `${url}\r` },
       { expect: "APIkey,if", send: "\r" },
       { expect: "Model:", send: "2\r" },
@@ -367,7 +370,7 @@ tty("a local server: login finds /v1 under the bare URL, lists its models, detec
     ],
   });
   expect(r.exit).toBe("EXIT 0");
-  expect(r.output).toContain("6) Custom endpoint  (any OpenAI-compatible URL");
+  expect(r.output).toContain("7) Custom endpoint  (any OpenAI-compatible URL");
   expect(r.output).toContain("❯ 1) bonsai-9b-mtp");
   expect(r.output).toContain("Model: qwen3.6-35b-a3b");
   expect(r.output).toContain("Context window in tokens (detected) [Enter = 65536]");
@@ -383,7 +386,7 @@ tty("a local server's key file must exist; it is saved as a path, never read", a
   const r = await runLogin({
     claude: "registered",
     steps: [
-      { expect: "Provider", send: "6\r" },
+      { expect: "Provider", send: "7\r" },
       { expect: "ServerURL", send: `${url}/v1\r` },
       { expect: "APIkey,if", send: "/nonexistent/llama.key\r" },
     ],
@@ -391,6 +394,76 @@ tty("a local server's key file must exist; it is saved as a path, never read", a
   expect(r.exit).toBe("EXIT 1");
   expect(r.output).toContain("✗ not an environment variable name and no such file");
   expect(r.output.split("/nonexistent/llama.key").length).toBe(2); // only the typed echo, never repeated
+  expect(r.config).toBeUndefined();
+}, slow(60_000));
+
+/** A stand-in Ollama: `/api/tags` + `/api/show` for this machine, `/v1/models` for the cloud (it authenticates nothing). */
+async function ollamaDaemon() {
+  const http = createServer(async (req, res) => {
+    if (req.url === "/api/tags") return res.end(JSON.stringify({ models: [{ name: "qwen3:8b" }, { name: "llama3.2:latest" }] }));
+    if (req.url === "/api/show") {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const { model } = JSON.parse(raw);
+      return res.end(JSON.stringify({ model_info: model === "qwen3:8b" ? { "qwen3.context_length": 32768 } : {} }));
+    }
+    if (req.url === "/v1/models") return res.end(JSON.stringify({ data: [{ id: "deepseek-v4.1-flash:cloud" }, { id: "glm-5.3:cloud" }] }));
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  onTestFinished(() => void http.close());
+  return `http://127.0.0.1:${(http.address() as { port: number }).port}`;
+}
+
+tty("Ollama on this machine: login takes no key, lists the pulled models, and saves the one picked", async () => {
+  const url = await ollamaDaemon();
+  const r = await runLogin({
+    claude: "registered",
+    steps: [
+      { expect: "Provider", send: "1\r" },
+      { expect: "Ollamaendpoint", send: "\r" }, // This machine, highlighted
+      { expect: "OllamaURL", send: `${url}\r` },
+      { expect: "Model:", send: "2\r" }, // qwen3:8b, with the context /api/show reports
+    ],
+  });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.output).toContain(`✓ Ollama on this machine: qwen3:8b at ${url}/v1`);
+  expect(r.config).toEqual({ ollama: { endpoint: "local", base_url: `${url}/v1`, model: "qwen3:8b", context: 32768 } });
+  expect(r.saved).toEqual([]); // nothing in OpenCode's credential store
+  expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "ollama", id: "qwen3:8b" });
+  expect(r.output).toContain("✓ ollama/qwen3:8b answered");
+}, slow(90_000));
+
+tty("Ollama Cloud: login needs OLLAMA_API_KEY, reuses the saved endpoint, and writes the preset", async () => {
+  const url = await ollamaDaemon();
+  const r = await runLogin({
+    claude: "registered",
+    env: { OLLAMA_API_KEY: "cloud-key-0123456789" },
+    config: { ollama: { endpoint: "cloud", base_url: `${url}/v1` } },
+    steps: [
+      { expect: "Provider", send: "1\r" },
+      { expect: "Ollamaendpoint", send: "\r" }, // Ollama Cloud, highlighted from the saved endpoint
+      { expect: "Workermodels", send: "\r" }, // balanced
+    ],
+  });
+  expect(r.exit).toBe("EXIT 0");
+  expect(r.config).toEqual({ ollama: { endpoint: "cloud", base_url: `${url}/v1`, api_key_env: "OLLAMA_API_KEY" }, preset: "balanced" });
+  expect(r.saved).toEqual([]); // the key stays in the environment, never in a store
+  expect(r.fake.recorded.sessions[0].model).toEqual({ providerID: "ollama", id: "deepseek-v4.1-flash:cloud" });
+  expect(r.output).toContain("! Ollama Cloud does not list glm-5.3-flash:cloud, qwen3.7-plus:cloud, qwen3.8-flash:cloud");
+  expect(r.output).toContain("✓ Ollama Cloud: key from OLLAMA_API_KEY");
+}, slow(90_000));
+
+tty("Ollama Cloud with no OLLAMA_API_KEY says how to set it and changes nothing", async () => {
+  const r = await runLogin({
+    claude: "registered",
+    steps: [
+      { expect: "Provider", send: "1\r" },
+      { expect: "Ollamaendpoint", send: "2\r" }, // Ollama Cloud, with no key set
+    ],
+  });
+  expect(r.exit).toBe("EXIT 1");
+  expect(r.output).toContain("✗ OLLAMA_API_KEY is not set in this shell; create a key at ollama.com, export it where Claude Code starts, then run npx cheap-agent login again; nothing changed");
   expect(r.config).toBeUndefined();
 }, slow(60_000));
 

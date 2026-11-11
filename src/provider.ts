@@ -79,7 +79,7 @@ export async function provider(args: string[]): Promise<number> {
     }
   }
 
-  const check = await liveCheck({ provider: target, via: target === "local" ? "config" : "login" } as Provider);
+  const check = await liveCheck({ provider: target, via: target === "local" || target === "ollama" ? "config" : "login" } as Provider);
   if (!check.ok) {
     rollBack();
     out(`✗ ${check.line}`);

@@ -43,7 +43,8 @@ export function hermeticHome(logins: Logins = {}) {
 
 /** The CLI env for a hermetic home, e.g. a running server's, to run `allow` or `login` beside it. */
 export function homeEnv(home: string) {
-  const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
+  // OLLAMA_API_KEY alone is an implicit Ollama Cloud opt-in, so a developer's key would change every detection test
+  const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, OLLAMA_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
   return {
     ...inherited,
     XDG_DATA_HOME: join(home, "data"),

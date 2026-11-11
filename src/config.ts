@@ -49,6 +49,28 @@ export type LocalServer = {
   price?: { input: number; output: number };
 };
 
+/**
+ * Ollama, one provider id with two endpoints (issue #27): a local server that needs no key, or Ollama Cloud at
+ * ollama.com, whose key comes from an environment variable. `model` is the local endpoint's model (there is no
+ * catalog to default from); the cloud endpoint uses the provider's role defaults and presets.
+ */
+export type OllamaConfig = {
+  endpoint: "local" | "cloud";
+  /** Local endpoint only: the model to run, e.g. "llama3.2". */
+  model?: string;
+  base_url: string;
+  /** Cloud endpoint only: the variable OpenCode reads the key from (default OLLAMA_API_KEY). */
+  api_key_env?: string;
+  context?: number;
+  output?: number;
+  price?: { input: number; output: number };
+};
+
+const OLLAMA_URLS = { local: "http://127.0.0.1:11434/v1", cloud: "https://ollama.com/v1" } as const;
+export const OLLAMA_KEY_ENV = "OLLAMA_API_KEY";
+export const OLLAMA_LOCAL_URL = OLLAMA_URLS.local;
+export const OLLAMA_CLOUD_URL = OLLAMA_URLS.cloud;
+
 /** Whether a URL's host is this machine or a private network (where plain http is fine): loopback, RFC 1918, CGNAT, link-local, *.local, single-label names and home LAN suffixes. */
 export function privateHost(url: string) {
   let host: string;
@@ -105,6 +127,50 @@ function parseLocal(local: unknown, file: string): LocalServer {
   };
 }
 
+function parseOllama(raw: unknown, file: string): OllamaConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${file}: ollama must be an object`);
+  const { endpoint, model, base_url, api_key_env, context, output, price } = raw as Record<string, unknown>;
+  if (endpoint !== "local" && endpoint !== "cloud") throw new Error(`${file}: ollama.endpoint must be "local" or "cloud"`);
+  const defaults = OLLAMA_URLS[endpoint];
+  const base = base_url === undefined ? defaults : base_url;
+  if (typeof base !== "string" || !/^https?:\/\/\S+$/.test(base)) throw new Error(`${file}: ollama.base_url must be an http(s) URL, e.g. ${defaults}`);
+  if (base.startsWith("http:") && !privateHost(base)) throw new Error(`${file}: ollama.base_url with plain http must be this machine or a private network; use https`);
+  if (endpoint === "local" && (typeof model !== "string" || !model.trim())) throw new Error(`${file}: ollama.model must be the local server's model id, e.g. "llama3.2"`);
+  if (model !== undefined && (typeof model !== "string" || !model.trim())) throw new Error(`${file}: ollama.model must be a model id`);
+  const keyEnv = api_key_env ?? (endpoint === "cloud" ? OLLAMA_KEY_ENV : undefined);
+  if (keyEnv !== undefined && (typeof keyEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv))) throw new Error(`${file}: ollama.api_key_env must be an environment variable name, e.g. ${OLLAMA_KEY_ENV}`);
+  const p = price as { input?: unknown; output?: unknown } | undefined;
+  if (p !== undefined && (typeof p !== "object" || p === null || ![p.input, p.output].every((v) => typeof v === "number" && v >= 0))) throw new Error(`${file}: ollama.price must be { "input": <USD per million tokens>, "output": <USD per million tokens> }`);
+  for (const [key, v] of [["context", context], ["output", output]] as const) {
+    if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v <= 0)) throw new Error(`${file}: ollama.${key} must be a positive whole number of tokens`);
+  }
+  return {
+    endpoint, base_url: base.replace(/\/+$/, ""), ...(model !== undefined && { model: (model as string).trim() }),
+    ...(keyEnv !== undefined && { api_key_env: keyEnv }),
+    ...(p !== undefined && { price: { input: p.input as number, output: p.output as number } }),
+    ...(context !== undefined && { context: context as number }), ...(output !== undefined && { output: output as number }),
+  };
+}
+
+/** The user config's Ollama endpoint, undefined when none is set; throws on a damaged entry. */
+export function ollamaConfig(): OllamaConfig | undefined {
+  const file = userConfigFile();
+  if (!existsSync(file)) return undefined;
+  const value = JSON.parse(readFileSync(file, "utf8")) as { ollama?: unknown };
+  return value?.ollama === undefined ? undefined : parseOllama(value.ollama, file);
+}
+
+/**
+ * The endpoint the worker uses: the configured `ollama` block, else Ollama Cloud when OLLAMA_API_KEY is set (the key
+ * alone is an implicit opt-in). Undefined when neither; a damaged entry throws, as `localServer` does.
+ */
+export function ollamaEndpoint(): OllamaConfig | undefined {
+  const configured = ollamaConfig();
+  if (configured) return configured;
+  if (!process.env[OLLAMA_KEY_ENV]) return undefined;
+  return { endpoint: "cloud", base_url: OLLAMA_URLS.cloud, api_key_env: OLLAMA_KEY_ENV };
+}
+
 export function loadConfig(root: string): Config {
   const [mine, repo] = [read(userConfigFile()), read(join(root, "cheapag.json"))];
   // caps, retention and models merge key by key, so a repo can set one and keep the user's others
@@ -131,7 +197,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local, preset, provider } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local, ollama, preset, provider } = value as Record<string, unknown>;
   if (provider !== undefined) {
     if (file !== userConfigFile()) throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
     if (typeof provider !== "string") throw new Error(`${file}: provider must be a provider id, e.g. opencode-go; switch with cheapag provider`);
@@ -139,6 +205,10 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   if (local !== undefined) {
     if (file !== userConfigFile()) throw new Error(`${file}: local can only be set in ${userConfigFile()}, never in a repo`);
     parseLocal(local, file);
+  }
+  if (ollama !== undefined) {
+    if (file !== userConfigFile()) throw new Error(`${file}: ollama can only be set in ${userConfigFile()}, never in a repo`);
+    parseOllama(ollama, file);
   }
   if (preset !== undefined) {
     if (file !== userConfigFile()) throw new Error(`${file}: preset can only be set in ${userConfigFile()}`);
