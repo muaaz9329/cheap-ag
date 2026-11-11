@@ -38,7 +38,7 @@ test("with no argument it lists the providers set up, marks the one in use, and 
   const r = await run([]);
   expect(r.code).toBe(0);
   expect(r.out).toContain("Providers set up:\n  opencode-go  OpenCode Go  (in use)\n  openrouter  OpenRouter\n");
-  expect(r.out).toContain("Not set up: DeepSeek, Command Code, OpenCode Zen, Custom endpoint. Add one with npx cheap-agent login");
+  expect(r.out).toContain("Not set up: Ollama, DeepSeek, Command Code, OpenCode Zen, Custom endpoint. Add one with npx cheap-agent login");
 }, slow(30_000));
 
 test("switching moves the repo's consent with its mode, shows what it covers, live-checks, and the choice sticks", async () => {
@@ -53,6 +53,20 @@ test("switching moves the repo's consent with its mode, shows what it covers, li
   expect(r.fake.recorded.sessions[0].model).toMatchObject({ providerID: "openrouter" });
   // detection follows the choice although OpenCode Go comes first in order
   expect((await run([], { config: r.config })).out).toContain("  openrouter  OpenRouter  (in use)");
+}, slow(60_000));
+
+test("Ollama needs no login: provider ollama works with only the endpoint set up, and says so when already in use", async () => {
+  const only = await run(["ollama"], { logins: {}, config: { ollama: { endpoint: "cloud" } } });
+  expect(only.code).toBe(0);
+  expect(only.out).toContain("✓ already using Ollama");
+  expect(only.config).toEqual({ ollama: { endpoint: "cloud" } }); // no provider key needed: it is the one set up
+
+  const switched = await run(["ollama"], { logins: { openrouter: "sk-or-v1-fakefakefakefakefakefake" }, config: { provider: "openrouter", ollama: { endpoint: "cloud" } } });
+  expect(switched.code).toBe(0);
+  expect(switched.out).toContain("Switching the worker from OpenRouter to Ollama");
+  expect(switched.out).toContain("✓ Now using Ollama; the next job runs on it");
+  expect(switched.config).toEqual({ provider: "ollama", ollama: { endpoint: "cloud" } });
+  expect(switched.fake.recorded.sessions[0].model).toEqual({ providerID: "ollama", id: "deepseek-v4.1-flash:cloud" });
 }, slow(60_000));
 
 test("a failed live check puts the previous provider and consent back", async () => {
@@ -79,5 +93,5 @@ test("a provider with no saved key points to login; an explicit model consent is
   expect((await run(["opencode-go"])).out).toContain("✓ already using OpenCode Go");
   const bad = await run(["gemini"]);
   expect(bad.code).toBe(1);
-  expect(bad.out).toContain('✗ "gemini" is not a provider; use one of opencode-go, openrouter');
+  expect(bad.out).toContain('✗ "gemini" is not a provider; use one of ollama, opencode-go, openrouter, deepseek, commandcode, opencode, local');
 }, slow(90_000));

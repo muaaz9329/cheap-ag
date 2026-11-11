@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { arch } from "node:os";
 import { dirname, join } from "node:path";
-import { localServer } from "./config.js";
+import { localServer, ollamaEndpoint } from "./config.js";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { gitBash, killProcessGroup, opencodePlatform } from "./platform.js";
@@ -147,6 +147,21 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "commandcode") {
     Object.assign(providerConfig, COMMAND_CODE, {
       models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }])),
+    });
+  }
+  // Ollama is declared as an OpenAI-compatible provider at the endpoint the user picked (this machine or ollama.com).
+  // The cloud key is an {env:OLLAMA_API_KEY} reference OpenCode resolves itself; the local endpoint needs none
+  if (provider.provider === "ollama") {
+    const ollama = ollamaEndpoint();
+    if (!ollama) throw new Error("no Ollama endpoint configured; run cheapag login");
+    const apiKey = ollama.endpoint === "cloud" ? `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}` : undefined;
+    const limit = ollama.context ? { limit: { context: ollama.context, output: ollama.output ?? Math.min(32_768, Math.floor(ollama.context / 4)) } } : {};
+    const cost = ollama.price ? { cost: { input: ollama.price.input, output: ollama.price.output } } : {};
+    Object.assign(providerConfig, {
+      npm: "@ai-sdk/openai-compatible",
+      name: "Ollama",
+      options: { baseURL: ollama.base_url, ...(apiKey && { apiKey }) },
+      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...(models[m.id] ?? {}) }])),
     });
   }
   // a custom endpoint is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} or {env:} reference

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalog, saveModels, type CatalogModel, type Pick } from "./catalog.js";
 import { loadConfig, userConfigFile } from "./config.js";
-import { acceptRoute } from "./consent.js";
+import { acceptRoute, modelWarnings } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact, type Provider } from "./credentials.js";
 import { stopOpencode } from "./opencode.js";
 import { select } from "./prompt.js";
@@ -32,6 +32,8 @@ export async function model(args: string[]): Promise<number> {
     if (flags.main !== undefined) return save(provider, models, flags as Required<Pick2>, out);
     if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current, out);
     out(describe(provider, models, current));
+    // a `models` entry naming another provider is ignored when the next job routes
+    for (const warning of modelWarnings(provider.provider, repoRoot())) out(`! ${warning}`);
     if (!flags.list) out(USAGE);
     return 0;
   } catch (err) {
@@ -57,18 +59,26 @@ function parse(args: string[]): Pick2 | string {
   return flags;
 }
 
+/** The repository this run is in, else the cwd (outside one only the user's config applies). */
+function repoRoot() {
+  try {
+    return projectRoot(process.cwd());
+  } catch {
+    return process.cwd();
+  }
+}
+
 /** The main and first fallback model the config routes to now (the repo's cheapag.json too, inside one). */
 function currentRoute(provider: Provider) {
-  let root = process.cwd();
-  try {
-    root = projectRoot(root);
-  } catch {} // outside a repo only the user's config applies
-  const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(root)));
+  const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(repoRoot())));
   return { main: route.implement, fallback: route.fallbacks[0] as WorkerModel | undefined };
 }
 
 const bare = (provider: Provider, id: string) => (id.startsWith(`${provider.provider}/`) ? id.slice(provider.provider.length + 1) : id);
-const line = (m: CatalogModel) => `${m.id} · $${m.input}/$${m.output} per M · ${Math.round(m.context / 1000)}K ctx · efforts: ${list(m.efforts)}`;
+// Ollama reports no price and may not report a context window; neither is a zero
+const money = (m: CatalogModel) => (m.input > 0 || m.output > 0 ? `$${m.input}/$${m.output} per M` : "no price");
+const ctx = (context: number) => (context > 0 ? `${Math.round(context / 1000)}K ctx` : "ctx unknown");
+const line = (m: CatalogModel) => `${m.id} · ${money(m)} · ${ctx(m.context)} · efforts: ${list(m.efforts)}`;
 
 /** The 4 models worth showing first: the current main, the preset's balanced pick, then the cheapest (the catalog is cheapest first). */
 function suggestions(provider: Provider, models: CatalogModel[], main: WorkerModel) {
@@ -131,7 +141,7 @@ async function askEffort(who: string, m: CatalogModel, now?: string) {
 }
 
 async function pick(provider: Provider, models: CatalogModel[], current: ReturnType<typeof currentRoute>, out: (l: string) => void) {
-  const row = (m: CatalogModel) => ({ label: m.id, hint: `$${m.input}/$${m.output} per M · ${Math.round(m.context / 1000)}K ctx · efforts: ${list(m.efforts)}` });
+  const row = (m: CatalogModel) => ({ label: m.id, hint: `${money(m)} · ${ctx(m.context)} · efforts: ${list(m.efforts)}` });
   const main = models[await select(`Main model on ${providerLabel(provider.provider)} (writes the code):`, models.map(row), Math.max(0, models.findIndex((m) => m.id === current.main.id)))];
   const mainEffort = await askEffort("main", main, current.main.variant);
   const f = await select("Fallback model (used on a rate limit):", [{ label: "none" }, ...models.map(row)], 0);

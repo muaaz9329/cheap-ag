@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
 import { failBlock, renderConsent } from "./report.js";
-import { loadConfig, localServer } from "./config.js";
-import { effectiveModels, fullRoute, modelName, presetOf, routeModels, type Route, type WorkerModel } from "./routing.js";
+import { loadConfig, localServer, ollamaEndpoint } from "./config.js";
+import { effectiveModels, foreignModels, fullRoute, modelName, presetOf, routeModels, type Route, type WorkerModel } from "./routing.js";
 import { projectRoot } from "./workspace.js";
 
 /**
@@ -43,10 +43,20 @@ export function acceptRoute(root: string) {
   if (consent) writeConsent(root, consent);
 }
 
+/** Whether the Ollama endpoint is this machine's (nothing leaves it); a damaged entry counts as not local. */
+function ollamaIsLocal() {
+  try {
+    return ollamaEndpoint()?.endpoint === "local";
+  } catch {
+    return false;
+  }
+}
+
 // a local model is named with its server: pointing the same model id at another URL is another recipient
 const routeNames = (r: Route) => {
-  const at = r.implement.providerID === "local" ? `@${localServer()?.base_url}` : "";
-  return routeModels(r).map((m) => modelName(m) + at);
+  const provider = r.implement.providerID;
+  const url = provider === "local" ? localServer()?.base_url : provider === "ollama" && ollamaIsLocal() ? ollamaEndpoint()?.base_url : undefined;
+  return routeModels(r).map((m) => modelName(m) + (url ? `@${url}` : ""));
 };
 
 /**
@@ -55,7 +65,10 @@ const routeNames = (r: Route) => {
  * and a local server (a URL is a recipient) keep the route check.
  */
 export function routeMoved(root: string, consent: Consent) {
-  if (consent.provider !== "openrouter" && consent.provider !== "local") return false;
+  // within one provider the code goes to the same company; OpenRouter (the model picks the upstream), the custom
+  // endpoint and a local Ollama (a URL is a recipient) keep the route check
+  const checksRoute = consent.provider === "openrouter" || consent.provider === "local" || (consent.provider === "ollama" && ollamaIsLocal());
+  if (!checksRoute) return false;
   const models = configuredModels(root, consent.provider);
   return !!models && !!consent.route && String(consent.route) !== String(routeNames(fullRoute(consent.provider, models)));
 }
@@ -69,11 +82,29 @@ export function presetHere(provider: Provider["provider"], cwd = process.cwd()) 
   return presetOf(provider, configuredModels(root, provider));
 }
 
+/**
+ * Issue #27: a `models.*` entry naming another provider is silently ignored by `fullRoute`, so a job runs on something
+ * else than the config says. Say it, and name the model the worker actually runs.
+ */
+export function modelWarnings(provider: Provider["provider"], root = process.cwd()): string[] {
+  try {
+    const models = configuredModels(root, provider) ?? {};
+    const route = fullRoute(provider, models);
+    return foreignModels(provider, models).map(({ role, name }) =>
+      `models.${role} names ${name}, which is not a model on ${providerLabel(provider)}; it is ignored and the worker runs ${modelName(route.implement)}. Fix it in cheapag.json or run npx cheap-agent model`,
+    );
+  } catch {
+    return []; // a damaged config is reported by the job's own load
+  }
+}
+
 // OpenRouter's provider-routing preference that restricts it to Zero Data Retention endpoints (openrouter.ai/docs, provider routing)
 const ZDR_OPTION = { zdr: true };
 
 /** What is known about a model's retention: only the spec's facts (A21), never guessed. */
 function retention(provider: Provider["provider"], m: WorkerModel): "zero" | "upstream" | "not stated" {
+  // Ollama on this machine sends nothing; Ollama Cloud's terms are not stated here (never guessed)
+  if (provider === "ollama") return ollamaIsLocal() ? "zero" : "not stated";
   if (provider === "openrouter") return "upstream"; // depends on the endpoint OpenRouter routes to
   // A21: on OpenCode Go, DeepSeek and Qwen models are zero-retention; GLM and Kimi are not listed that way
   if (provider === "opencode-go" && /^(deepseek|qwen)/.test(m.id)) return "zero";
@@ -147,14 +178,29 @@ function consentBlock(root: string, provider: Provider["provider"], full: Route)
   const extra = models.map((m) => m.id).filter((id) => !main.includes(id));
   const ids = main.join(", ") + (extra.length ? ` (+fallbacks ${extra.join(", ")})` : "");
   const local = provider === "local" ? localServer() : undefined;
+  let ollama: ReturnType<typeof ollamaEndpoint>;
+  try {
+    ollama = provider === "ollama" ? ollamaEndpoint() : undefined;
+  } catch {} // a damaged entry is reported by the config load, not as a consent line
   const retentionLine = provider === "openrouter"
     ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
+    : ollama
+    ? ollama.endpoint === "local"
+      ? "nothing leaves this machine: your own Ollama keeps what it is set up to keep"
+      : "Ollama Cloud's terms (ollama.com); retention is not stated here"
     : local
     ? `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`
     : models.map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`).join("; ");
+  const recipient = ollama
+    ? ollama.endpoint === "local"
+      ? `your local Ollama at ${ollama.base_url}`
+      : "Ollama Cloud (ollama.com)"
+    : local
+    ? `custom endpoint at ${local.base_url}`
+    : providerLabel(provider);
   return renderConsent({
     repo: basename(root),
-    send: `code from this repo → ${local ? `custom endpoint at ${local.base_url}` : providerLabel(provider)}: ${ids}`,
+    send: `code from this repo → ${recipient}: ${ids}`,
     retention: retentionLine,
     // the caller passed the root, so "this root" names it; a path here would push the line past the 200-char cap
     approve: sessionRepo(root)

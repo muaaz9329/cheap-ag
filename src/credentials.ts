@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { chosenProvider, localServer } from "./config.js";
+import { chosenProvider, localServer, ollamaEndpoint } from "./config.js";
 
 /**
  * Credentials come only from saved logins in OpenCode's store, written by `cheapag login` (ADR-0004). The local
@@ -10,6 +10,7 @@ import { chosenProvider, localServer } from "./config.js";
 
 /** Providers in detection order; `label` is what `cheapag login` shows. */
 export const PROVIDERS = [
+  { id: "ollama", label: "Ollama" },
   { id: "opencode-go", label: "OpenCode Go" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
@@ -36,7 +37,7 @@ export function savedProviders(): Provider["provider"][] {
   } catch {
     return []; // an unreadable auth file is the same as no login
   }
-  return PROVIDERS.map((p) => p.id).filter((id) => id in saved && id !== "local");
+  return PROVIDERS.map((p) => p.id).filter((id) => id in saved && id !== "local" && id !== "ollama");
 }
 
 /** Whether the user config names a usable local server; a damaged one counts as none here, loadConfig reports it. */
@@ -48,21 +49,32 @@ export function localConfigured() {
   }
 }
 
+/** Whether Ollama is set up: its `ollama` config block, or OLLAMA_API_KEY alone (an implicit cloud opt-in); a damaged entry counts as none here. */
+export function ollamaConfigured() {
+  try {
+    return !!ollamaEndpoint();
+  } catch {
+    return false;
+  }
+}
+
 export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
 
-/** Supported providers ready to use: saved logins, plus the custom endpoint when the user config names one; in detection order. */
+/** Supported providers ready to use: saved logins, plus the config-based endpoints when the user set them up; in detection order. */
 export function usableProviders(): Provider["provider"][] {
   const saved = savedProviders();
-  return PROVIDERS.map((p) => p.id).filter((id) => (id === "local" ? localConfigured() : saved.includes(id)));
+  return PROVIDERS.map((p) => p.id).filter((id) => (id === "local" ? localConfigured() : id === "ollama" ? ollamaConfigured() : saved.includes(id)));
 }
 
 /**
- * The provider the worker uses: the one `cheapag provider` picked, while it is still set up; else a configured custom
- * endpoint (set up on purpose, so it wins), else the first saved login.
+ * The provider the worker uses: the one `cheapag provider` picked, while it is still set up; else Ollama (set up on
+ * purpose, or OLLAMA_API_KEY set), else a configured custom endpoint, else the first saved login.
  */
 export function detectProvider(): Provider | undefined {
   const chosen = PROVIDERS.find((p) => p.id === chosenProvider())?.id;
-  if (chosen && usableProviders().includes(chosen)) return { provider: chosen, via: chosen === "local" ? "config" : "login" };
+  const configBased = (id: Provider["provider"]) => id === "local" || id === "ollama";
+  if (chosen && usableProviders().includes(chosen)) return { provider: chosen, via: configBased(chosen) ? "config" : "login" };
+  if (ollamaConfigured()) return { provider: "ollama", via: "config" };
   if (localConfigured()) return { provider: "local", via: "config" };
   const [first] = savedProviders();
   return first && { provider: first, via: "login" };

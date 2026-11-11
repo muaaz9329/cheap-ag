@@ -40,15 +40,16 @@ Copy this into Claude Code or Codex and let the agent take it from there. It ask
 
 ```text
 Set up Cheap Agent (npm: cheap-agent) for me.
-1. Ask me which provider (OpenRouter recommended, DeepSeek, OpenCode Go, Command Code, OpenCode Zen,
-   or Custom endpoint for a local model or any OpenAI-compatible API) and which models
-   (balanced is the default; cheapest, strongest, or my own provider/model).
+1. Ask me which provider (OpenRouter recommended for a hosted one, Ollama for a local model with no key,
+   DeepSeek, OpenCode Go, Command Code, OpenCode Zen, or Custom endpoint for any OpenAI-compatible API)
+   and which models (balanced is the default; cheapest, strongest, or my own provider/model).
 2. Check that node is 20+, and whether I use Claude Code (claude CLI), Codex (codex CLI) or both.
 3. If I picked my own model, save {"models":{"implement":"<model>"}} in
    ~/.config/cheapag/config.json, keeping what else is there.
 4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice, or custom>,
-   and which provider to pick with the arrow keys or its number (1 OpenCode Go, 2 OpenRouter,
-   3 DeepSeek, 4 Command Code, 5 OpenCode Zen, 6 Custom endpoint). If I don't use Claude Code, tell me
+   and which provider to pick with the arrow keys or its number (1 Ollama, 2 OpenCode Go, 3 OpenRouter,
+   4 DeepSeek, 5 Command Code, 6 OpenCode Zen, 7 Custom endpoint). If I picked Ollama Cloud, tell me to
+   export OLLAMA_API_KEY before running it. If I don't use Claude Code, tell me
    to say no when it offers to add itself there. I run it and type my API key there. Never ask for my key.
 5. When I say done: for Claude Code, check `claude mcp list` shows cheapag. For Codex, run
    `codex plugin marketplace add muaaz9329/cheap-ag` and `codex plugin add cheapag@cheap-agent`.
@@ -102,7 +103,7 @@ $cheapag:allow
 
 - [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex)
 - [Node.js](https://nodejs.org) 20+
-- An API key with a few dollars on it from one of the [supported providers](#supported-providers), or a local model with no key at all. A few dollars lasts hundreds of tasks.
+- An API key with a few dollars on it from one of the [supported providers](#supported-providers), or [Ollama](#ollama), local or cloud, or a local model with no key at all. A few dollars lasts hundreds of tasks.
 
 It runs on macOS, Linux and Windows.
 
@@ -115,14 +116,26 @@ It runs on macOS, Linux and Windows.
 
 | # | Provider | Get a key | Good to know |
 |---|---|---|---|
-| 1 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
-| 2 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
-| 3 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
-| 4 | Command Code | [commandcode.ai](https://commandcode.ai) | Needs a plan with API access. |
-| 5 | OpenCode Zen | [opencode.ai/zen](https://opencode.ai/zen) | Pay-as-you-go. |
-| 6 | Custom endpoint | Your own, if it needs one | A local model or any OpenAI-compatible API. [How](#local-model-or-your-own-endpoint) |
+| 1 | Ollama | None for this machine; [ollama.com](https://ollama.com) for cloud | Local or cloud. Used by default when set up. [How](#ollama) |
+| 2 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
+| 3 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
+| 4 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
+| 5 | Command Code | [commandcode.ai](https://commandcode.ai) | Needs a plan with API access. |
+| 6 | OpenCode Zen | [opencode.ai/zen](https://opencode.ai/zen) | Pay-as-you-go. |
+| 7 | Custom endpoint | Your own, if it needs one | Any OpenAI-compatible API. [How](#local-model-or-your-own-endpoint) |
 
 The number is what you press at login. Log in to more than one and switch any time with `/cheapag:provider`.
+
+## Ollama
+
+Run `npx cheap-agent login`, pick **Ollama**, then one of its two endpoints:
+
+- **This machine**: your own Ollama at `http://127.0.0.1:11434` (it asks for the URL if yours differs). No key. It lists the models you have pulled and asks which one to use. Nothing leaves the machine, so `/cheapag:allow` treats it as zero retention.
+- **Ollama Cloud**: `https://ollama.com/v1`. Export `OLLAMA_API_KEY` where Claude Code (or Codex) starts, then log in: it checks the key, lists the cloud model ids, and saves a preset (cheapest, balanced or strongest). Jobs fall back to the next cloud model when one hits a limit, and escalate to the strongest. The key stays in your environment and OpenCode reads it; Cheap Agent never sees or stores it.
+
+Once set up, Ollama is used by default, even if you logged in to another provider earlier. To use another one, pick it with `/cheapag:provider` or set `"provider"` in `~/.config/cheapag/config.json`.
+
+On this machine's endpoint one model implements and researches. If `models` in a project's `cheapag.json` names a model from another provider, it is ignored, and `ping`, `status` and `delegate` say which model actually runs.
 
 ## Commands
 
@@ -151,9 +164,9 @@ Optional. Put a `cheapag.json` in a project:
 
 ## Local model or your own endpoint
 
-Not in the list of providers? Run `npx cheap-agent login` and pick **Custom endpoint**. It works with anything that speaks the OpenAI API: llama.cpp, Ollama, LM Studio, vLLM, LiteLLM, Azure, or a vendor's API. It asks for:
+Not in the list of providers? Run `npx cheap-agent login` and pick **Custom endpoint**. It works with anything that speaks the OpenAI API: llama.cpp, LM Studio, vLLM, LiteLLM, Azure, or a vendor's API. For Ollama, pick **Ollama** instead; it does the URL, model and context questions for you. The custom endpoint asks for:
 
-- **URL**, e.g. `http://127.0.0.1:11434/v1` for Ollama. Plain `http` only works on this machine or your own network.
+- **URL**, e.g. `http://127.0.0.1:8080/v1` for llama.cpp. Plain `http` only works on this machine or your own network.
 - **API key**, only if the endpoint needs one: the name of an environment variable, or a file, that holds it. Cheap Agent never reads the key itself.
 - **Model**, picked from the endpoint's list.
 - **Context window and prices**, both optional. Without prices, cost shows $0.
