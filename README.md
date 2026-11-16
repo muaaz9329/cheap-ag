@@ -40,15 +40,15 @@ Copy this into Claude Code or Codex and let the agent take it from there. It ask
 
 ```text
 Set up Cheap Agent (npm: cheap-agent) for me.
-1. Ask me which provider (OpenRouter recommended for a hosted one, Ollama for a local model with no key,
-   DeepSeek, OpenCode Go, Command Code, OpenCode Zen, or Custom endpoint for any OpenAI-compatible API)
+1. Ask me which provider (OpenCode Go, OpenRouter recommended for a hosted one, DeepSeek,
+   Ollama for a local model with no key, Command Code, OpenCode Zen, or Custom endpoint for any OpenAI-compatible API)
    and which models (balanced is the default; cheapest, strongest, or my own provider/model).
 2. Check that node is 20+, and whether I use Claude Code (claude CLI), Codex (codex CLI) or both.
 3. If I picked my own model, save {"models":{"implement":"<model>"}} in
    ~/.config/cheapag/config.json, keeping what else is there.
 4. Give me the command to run in my terminal: npx cheap-agent login --preset <my choice, or custom>,
-   and which provider to pick with the arrow keys or its number (1 Ollama, 2 OpenCode Go, 3 OpenRouter,
-   4 DeepSeek, 5 Command Code, 6 OpenCode Zen, 7 Custom endpoint). If I picked Ollama Cloud, tell me to
+   and which provider to pick with the arrow keys or its number (1 OpenCode Go, 2 OpenRouter,
+   3 DeepSeek, 4 Ollama, 5 Command Code, 6 OpenCode Zen, 7 Custom endpoint). If I picked Ollama Cloud, tell me to
    export OLLAMA_API_KEY before running it. If I don't use Claude Code, tell me
    to say no when it offers to add itself there. I run it and type my API key there. Never ask for my key.
 5. When I say done: for Claude Code, check `claude mcp list` shows cheapag. For Codex, run
@@ -116,10 +116,10 @@ It runs on macOS, Linux and Windows.
 
 | # | Provider | Get a key | Good to know |
 |---|---|---|---|
-| 1 | Ollama | None for this machine; [ollama.com](https://ollama.com) for cloud | Local or cloud. Used by default when set up. [How](#ollama) |
-| 2 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
-| 3 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
-| 4 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
+| 1 | OpenCode Go | [opencode.ai](https://opencode.ai) | Set Regions to Global in its console for the DeepSeek models. |
+| 2 | OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | Pick this if unsure. |
+| 3 | DeepSeek | [platform.deepseek.com](https://platform.deepseek.com) | |
+| 4 | Ollama | None for this machine; [ollama.com](https://ollama.com) for cloud | Local or cloud. Used by default when set up. [How](#ollama) |
 | 5 | Command Code | [commandcode.ai](https://commandcode.ai) | Needs a plan with API access. |
 | 6 | OpenCode Zen | [opencode.ai/zen](https://opencode.ai/zen) | Pay-as-you-go. |
 | 7 | Custom endpoint | Your own, if it needs one | Any OpenAI-compatible API. [How](#local-model-or-your-own-endpoint) |

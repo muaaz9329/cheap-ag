@@ -61,9 +61,9 @@ async function runLogin(opts: { claude: "registered" | "local" | "unregistered" 
       writeFileSync(join(bin, "claude.cmd"), cmd.join("\r\n") + "\r\n");
     }
   }
-  // Ollama is listed first, so OpenRouter is number 3 in the provider menu
+  // OpenRouter is number 2 in the provider menu
   const steps = opts.steps ?? [
-    { expect: "Provider", send: "3\r" },
+    { expect: "Provider", send: "2\r" },
     ...(opts.args ? [] : [{ expect: "Workermodels", send: `${opts.preset ?? ""}\r` }]),
     { expect: "EnteryourAPIkey", send: `${KEY}\r` },
     ...(opts.register ? [{ expect: "Y/n", send: `${opts.register}\r` }] : []),
@@ -161,7 +161,7 @@ tty("a config with custom models is left alone by the migration", async () => {
     claude: "registered",
     config: { models: { implement: "opencode-go/kimi-k3" } },
     steps: [
-      { expect: "Provider", send: "2\r" }, // OpenCode Go
+      { expect: "Provider", send: "1\r" }, // OpenCode Go
       { expect: "Workermodels", send: "\r" },
       { expect: "EnteryourAPIkey", send: `${KEY}\r` },
     ],
@@ -420,7 +420,7 @@ tty("Ollama on this machine: login takes no key, lists the pulled models, and sa
   const r = await runLogin({
     claude: "registered",
     steps: [
-      { expect: "Provider", send: "1\r" },
+      { expect: "Provider", send: "4\r" },
       { expect: "Ollamaendpoint", send: "\r" }, // This machine, highlighted
       { expect: "OllamaURL", send: `${url}\r` },
       { expect: "Model:", send: "2\r" }, // qwen3:8b, with the context /api/show reports
@@ -441,7 +441,7 @@ tty("Ollama Cloud: login needs OLLAMA_API_KEY, reuses the saved endpoint, and wr
     env: { OLLAMA_API_KEY: "cloud-key-0123456789" },
     config: { ollama: { endpoint: "cloud", base_url: `${url}/v1` } },
     steps: [
-      { expect: "Provider", send: "1\r" },
+      { expect: "Provider", send: "4\r" },
       { expect: "Ollamaendpoint", send: "\r" }, // Ollama Cloud, highlighted from the saved endpoint
       { expect: "Workermodels", send: "\r" }, // balanced
     ],
@@ -458,7 +458,7 @@ tty("Ollama Cloud with no OLLAMA_API_KEY says how to set it and changes nothing"
   const r = await runLogin({
     claude: "registered",
     steps: [
-      { expect: "Provider", send: "1\r" },
+      { expect: "Provider", send: "4\r" },
       { expect: "Ollamaendpoint", send: "2\r" }, // Ollama Cloud, with no key set
     ],
   });

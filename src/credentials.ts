@@ -10,10 +10,10 @@ import { chosenProvider, localServer, ollamaEndpoint } from "./config.js";
 
 /** Providers in detection order; `label` is what `cheapag login` shows. */
 export const PROVIDERS = [
-  { id: "ollama", label: "Ollama" },
   { id: "opencode-go", label: "OpenCode Go" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
+  { id: "ollama", label: "Ollama" },
   { id: "commandcode", label: "Command Code" },
   { id: "opencode", label: "OpenCode Zen" },
   { id: "local", label: "Custom endpoint" },

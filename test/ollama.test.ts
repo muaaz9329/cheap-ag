@@ -76,7 +76,7 @@ test("ollama is user config only, and a local endpoint needs the model it runs",
 test("a set-up Ollama wins over a saved login, an explicit provider wins over both, and the key alone is a cloud opt-in", () => {
   home({ ollama: LOCAL }, { openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   expect(detectProvider()).toEqual({ provider: "ollama", via: "config" });
-  expect(usableProviders()[0]).toBe("ollama");
+  expect(usableProviders()).toContain("ollama");
 
   home({ ollama: LOCAL, provider: "openrouter" }, { openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   expect(detectProvider()).toEqual({ provider: "openrouter", via: "login" });
