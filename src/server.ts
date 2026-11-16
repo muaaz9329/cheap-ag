@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { cleanProject, gitignoreHint, startPeriodicCleanup } from "./cleanup.js";
 import { loadConfig, type HardTasks, type TakeOver } from "./config.js";
-import { presetHere } from "./consent.js";
+import { modelWarnings, presetHere } from "./consent.js";
 import { detectProvider, NO_PROVIDER, redact, type Provider } from "./credentials.js";
 import { delegate, jobs, landJobs, recoverJobs, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
@@ -91,6 +91,14 @@ export async function serve(host: "claude" | "codex" = "claude") {
     const hint = gitignoreHint(root);
     return hint ? `${text}\n\n${hint}` : text;
   };
+  /**
+   * Issue #27: a `models` entry naming another provider never reaches the route, so the job runs on something else than
+   * the config says. Say it after the block, naming the model that actually runs; a clean config adds nothing.
+   */
+  const withWarnings = (text: string, provider: Provider, root?: string) => {
+    const warnings = modelWarnings(provider.provider, root);
+    return warnings.length ? `${text}\n\n${warnings.map((w) => `! ${w}`).join("\n")}` : text;
+  };
   /** Repositories this process has recovered and cleaned: the cwd's at start, each `root` on its first call. */
   const prepared = new Set<string>();
   const prepare = (dir: string) => {
@@ -148,7 +156,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
         const dir = root === undefined ? undefined : callRoot(root);
         const opencode = await ensureOpencode(provider, dir);
         const at = dir === undefined ? "" : ` root=${dir}`;
-        return safeText(`OK cheapag ${version} opencode=${opencode.version} provider=${provider.provider} via=${provider.via} preset=${presetHere(provider.provider, dir)}${at}`);
+        return safeText(withWarnings(`OK cheapag ${version} opencode=${opencode.version} provider=${provider.provider} via=${provider.via} preset=${presetHere(provider.provider, dir)}${at}`, provider, dir));
       } catch (err) {
         return safeText(`FAIL reason: ${(err as Error).message}`);
       }
@@ -182,7 +190,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
       try {
         const root = repoFor(input.root);
         const req = { ...input, root, ...(host === "codex" && { wait: false }) };
-        return safeText(withHint(await delegate(req, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }), root));
+        return safeText(withWarnings(withHint(await delegate(req, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }), root), provider, root));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }
@@ -207,7 +215,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
       if (!provider) return safeText(NO_PROVIDER);
       try {
         const root = repoFor(input.root);
-        return safeText(withHint(await research({ ...input, root }, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }), root));
+        return safeText(withWarnings(withHint(await research({ ...input, root }, { provider, opencode: opencodeFor(provider, root), progress: progressTo(extra) }), root), provider, root));
       } catch (err) {
         return safeText(failBlock((err as Error).message));
       }

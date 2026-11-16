@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { localServer, type Config } from "./config.js";
+import { localServer, ollamaEndpoint, type Config } from "./config.js";
 import { LOGIN_COMMAND, providerLabel, type Provider } from "./credentials.js";
 import type { RunResult, Session } from "./worker.js";
 
@@ -21,6 +21,12 @@ const OPENROUTER_PRIVATE = { provider: { data_collection: "deny", sort: "through
  * (checked 2026-10-16). Direct DeepSeek has no other models to fall back to.
  */
 export const ROLES: Record<Exclude<ProviderId, "local">, { implement: string[]; research: string[]; escalation: string }> = {
+  // Ollama Cloud (ollama.com): ids from its /v1/models catalog; the local endpoint uses its one configured model instead
+  ollama: {
+    implement: ["deepseek-v4.1-flash:cloud", "glm-5.3-flash:cloud", "qwen3.7-plus:cloud"],
+    research: ["qwen3.8-flash:cloud", "deepseek-v4.1-flash:cloud"],
+    escalation: "glm-5.3:cloud",
+  },
   "opencode-go": {
     implement: ["deepseek-v4.1-flash", "qwen3.7-plus", "glm-5.3", "kimi-k3"],
     research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
@@ -53,7 +59,19 @@ function localRoles(): { implement: string[]; research: string[]; escalation?: s
   return { implement: [local.model], research: [local.model] };
 }
 
-const rolesOf = (provider: ProviderId) => (provider === "local" ? localRoles() : ROLES[provider]);
+/**
+ * A local Ollama's roles: the configured model implements and researches, like the custom endpoint. There are no
+ * fallbacks and no escalation unless `models` names them; the cloud endpoint uses ROLES.ollama instead.
+ */
+function ollamaRoles(): { implement: string[]; research: string[]; escalation?: string } {
+  const ollama = ollamaEndpoint();
+  if (!ollama) throw new Error(`no Ollama endpoint configured; run ${LOGIN_COMMAND}`);
+  if (ollama.endpoint === "cloud") return ROLES.ollama;
+  return { implement: [ollama.model!], research: [ollama.model!] };
+}
+
+const rolesOf = (provider: ProviderId) =>
+  provider === "local" ? localRoles() : provider === "ollama" ? ollamaRoles() : ROLES[provider];
 
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
 export const PRESET_NAMES = ["cheapest", "balanced", "strongest"] as const;
@@ -63,6 +81,12 @@ export type Preset = (typeof PRESET_NAMES)[number];
 // cheaper worker than Flash exists (a tie reports balanced). Kimi K3 was dropped: $0.36 worker per task, BUDGET on half.
 // a local server has no presets: login asks for its model instead
 export const PRESETS: Record<Exclude<ProviderId, "local">, Record<Preset, ModelsConfig>> = {
+  // Ollama Cloud only: a local endpoint has no presets (its one configured model is the route)
+  ollama: {
+    cheapest: { implement: "ollama/deepseek-v4.1-flash:cloud" },
+    balanced: { implement: "ollama/deepseek-v4.1-flash:cloud" },
+    strongest: { implement: "ollama/glm-5.3:cloud" },
+  },
   "opencode-go": {
     cheapest: { implement: "opencode-go/deepseek-v4.1-flash" },
     balanced: { implement: "opencode-go/deepseek-v4.1-flash" },
@@ -92,11 +116,23 @@ export const PRESETS: Record<Exclude<ProviderId, "local">, Record<Preset, Models
   },
 };
 
+/** Whether the provider is the config-based local endpoint (the custom endpoint, or Ollama on this machine): no presets. */
+function localEndpoint(provider: ProviderId) {
+  if (provider === "local") return true;
+  if (provider !== "ollama") return false;
+  try {
+    return ollamaEndpoint()?.endpoint === "local";
+  } catch {
+    return false; // a damaged entry is reported by the config load, not here
+  }
+}
+
 /** The preset whose route `models` gives on this provider, else custom (`preset=` in ping and status); a tie names balanced, the default. */
 export function presetOf(provider: ProviderId, models: ModelsConfig = {}): Preset | "custom" {
-  if (provider === "local") return "custom";
+  if (localEndpoint(provider)) return "custom";
+  const presets = PRESETS[provider as Exclude<ProviderId, "local">];
   const key = (m: ModelsConfig) => JSON.stringify(fullRoute(provider, m));
-  return (["balanced", "cheapest", "strongest"] as const).find((p) => key(PRESETS[provider][p]) === key(models)) ?? "custom";
+  return (["balanced", "cheapest", "strongest"] as const).find((p) => key(presets[p]) === key(models)) ?? "custom";
 }
 
 const model = (provider: ProviderId, id: string): WorkerModel =>
@@ -122,10 +158,23 @@ export type Difficulty = (typeof DIFFICULTIES)[number];
 /** The model a job implements on: hard takes the hard model, else the medium one; medium the medium one; easy or no hint `implement`. */
 export const tierModel = (r: Route, d?: Difficulty) => (d === "hard" ? r.hard ?? r.medium : d === "medium" ? r.medium : undefined) ?? r.implement;
 
-/** The models config in force: the chosen preset's models (none for local) with an explicit `models` role winning over it. */
+/** The models config in force: the chosen preset's models (none for a local endpoint) with an explicit `models` role winning over it. */
 export function effectiveModels(provider: ProviderId, config: Pick<Config, "preset" | "models">): ModelsConfig {
-  const preset = provider === "local" || !config.preset ? undefined : PRESETS[provider][config.preset];
+  const preset = localEndpoint(provider) || !config.preset ? undefined : PRESETS[provider as Exclude<ProviderId, "local">][config.preset];
   return { ...preset, ...config.models };
+}
+
+/** A `models` entry that names another provider, which `fullRoute` has to ignore: the silent-mismatch warning (issue #27). */
+export type ForeignModel = { role: "implement" | "medium" | "hard" | "research" | "escalation" | "fallback"; name: string };
+
+export function foreignModels(provider: ProviderId, models: ModelsConfig = {}): ForeignModel[] {
+  const own = (name: string) => name.startsWith(`${provider}/`);
+  const roles = ["implement", "medium", "hard", "research", "escalation"] as const;
+  const foreign = roles.flatMap((role) => {
+    const name = models[role];
+    return name && !own(name) ? [{ role, name }] : [];
+  });
+  return [...foreign, ...(models.fallback ?? []).filter((name) => !own(name)).map((name) => ({ role: "fallback" as const, name }))];
 }
 
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */

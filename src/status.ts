@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { describe, presetHere, readConsent, routeMoved } from "./consent.js";
+import { describe, modelWarnings, presetHere, readConsent, routeMoved } from "./consent.js";
 import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
 import { blockedFor, records } from "./jobs.js";
 import { isAlive } from "./platform.js";
@@ -56,6 +56,9 @@ export function status(args: string[]): number {
       out(`claude cache: ${last.requests} requests, ${Math.round(last.hitRate * 100)}% of input from cache${last.ttl ? `, ${last.ttl} TTL` : ""}`);
     }
   }
+
+  // a `models` entry naming another provider is ignored when a job routes: say which model actually runs
+  if (provider) for (const warning of modelWarnings(provider, root)) out(`! ${warning}`);
 
   const spend = spendWindows();
   out(spend.length ? "spend (tracked on this machine, all repos; Go windows where capped):" : "spend: none tracked in the last 30 days");

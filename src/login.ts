@@ -4,13 +4,17 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { loadConfig, localServer, privateHost, userConfigFile, type LocalServer } from "./config.js";
+import {
+  loadConfig, localServer, ollamaConfig, ollamaEndpoint, privateHost, userConfigFile,
+  OLLAMA_CLOUD_URL, OLLAMA_KEY_ENV, OLLAMA_LOCAL_URL, type LocalServer, type OllamaConfig,
+} from "./config.js";
+import { ollamaModels, type CatalogModel } from "./catalog.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, OPENCODE_DB, opencodeBinary, stopOpencode } from "./opencode.js";
 import { runCli } from "./platform.js";
 import { select } from "./prompt.js";
 import { installPlugin, stableNode } from "./install.js";
-import { effectiveModels, fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig, type Preset } from "./routing.js";
+import { effectiveModels, fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, ROLES, type ModelsConfig, type Preset } from "./routing.js";
 import { runSession } from "./worker.js";
 
 /**
@@ -44,7 +48,7 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   if (setup && flag === undefined) {
     const saved = detectProvider();
     if (saved) {
-      if (saved.provider !== "local") migratePreset(saved.provider, out);
+      if (!isLocalEndpoint(saved.provider)) migratePreset(saved.provider, out);
       out(`Cheap Agent ${version} · already set up with ${label(saved.provider)} (${currentPreset(saved.provider) ?? "custom"})`);
       const code = await register(out, true);
       out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
@@ -57,8 +61,8 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
       out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
       return 1;
     }
-    if (saved.provider === "local") {
-      out(`No terminal to ask in: the local server stays as configured in ${userConfigFile()}`);
+    if (isLocalEndpoint(saved.provider)) {
+      out(`No terminal to ask in: the ${label(saved.provider).toLowerCase()} setting stays as configured in ${userConfigFile()}`);
       return 0;
     }
     // no terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the benchmark)
@@ -76,12 +80,22 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
   // arrow keys or a number, Enter picks; the provider in use starts highlighted
   const picked = PROVIDERS[await select(
     "Provider:",
-    PROVIDERS.map((p) => ({ label: p.label, hint: p.id === "local" ? "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)" : undefined })),
+    PROVIDERS.map((p) => ({
+      label: p.label,
+      hint:
+        p.id === "local"
+          ? "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)"
+          : p.id === "ollama"
+          ? "(this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)"
+          : undefined,
+    })),
     Math.max(0, PROVIDERS.findIndex((p) => p.id === current?.provider)),
   )];
   if (picked.id === "local") {
     if (flag) out("--preset does not apply to a local server: its model is asked for below");
     if (!(await localLogin(out))) return 1;
+  } else if (picked.id === "ollama") {
+    if (!(await ollamaLogin(out, flag))) return 1;
   } else {
     migratePreset(picked.id, out);
     const preset = currentPreset(picked.id) ?? "balanced";
@@ -106,7 +120,7 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
 
   // another provider set up earlier would otherwise keep winning: point the user config at the one just logged in to
   if (detectProvider()?.provider !== picked.id && !setUserKey("provider", picked.id, out)) return 1;
-  const provider: Provider = { provider: picked.id, via: picked.id === "local" ? "config" : "login" };
+  const provider: Provider = { provider: picked.id, via: picked.id === "local" || picked.id === "ollama" ? "config" : "login" };
   const check = await liveCheck(provider);
   out(check.ok ? `✓ ${check.line}` : `✗ ${check.line}`);
   if (!check.ok) {
@@ -140,7 +154,9 @@ function currentPreset(provider: Provider["provider"]): Preset | "custom" | unde
 }
 
 /** Writes the preset name as the user config's `preset`, other keys kept; an old equal `models` is dropped, custom writes nothing. */
-function savePreset(provider: Exclude<Provider["provider"], "local">, choice: Choice, out: (line?: string) => void) {
+function savePreset(provider: Provider["provider"], choice: Choice, out: (line?: string) => void) {
+  // login asks a local endpoint for its model instead; this keeps the narrowing below honest
+  if (provider === "local") throw new Error("a custom endpoint has no presets");
   const file = userConfigFile();
   if (choice === "custom") {
     out(`Worker models: custom, nothing written; set "models" in a repo's cheapag.json, or in ${file} for every repo`);
@@ -160,7 +176,8 @@ function savePreset(provider: Exclude<Provider["provider"], "local">, choice: Ch
 }
 
 /** Rewrites an old user config whose `models` exactly match a current preset to that preset's name; anything else is left alone. */
-function migratePreset(provider: Exclude<Provider["provider"], "local">, out: (line?: string) => void) {
+function migratePreset(provider: Provider["provider"], out: (line?: string) => void) {
+  if (provider === "local") return;
   try {
     const config = readUser();
     if (config.preset !== undefined || config.models === undefined) return;
@@ -267,6 +284,129 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
   return true;
 }
 
+/** Whether the provider runs at a configured endpoint, with no login and no presets: the custom server, or Ollama on this machine. */
+function isLocalEndpoint(provider: Provider["provider"]) {
+  if (provider === "local") return true;
+  if (provider !== "ollama") return false;
+  try {
+    return ollamaEndpoint()?.endpoint === "local";
+  } catch {
+    return false; // a damaged entry is replaced below
+  }
+}
+
+/**
+ * Asks for the Ollama endpoint (issue #27): this machine's daemon, no key, the models already pulled; or Ollama Cloud,
+ * which reads the key from OLLAMA_API_KEY. Saves it as the user config's `ollama`, other keys kept. Login reads the key
+ * only to list the cloud models; the config names the variable, and OpenCode resolves it for every job.
+ */
+async function ollamaLogin(out: (line?: string) => void, flag: string | undefined): Promise<boolean> {
+  let current: OllamaConfig | undefined;
+  try {
+    current = ollamaConfig();
+  } catch {} // a damaged entry is replaced
+  // with only OLLAMA_API_KEY set, cloud is what the user came for; otherwise this machine is the likely pick
+  const cloud = current?.endpoint === "cloud" || (!current && !!process.env[OLLAMA_KEY_ENV]);
+  const endpoints = [
+    { label: "This machine", hint: "(no key; the models you have pulled; nothing leaves the machine)" },
+    { label: "Ollama Cloud", hint: `(ollama.com; the key in ${OLLAMA_KEY_ENV})` },
+  ];
+  return (await select("Ollama endpoint:", endpoints, cloud ? 1 : 0)) === 1
+    ? cloudOllamaLogin(out, current, flag)
+    : localOllamaLogin(out, current, flag);
+}
+
+/** Ollama on this machine: its URL, then one of the models `/api/tags` lists, with the context `/api/show` reports. */
+async function localOllamaLogin(out: (line?: string) => void, current: OllamaConfig | undefined, flag: string | undefined): Promise<boolean> {
+  if (flag) out("--preset does not apply to Ollama on this machine: it runs the one model asked for below");
+  const keep = current?.endpoint === "local" ? current : undefined;
+  const typed = ((await ask(`Ollama URL [Enter = ${keep?.base_url ?? OLLAMA_LOCAL_URL}]: `)) || keep?.base_url || OLLAMA_LOCAL_URL).replace(/\/+$/, "");
+  // the daemon's own API (/api/tags) is at the root; OpenCode wants the OpenAI-compatible /v1 under it
+  const base = /^https?:\/\/[^/]+$/.test(typed) ? `${typed}/v1` : typed;
+  if (!/^https?:\/\/\S+$/.test(base)) {
+    out(`✗ "${base}" is not an http(s) URL; nothing changed`);
+    return false;
+  }
+  // this machine's daemon is plain http; the same rule as a custom endpoint still keeps a public host on https
+  if (base.startsWith("http:") && !privateHost(base)) {
+    out(`✗ plain http to a public host would send code unencrypted; use https; nothing changed`);
+    return false;
+  }
+  let listed: CatalogModel[];
+  try {
+    listed = await ollamaModels("local", base);
+  } catch (err) {
+    out(`✗ ${(err as Error).message}; nothing changed`);
+    return false;
+  }
+  const preferred = keep && listed.some((m) => m.id === keep.model) ? keep.model : listed[0].id;
+  const model = listed[
+    await select(
+      "Model:",
+      listed.map((m) => ({ label: m.id, hint: m.context ? `${Math.round(m.context / 1000)}k context` : undefined })),
+      Math.max(0, listed.findIndex((m) => m.id === preferred)),
+    )
+  ].id;
+  const reported = listed.find((m) => m.id === model)?.context || (keep?.model === model ? keep.context : undefined);
+  const context = reported && reported > 0 ? reported : undefined;
+  if (!context) out("! Ollama reported no context window for this model; set ollama.context later if long jobs are cut off");
+  const ollama: OllamaConfig = { endpoint: "local", base_url: base, model, ...(context && { context }) };
+  if (!saveOllama(ollama, out) || !dropLocal(out, "Ollama")) return false;
+  out(`✓ Ollama on this machine: ${model} at ${base}, saved in ${userConfigFile()}`);
+  return true;
+}
+
+/** Ollama Cloud: the key must already be in the environment (never typed here), then the cloud presets are offered. */
+async function cloudOllamaLogin(out: (line?: string) => void, current: OllamaConfig | undefined, flag: string | undefined): Promise<boolean> {
+  const key = process.env[OLLAMA_KEY_ENV];
+  if (!key) {
+    out(`✗ ${OLLAMA_KEY_ENV} is not set in this shell; create a key at ollama.com, export it where Claude Code starts, then run ${LOGIN} again; nothing changed`);
+    return false;
+  }
+  // a custom base URL already saved (a proxy in front of Ollama Cloud) is kept, for the listing and the setting
+  const base = (current?.endpoint === "cloud" ? current.base_url : OLLAMA_CLOUD_URL).replace(/\/+$/, "");
+  let listed: CatalogModel[];
+  try {
+    listed = await ollamaModels("cloud", base, key);
+  } catch (err) {
+    out(`✗ ${(err as Error).message}; nothing changed`);
+    return false;
+  }
+  // the roles name cloud model ids: say what this account cannot see now, instead of failing job after job
+  const wanted = [...new Set([...ROLES.ollama.implement, ...ROLES.ollama.research, ROLES.ollama.escalation])];
+  const missing = wanted.filter((id) => !listed.some((m) => m.id === id));
+  if (missing.length) out(`! Ollama Cloud does not list ${missing.join(", ")}; if a job fails, set "models" in ${userConfigFile()}`);
+
+  migratePreset("ollama", out);
+  const preset = currentPreset("ollama") ?? "balanced";
+  let choice = flag ?? "";
+  if (flag === undefined) {
+    const hint = (presetName: Choice) => (presetName === "balanced" ? "(recommended)" : presetName === "custom" ? "(set models yourself in cheapag.json)" : undefined);
+    choice = CHOICES[await select("Worker models:", CHOICES.map((name) => ({ label: name, hint: hint(name) })), CHOICES.indexOf(preset))];
+  }
+  if (!isChoice(choice)) {
+    out(`✗ "${choice}" is not one of ${CHOICES.join(", ")}; nothing changed`);
+    return false;
+  }
+  const ollama: OllamaConfig = { endpoint: "cloud", base_url: base, api_key_env: OLLAMA_KEY_ENV };
+  if (!saveOllama(ollama, out) || !savePreset("ollama", choice, out) || !dropLocal(out, "Ollama")) return false;
+  out(`✓ Ollama Cloud: key from ${OLLAMA_KEY_ENV}, saved in ${userConfigFile()}`);
+  return true;
+}
+
+/** Writes the user config's `ollama`, other keys kept; true when saved. */
+function saveOllama(ollama: OllamaConfig, out: (line?: string) => void) {
+  const file = userConfigFile();
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ ...readUser(), ollama }, null, 2) + "\n");
+    return true;
+  } catch (err) {
+    out(`✗ ${file}: ${(err as Error).message}; Ollama setting not saved`);
+    return false;
+  }
+}
+
 /** The server's model ids from GET /models, "auth" when it wants a key for that, "unreachable" when it does not answer as an OpenAI API. */
 async function listModels(base: string): Promise<string[] | "auth" | "unreachable"> {
   try {
@@ -338,7 +478,8 @@ export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line
   let timer: NodeJS.Timeout | undefined;
   let timeoutMs = CHECK_TIMEOUT_MS;
   try {
-    timeoutMs = provider.provider === "local" ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
+    // a local model may first have to load from disk, and Ollama on this machine unloads it when idle
+    timeoutMs = isLocalEndpoint(provider.provider) ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
     // the throwaway dir has no cheapag.json, so this is the user's config alone
     const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(dir)));
     const model = route.implement;
