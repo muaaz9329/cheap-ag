@@ -597,7 +597,8 @@ function runGroup(g: GroupRun) {
       } else if (result.error) {
         reason = `worker error: ${result.error}`;
       } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
-        ({ repro, risk: reproRisk } = await checkRepro(worktree, report.repro, [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands], diff.changed.map((c) => c.path), kill.signal));
+        // only a fix has a reproduction to check: a feature lands without the without-the-change run
+        if (isFix) ({ repro, risk: reproRisk } = await checkRepro(worktree, report.repro, [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands], verified.filter((r) => r.ok).map((r) => r.cmd), diff.changed.map((c) => c.path), kill.signal));
         // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
         pauseClock();
         parked = true;
@@ -847,6 +848,7 @@ const TEST_FILE = /(^|\/)(tests?|testing|__tests__)\/|(^|\/)(test_[^/]*|[^/]*_te
  * Checks the worker's reproduction test (ticket 24.1): its command must pass on the fixed tree and fail once the non-test
  * changes are set aside, which proves it tests the problem. The command comes from the worker, so it only runs when it
  * starts with a command this job may already run (done-when, test_cmd, allow_commands); anything else stays unverified.
+ * `passed` are verify commands that already passed on this tree, so a claim equal to one skips the fixed-code rerun.
  */
 const FINDINGS_PROMPT = "You were stopped before finishing. Without calling any tool, answer in at most 600 characters: where the bug is (file:function), your best hypothesis, and what you ruled out.";
 const FINDINGS_MS = 30_000;
@@ -862,14 +864,14 @@ async function findings(session: Session): Promise<string | undefined> {
   }
 }
 
-async function checkRepro(worktree: Worktree, claim: string | undefined, allowed: string[], changed: string[], signal: AbortSignal): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
+async function checkRepro(worktree: Worktree, claim: string | undefined, allowed: string[], passed: string[], changed: string[], signal: AbortSignal): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
   const cwd = worktree.path;
   if (!claim || /^n\/?a\b/i.test(claim)) return {};
   if (/^none\b/i.test(claim)) return { repro: "none", risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}` };
   const runs = (cmd: string) => runVerify(cwd, [cmd], () => {}, signal).then((r) => r[0]?.ok ?? false);
   const unverified = (why: string) => ({ repro: "unverified" as const, risk: `nothing to do (the checks passed), reproduction not verified: ${why}` }); // the action first: risks are clipped at 120 chars
   if (!allowed.some((a) => claim === a || claim.startsWith(a + " "))) return unverified(`\`${claim}\` is not one of this job's check commands`);
-  if (!(await runs(claim))) return unverified(`\`${claim}\` fails on the fixed code`);
+  if (!passed.includes(claim) && !(await runs(claim))) return unverified(`\`${claim}\` fails on the fixed code`);
   const fix = changed.filter((p) => !TEST_FILE.test(p));
   if (!fix.length) return unverified("the change has no code outside tests");
   // set the fix aside by file (tests stay), run the reproduction, then restore; landing uses the diff taken before this.

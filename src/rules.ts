@@ -26,6 +26,7 @@ export const TAKE_OVER_RULE: Record<TakeOver, string> = {
 
 /**
  * Delegate before reading (ticket 23.4): Claude read ~2 files before each delegation, so the code entered its context
- * anyway and the worker only typed. Part of the server instructions.
+ * anyway and the worker only typed. Ticket 65, speed test 2026-11-22: research on a 2-file repo cost 47s before the first
+ * delegate and the worker re-read the same files anyway. Part of the server instructions.
  */
-export const SCOUT_RULE = "Don't open source files before delegating; the worker explores. To learn the code first, call research and pass its id as delegate brief:, not Read/Bash.";
+export const SCOUT_RULE = "Don't open source files or research before delegating; the worker explores. Research only a question the task depends on; pass its id as delegate brief:.";

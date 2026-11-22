@@ -274,7 +274,7 @@ test("config: models.medium and models.hard take provider/model names; hard_task
 });
 
 test("server instructions: one hint sentence, and hard_tasks adds its rule; every variant stays under the 4,096-character cut", () => {
-  const hint = "Pass difficulty, rated from the issue as the time an engineer new to the code needs to fix and test it: easy < 15 min, medium < 1 h, hard > 1 h.";
+  const hint = "Pass difficulty from the issue: time a new engineer needs to fix and test it, easy < 15 min, medium < 1 h, hard > 1 h.";
   const [delegate, self, sonnet] = (["delegate", "self", "sonnet"] as const).map((h) => instructions(h));
   for (const text of [delegate, self, sonnet]) {
     expect(text).toContain(hint);
