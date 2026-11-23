@@ -12,6 +12,12 @@
   <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT License">
 </p>
 
+<div align="center">
+
+[![M8ven Score](https://m8ven.ai/badge/mcp/muaaz9329-cheap-ag-1630jn?v=a1cabf33508f4f83cc139bcff0249af2)](https://m8ven.ai/mcp/muaaz9329-cheap-ag-1630jn?s=readme)
+
+</div>
+
 <p align="center">
   <img src="assets/demo.gif" width="880" alt="Two real Claude Code sessions side by side, same prompt: Claude Code alone climbs to 233k Opus tokens, Claude Code with Cheap Agent stops at 132k, and the cheap model costs $0.007.">
 </p>
