@@ -31,6 +31,12 @@ test("models.variants: a map of full model names to efforts loads; a non-string 
     .toThrow('models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}');
 });
 
+test("on_blocked_command: ask is the default; deny stays; anything else is named", () => {
+  expect(loadConfig(setup({}).dir).on_blocked_command).toBe("ask");
+  expect(loadConfig(setup({ on_blocked_command: "deny" }).dir).on_blocked_command).toBe("deny");
+  expect(() => loadConfig(setup({ on_blocked_command: "bogus" }).dir)).toThrow("on_blocked_command must be one of ask, deny");
+});
+
 test("takeover: ask is the default; sonnet and self stay; an unknown mode names all three", () => {
   expect(loadConfig(setup({}).dir).takeover).toBe("ask");
   expect(loadConfig(setup({ takeover: "sonnet" }).dir).takeover).toBe("sonnet");

@@ -264,4 +264,7 @@ test("the config dir pre-seeds node_modules and a package-lock so OpenCode skips
   expect(readFileSync(join(dir, "agents", "cheapag-worker.md"), "utf8")).toContain(
     "Explore in as few calls as you can: read whole files, send several reads or searches in one message, combine read commands with `;`, and search with `rg` (grep is not available in this sandbox).",
   );
+  expect(readFileSync(join(dir, "agents", "cheapag-worker.md"), "utf8")).toContain(
+    "Before running a command that is not a basic read or the step's checks, say in one sentence why you need it; the user may be asked to allow it.",
+  );
 });

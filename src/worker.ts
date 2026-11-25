@@ -1,7 +1,7 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { runningOpencode, type Opencode } from "./opencode.js";
 import { NO_SUMMARY } from "./report.js";
-import { rejectionMessage, type Rule } from "./permissions.js";
+import { canAlwaysAllow, commandPrefix, isHardDenied, rejectionMessage, type Rule } from "./permissions.js";
 import { modelName, type Limit, type WorkerModel } from "./routing.js";
 
 /** Worker: one OpenCode session for one job, reduced to what the job layer needs. */
@@ -9,6 +9,10 @@ import { modelName, type Limit, type WorkerModel } from "./routing.js";
 export const WORKER_AGENT = "cheapag-worker";
 /** How long an aborted prompt may take to go idle before its run is ended anyway. */
 const ABORT_GRACE_MS = 10_000;
+/** The worker is told not to retry a command the user refused, or a variant of it (ticket 69). */
+const REFUSED_MESSAGE = "the user refused this command; don't retry it or a variant";
+/** At most this many bash commands are put to the user per job; later asks are rejected as today. */
+const MAX_PERMISSION_ASKS = 3;
 
 /**
  * `repro`: the command that runs the worker's reproduction test, `none: <why>` when it could not reproduce, `n/a` when the step is not a fix.
@@ -25,6 +29,10 @@ export type Rejection = { kind: "denied" | "asked"; permission: string; what: st
 export type SessionResult = SessionTotals & RunResult;
 /** A question the worker asked with OpenCode's question tool: its text and option labels, in order. */
 export type Question = { question: string; options: string[] };
+/** A bash command the worker asked permission for, put to the user as a BLOCKED block (ticket 69). */
+export type PermissionAsk = { permission: string; command: string; title: string; why: string; prefix: string; always: boolean };
+/** The user's answer: allow once, always allow the prefix this job (and save it), or refuse. */
+export type PermissionAnswer = "once" | "always" | "reject";
 
 /**
  * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
@@ -42,6 +50,10 @@ export async function openSession(opts: {
   onEvent: (event: Event, turns: number) => void;
   /** Called when the worker asks (one or several questions at once); the session stays paused until it resolves with one answer per question. Without it, questions are rejected. */
   onQuestion?: (questions: Question[]) => Promise<string[]>;
+  /** Called when a bash command asks for permission; resolves with the user's answer, or undefined on a stop. Without it (and for non-bash or HARD_DENY), the ask is rejected. */
+  onPermission?: (ask: PermissionAsk) => Promise<PermissionAnswer>;
+  /** The plan step this prompt is for: the title fallback names it when the bash input has no description. */
+  step?: { label: string; title: string };
   /** Aborting it aborts the session's current prompt (OpenCode abort) and refuses later ones: caps and cancel. */
   signal?: AbortSignal;
 }) {
@@ -60,6 +72,10 @@ export async function openSession(opts: {
   const rounds = new Set<string>(); // assistant message ids that carried at least one tool call
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
+  const toolInputs = new Map<string, Record<string, unknown>>(); // tool call id → its input, to title a bash ask
+  let permissionAsks = 0; // a job asks at most MAX_PERMISSION_ASKS times; later asks are rejected as today
+  const allowedPrefixes = new Set<string>(); // "always allow" prefixes granted this job
+  const refusedCommands = new Set<string>(); // the user refused these exact commands; repeats are rejected without asking
 
   /**
    * `interrupt` ends this prompt only (the session stays usable, e.g. to hand it to another model); `opts.signal` ends the
@@ -80,6 +96,7 @@ export async function openSession(opts: {
     await stream.next();
     try {
       const texts = new Map<string, { messageID: string; text: string }>(); // text part id → latest text
+      const reasonings = new Map<string, { messageID: string; text: string }>(); // reasoning part id → latest text
       let idle = false;
       let finish: FinishReport | undefined;
       let error: string | undefined;
@@ -107,6 +124,7 @@ export async function openSession(opts: {
 
         if (event.type === "message.part.updated") {
           const part = event.properties.part;
+          if (part.type === "tool" && part.state.input && typeof part.state.input === "object") toolInputs.set(part.callID, part.state.input as Record<string, unknown>);
           if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
             // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
             if (!calls.has(part.callID) && part.state.status === "error" && part.state.error.startsWith("The user has specified a rule which prevents")) {
@@ -117,6 +135,7 @@ export async function openSession(opts: {
             if (part.tool === "finish" && part.state.status === "completed") finish = asReport(part.state.input);
           }
           if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
+          if (part.type === "reasoning") reasonings.set(part.id, { messageID: part.messageID, text: part.text });
         } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
           const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
           // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
@@ -130,16 +149,66 @@ export async function openSession(opts: {
             cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
           });
         } else if (event.type === "permission.asked") {
-          // an unanswered ask blocks forever in server mode: reject every one, with a reason the worker sees
-          const what = event.properties.patterns.join(" ") || event.properties.permission;
-          rejections.push({ kind: "asked", permission: event.properties.permission, what });
-          const replied = await client.permission
-            .reply({ requestID: event.properties.id, directory, reply: "reject", message: rejectionMessage(what) })
-            .catch((err: Error) => ({ error: err.message }));
-          // a reject that did not go through would leave the session blocked: end this run as a worker error instead
-          if (replied.error) {
-            error ??= `could not reject a ${event.properties.permission} permission request: ${JSON.stringify(replied.error)}`;
-            break;
+          const props = event.properties;
+          const what = props.patterns.join(" ") || props.permission;
+          const metadata = props.metadata as Record<string, unknown> | undefined;
+          const command = typeof metadata?.command === "string" && metadata.command.trim() ? metadata.command.trim() : what;
+          const prefix = commandPrefix(command);
+          const reject = async (message: string, record = true): Promise<boolean> => {
+            if (record) rejections.push({ kind: "asked", permission: props.permission, what });
+            const replied = await client.permission.reply({ requestID: props.id, directory, reply: "reject", message }).catch((err: Error) => ({ error: err.message }));
+            if (replied.error) {
+              error ??= `could not reject a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
+              return false;
+            }
+            return true;
+          };
+          const allowOnce = async (): Promise<boolean> => {
+            const replied = await client.permission.reply({ requestID: props.id, directory, reply: "once" }).catch((err: Error) => ({ error: err.message }));
+            if (replied.error) {
+              error ??= `could not answer a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
+              return false;
+            }
+            return true;
+          };
+          if (props.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
+            // not askable: rejected as today
+            if (!(await reject(rejectionMessage(what)))) break;
+          } else if (refusedCommands.has(command)) {
+            // the user already refused this exact command in this job
+            if (!(await reject(REFUSED_MESSAGE, false))) break;
+          } else {
+            const matchesPrefix = command === prefix || command.startsWith(`${prefix} `);
+            if (allowedPrefixes.has(prefix) && matchesPrefix) {
+              if (!(await allowOnce())) break;
+            } else if (permissionAsks >= MAX_PERMISSION_ASKS) {
+              if (!(await reject(rejectionMessage(what)))) break;
+            } else {
+              permissionAsks++;
+              opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
+              const call = props.tool?.callID ? toolInputs.get(props.tool.callID) : undefined;
+              const description = typeof call?.description === "string" && call.description.trim() ? call.description : typeof metadata?.description === "string" && metadata.description.trim() ? metadata.description : undefined;
+              const stepTitle = opts.step?.title.trim().slice(0, 60);
+              const title = description ?? (opts.step ? `${prefix} for step ${opts.step.label}: ${stepTitle}` : command.split(/\s+/)[0] ?? command);
+              const messageID = props.tool?.messageID;
+              const whyText = [...texts.values()].filter((t) => t.messageID === messageID).map((t) => t.text).join(" ").replace(/\s+/g, " ").trim();
+              const reasoningText = whyText ? "" : [...reasonings.values()].filter((t) => t.messageID === messageID).map((t) => t.text).join(" ").replace(/\s+/g, " ").trim();
+              const why = (whyText || reasoningText).slice(0, 200) || "the worker gave no reason";
+              const stopped = new Promise<undefined>((resolve) => (signal?.aborted ? resolve(undefined) : signal?.addEventListener("abort", () => resolve(undefined), { once: true })));
+              const answer = await Promise.race([opts.onPermission({ permission: props.permission, command, title, why, prefix, always: canAlwaysAllow(prefix) }), stopped]);
+              if (answer === undefined) {
+                if (!(await reject(rejectionMessage(what), false))) break;
+              } else if (answer === "once") {
+                if (!(await allowOnce())) break;
+              } else if (answer === "always") {
+                allowedPrefixes.add(prefix);
+                if (!(await allowOnce())) break;
+              } else {
+                refusedCommands.add(command);
+                if (!(await reject(REFUSED_MESSAGE, false))) break;
+              }
+              continue;
+            }
           }
         } else if (event.type === "question.asked") {
           opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off

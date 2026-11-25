@@ -6,13 +6,13 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
 import { needsOf, overlap, parsePlan, PLAN_FORMAT, selectGroups, type Group, type Plan, type PlanStep } from "./plan.js";
-import { failBlock, renderBatch, renderJob, type BatchRecord, type JobRecord } from "./report.js";
-import { loadConfig, type Config } from "./config.js";
+import { failBlock, permissionOptions, renderBatch, renderJob, type BatchRecord, type JobRecord, type PermissionBlock } from "./report.js";
+import { addAllowCommand, loadConfig, type Config } from "./config.js";
 import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
 import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, routeModels, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
 import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
-import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
+import { finishReport, openSession, releaseDirectory, type FinishReport, type PermissionAnswer, type PermissionAsk, type Question, type RunResult, type Session } from "./worker.js";
 import {
   callRoot, conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
   type Changed, type Worktree,
@@ -28,7 +28,7 @@ import { toolTarget } from "./watch.js";
  */
 function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
   const { scripts, exact } = projectScripts(worktree.path);
-  return workerRuleset({ scripts, exact: [...exact, ...cmds.flatMap(checkAllows)], allowCommands: config.allow_commands, linked: worktree.linked });
+  return workerRuleset({ scripts, exact: [...exact, ...cmds.flatMap(checkAllows)], allowCommands: config.allow_commands, linked: worktree.linked, onBlockedCommand: config.on_blocked_command });
 }
 
 /** More rejections than this in one job earn a risk line. */
@@ -237,6 +237,7 @@ function runGroup(g: GroupRun) {
   };
   let notStarted: string | undefined;
   let asked: NonNullable<JobRecord["question"]>[] | null = null;
+  let pending: PermissionBlock | null = null; // the command permission ask this job is paused on (ticket 69)
   let blockedAt: Date | undefined;
   let expiry: NodeJS.Timeout | undefined; // max_blocked_minutes, while BLOCKED
   let worktree: Worktree | undefined;
@@ -375,7 +376,7 @@ function runGroup(g: GroupRun) {
       // a worker stopped by a cap rarely says what it left undone
       missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped (${stopped?.reason ?? "cap"}); compare the diff with the step`] : report.missing,
       reason, conflict,
-      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, ...(repro && { repro }), question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
+      verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, ...(repro && { repro }), question: asked?.length === 1 ? asked[0] : null, ...(pending && { permission: pending }), ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
       usage: { turns: session?.totals().turns ?? 0, calls: session?.totals().calls ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
       timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime(), ...(waiting && { blockedAt }) },
     };
@@ -387,7 +388,7 @@ function runGroup(g: GroupRun) {
   };
 
   /** The worker asked: the job is BLOCKED, its block goes to whoever waits, and the session stays paused until `reply` resumes it. */
-  const onQuestion = (questions: Question[]) => new Promise<string[]>((answer) => {
+  const onQuestion = (questions: Question[], permission = false, always = true) => new Promise<string[]>((answer) => {
     pauseClock();
     asked = questions.map((q) => ({ text: q.question, options: q.options, answer: null }));
     changed = worktreeDiff(worktree!).changed;
@@ -395,7 +396,7 @@ function runGroup(g: GroupRun) {
     // a forgotten question must not hold the session, the worktree and a worker slot forever
     expiry = setTimeout(() => stop({ cap: "cancel", reason: `no reply within ${limits.max_blocked_minutes} min` }), limits.max_blocked_minutes * 60_000).unref();
     blocked.set(job, {
-      job, root, questions,
+      job, root, questions, permission, always,
       resume: (answers, replyProgress) => {
         clearTimeout(expiry);
         blockedAt = undefined;
@@ -411,6 +412,17 @@ function runGroup(g: GroupRun) {
     });
     announce(finalize("BLOCKED"));
   });
+
+  /** A bash command off the allow list: the same pause as a question, with three fixed options; "always" is saved by the server, never the worker. */
+  const onPermission = async (ask: PermissionAsk): Promise<PermissionAnswer> => {
+    pending = { title: ask.title, command: ask.command, why: ask.why, prefix: ask.prefix, always: ask.always };
+    const options = permissionOptions(ask.prefix);
+    const [label] = await onQuestion([{ question: ask.title, options }], true, ask.always);
+    pending = null;
+    const choice = options.indexOf(label);
+    if (choice === 1) addAllowCommand(root, ask.prefix);
+    return choice === 0 ? "once" : choice === 1 ? "always" : "reject";
+  };
 
   /**
    * Its patch clashed with the working tree on landing (spec: Landing and redo): the tree is untouched, and one redo
@@ -474,8 +486,10 @@ function runGroup(g: GroupRun) {
         directory: worktree.path,
         model,
         permission: rulesetFor(worktree, cmds, config),
+        step: { label: g.group.label, title: steps.map((s) => s.title).join("; ") },
         // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
-        onQuestion: g.fix ? undefined : onQuestion,
+        onQuestion: g.fix ? undefined : (q) => onQuestion(q),
+        onPermission: g.fix ? undefined : onPermission,
         signal: halt.signal,
         onEvent: (event, turns) => {
           appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
@@ -1224,6 +1238,10 @@ export type BlockedJob = {
   /** The repository the job runs in: ids are unique per repository, and one server can run jobs in several. */
   root: string;
   questions: Question[];
+  /** A command permission ask: only the letters a, b, c answer it (a and c when always-allow is not offered). */
+  permission?: boolean;
+  /** Whether the block offered "always allow"; false means b is not an answer. */
+  always?: boolean;
   /** Answers the questions (one answer each) and resumes the session; resolves with the job's next block (final, or BLOCKED again). */
   resume: (answers: string[], progress: Progress) => Promise<string>;
 };
@@ -1240,6 +1258,10 @@ export async function reply(input: { job: string; answer: string; root?: string 
   const entry = found?.root === root ? found : undefined;
   if (!entry) return failBlock(notWaiting(root, input.job));
   if (!input.answer.trim()) return failBlock("empty answer; reply with an option letter or free text"); // the job stays BLOCKED
+  if (entry.permission) {
+    const answers = entry.always === false ? /^\s*[ac]\)?\s*$/i : /^\s*[a-c]\)?\s*$/i;
+    if (!answers.test(input.answer)) return failBlock(entry.always === false ? "answer a or c" : "answer a, b or c"); // the job stays BLOCKED
+  }
   // one question also takes the numbered form ("1a", "1: text") that several questions need
   const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(input.answer);
   const answers = entry.questions.length === 1 && !numbered ? [pick(input.answer, entry.questions[0])] : answerEach(input.answer, entry.questions);

@@ -20,6 +20,19 @@ export type Rule = { permission: string; pattern: string; action: "allow" | "den
 
 const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"];
 
+/**
+ * Programs whose "always allow" prefix could write files or run arbitrary code: `sed -i`, awk/perl/python `system`,
+ * `find -exec`, and the rest would get past the edit rules that protect .env, lockfiles and cheapag.json. They may
+ * still be allowed once, never always.
+ */
+export const WRITE_OR_RUN = new Set([
+  "sed", "awk", "perl", "python", "python3", "node", "ruby", "bash", "sh", "zsh", "find", "xargs", "env", "tee", "dd",
+  "cp", "mv", "rm", "ln", "chmod", "git", "npx", "npm", "pnpm", "yarn", "bun", "make",
+]);
+
+/** Whether "always allow" may be offered for a command's prefix. */
+export const canAlwaysAllow = (prefix: string) => !WRITE_OR_RUN.has(prefix.trim().split(/\s+/)[0] ?? "");
+
 /** Commands no project script or config may allow: always the last rules, so they always win. */
 export const HARD_DENY = [
   ...PACKAGE_MANAGERS.flatMap((pm) => [`${pm} install*`, `${pm} i`, `${pm} i *`, `${pm} add*`, `${pm} ci*`]),
@@ -32,8 +45,15 @@ export const HARD_DENY = [
   "npm exec*", "pnpm dlx*", "yarn dlx*", "bunx*",
   // find can execute or delete, and its output flags write files
   "find*-exec*", "find*-ok*", "find*-delete*", "find*-fprint*", "find*-fls*",
+  // sed in place is a file write the edit rules never see; ordinary reads (`sed -n 1,3p README.md`) have no -i
+  "sed *-i*",
   // bash segments naming a .env file (the read tool's deny does not cover bash) and rg flags that read gitignored files
   "* .env*", "*/.env*", "rg*--no-ignore*", "rg* -u*",
+  // never asked about (ticket 69): a shell as a command or a pipe target, command substitution, installs written with extra spaces, rm flag spellings
+  ...["sh", "bash", "zsh"].flatMap((sh) => [sh, `${sh} *`, ...["", " ", "  "].flatMap((gap) => [`*|${gap}${sh}`, `*|${gap}${sh} *`])]),
+  "*$(*", "*`*", "rm -Rf*", "rm -fR*", "rm -r -f*", "rm -f -r*",
+  ...PACKAGE_MANAGERS.flatMap((pm) => [`${pm} -*install*`, `${pm} -*add*`, `${pm} in`, `${pm} in *`, `${pm} isntall*`]),
+  ...PACKAGE_MANAGERS.flatMap((pm) => ["  ", "   "].flatMap((gap) => ["install", "add", "ci", "i"].flatMap((v) => [`${pm}${gap}${v}`, `${pm}${gap}${v} *`]))),
 ];
 
 const LOCKFILES = [
@@ -63,6 +83,7 @@ const EXACT_ALWAYS = ["git branch", "git branch --show-current"];
 
 const allow = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "allow" });
 const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "deny" });
+const ask = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "ask" });
 /** A command allowed as typed, and with any arguments after it. */
 const command = (cmd: string) => [allow("bash", cmd), allow("bash", `${cmd} *`)];
 /** Stderr suppression on commands already allowed: never a bare `<anything> 2>/dev/null`. */
@@ -80,7 +101,7 @@ const ENV_READS = [
  * then the hard denylist. `scripts` and `allowCommands` are allowed with any arguments; `exact` only as written
  * (make targets, the step's done-when checks); `linked` are dependency dirs in the worktree (readable, never editable).
  */
-export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[]; linked?: string[] } = {}): Rule[] {
+export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[]; linked?: string[]; onBlockedCommand?: "ask" | "deny" } = {}): Rule[] {
   const commands = [...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])];
   const exact = [...EXACT_ALWAYS, ...(opts.exact ?? [])];
   return [
@@ -93,7 +114,7 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
     allow("edit"),
     ...PROTECTED.map((p) => deny("edit", p)),
     ...(opts.linked ?? []).flatMap((d) => [deny("edit", d), deny("edit", `${d}/**`)]),
-    deny("bash"),
+    opts.onBlockedCommand === "ask" ? ask("bash") : deny("bash"),
     ...commands.flatMap(command),
     ...exact.map((c) => allow("bash", c)),
     deny("bash", "*>*"),
@@ -131,7 +152,8 @@ export function researchRuleset(opts: { scripts?: string[]; exact?: string[]; al
 /** The same static rules in OpenCode's config form, for the server-wide `OPENCODE_PERMISSION` baseline. */
 export function baselinePermission() {
   const config: Record<string, string | Record<string, string>> = {};
-  for (const rule of workerRuleset()) {
+  // the server-wide baseline never pauses: a session that can be asked carries its own ruleset with `ask`
+  for (const rule of workerRuleset({ onBlockedCommand: "deny" })) {
     if (rule.pattern === "*" && !(rule.permission in config)) config[rule.permission] = rule.action;
     else {
       const current = config[rule.permission];
@@ -166,6 +188,22 @@ export function projectScripts(dir: string): { scripts: string[]; exact: string[
     exact.push("make");
   }
   return { scripts: [...new Set(commands)], exact: [...new Set(exact)] };
+}
+
+/** The program a command names, plus a bare second word (`git branch`, `npm run`), for an "always allow" prefix. */
+export function commandPrefix(command: string): string {
+  const [first, second] = command.trim().split(/\s+/);
+  return first && second && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(second) ? `${first} ${second}` : first ?? command.trim();
+}
+
+const globToRegExp = (pattern: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`);
+const HARD_DENY_MATCHERS = HARD_DENY.map(globToRegExp);
+/** The command segments OpenCode checks separately, plus the whole line. */
+const commandSegments = (command: string) => [command, ...command.split(/&&|\|\||;|\||\n|\$\(|`/).map((part) => part.trim().replace(/\)+$/, ""))];
+
+/** Whether any part of a command is on `HARD_DENY`: those are refused, never put to the user. */
+export function isHardDenied(command: string): boolean {
+  return commandSegments(command).some((part) => part && HARD_DENY_MATCHERS.some((re) => re.test(part)));
 }
 
 /** What a worker sees when a permission request is auto-rejected (spec E1). */

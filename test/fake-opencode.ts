@@ -32,12 +32,14 @@ export type Action =
   | { usage: Usage }
   /** Assistant text, e.g. a fenced `cheapag-result` block. */
   | { text: string }
+  /** Assistant reasoning (no text part), as the worker wrote before asking for bash. */
+  | { reasoning: string }
   /** Asks via the question tool, then pauses until Cheap Agent replies or rejects. */
   | { question: string; options: string[]; header?: string }
   /** Asks several questions in one question-tool call. */
   | { questions: { question: string; options: string[] }[] }
   /** Requests a permission, then pauses until Cheap Agent replies. */
-  | { permission: string; patterns?: string[] }
+  | { permission: string; patterns?: string[]; command?: string; description?: string }
   /**
    * A retry status, after which the run hangs until aborted, as the real one does while it waits out retry-after.
    * With `reason`, a Go/free-tier limit (`action` set, as OpenCode 1.19 builds it); without, a plain rate limit such as
@@ -206,6 +208,8 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
         emit(dir, "message.updated", { sessionID: session.id, info: assistantMessage(run) });
       } else if ("text" in action) {
         part({ id: id("prt"), sessionID: session.id, messageID: run.assistantID, type: "text", text: action.text, time: { start: Date.now(), end: Date.now() } });
+      } else if ("reasoning" in action) {
+        part({ id: id("prt"), sessionID: session.id, messageID: run.assistantID, type: "reasoning", text: action.reasoning, time: { start: Date.now(), end: Date.now() } });
       } else if ("questions" in action) {
         await ask(run, "question.asked", {
           questions: action.questions.map((q) => ({ question: q.question, header: "Question", options: q.options.map((label) => ({ label, description: label })) })),
@@ -215,7 +219,7 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
           questions: [{ question: action.question, header: action.header ?? "Question", options: action.options.map((label) => ({ label, description: label })) }],
         });
       } else if ("permission" in action) {
-        await ask(run, "permission.asked", { permission: action.permission, patterns: action.patterns ?? ["*"], metadata: {}, always: [] });
+        await ask(run, "permission.asked", { permission: action.permission, patterns: action.patterns ?? ["*"], metadata: { command: action.command, description: action.description }, always: [] });
       } else if ("retry" in action) {
         const { reason, message, next, recoverAfter } = action.retry;
         setStatus(session, {
