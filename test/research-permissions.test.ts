@@ -101,10 +101,17 @@ test("reads the main checkout, uncommitted edits included, and searches it", asy
 
 test("can run the allowed test commands (to reproduce), but cannot edit, run anything else, ask questions, or read secrets and outside paths", async () => {
   expect(await outcome("bash", { command: "git status", description: "t" })).toBe("allowed");
+  expect(await outcome("bash", { command: "find . -name '*.md'", description: "t" })).toBe("allowed");
+  expect(await outcome("bash", { command: "cat README.md 2>/dev/null", description: "t" })).toBe("allowed");
+  expect(await outcome("bash", { command: "git branch --show-current", description: "t" })).toBe("allowed");
   for (const [tool, args] of [
     ["write", { filePath: join(repo.dir, "src/new.ts"), content: "x\n" }],
     ["edit", { filePath: join(repo.dir, "README.md"), oldString: "fixture", newString: "changed" }],
-    ["bash", { command: "find . -name '*.ts'", description: "t" }],
+    ["bash", { command: "find . -delete", description: "t" }],
+    ["bash", { command: "find . -exec rm {} \\;", description: "t" }],
+    ["bash", { command: "cat README.md > made.md 2>/dev/null", description: "t" }],
+    ["bash", { command: "cat .env 2>/dev/null", description: "t" }],
+    ["bash", { command: "git branch -D x", description: "t" }],
     ["bash", { command: "touch made.txt", description: "t" }],
     ["question", { questions: [{ question: "a or b?", header: "Q", options: [{ label: "a", description: "a" }, { label: "b", description: "b" }] }] }],
     ["read", { filePath: join(repo.dir, ".env") }],

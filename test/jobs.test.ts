@@ -365,6 +365,22 @@ test("ticket 33: a medium step gets twice an easy one's turns before the turn ca
   expect(mediumText).toContain("\nreason: turn cap (4) reached\n");
 });
 
+test("turns count model rounds, not tool calls: 2 messages of 3 calls are turns=2 calls=6, and a cap of 2 stops on the round", async () => {
+  const { fake, delegate, record } = await scenario({
+    repoConfig: { limits: { max_turns: 2 } },
+    scripts: [[
+      { tools: [{ tool: "read" }, { tool: "grep" }, { tool: "read" }] },
+      { tools: [{ tool: "grep" }, { tool: "read" }, { tool: "grep" }] },
+    ]],
+  });
+  const text = await delegate();
+  const job = jobOf(text);
+  expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=0 \\+0/-0 tests=none turns=2 `));
+  expect(text).toContain("\nreason: turn cap (2) reached\n");
+  expect(record(job).usage).toMatchObject({ turns: 2, calls: 6 });
+  expect(fake.recorded.aborts).toHaveLength(1);
+});
+
 test("ticket 33: a turn cap during the fixes still escalates once, on its own budget; esc fixes it and the job lands", async () => {
   const { repo, fake, server, record } = await scenario({
     doneWhen: "`node check.mjs` passes",

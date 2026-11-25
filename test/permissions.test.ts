@@ -34,6 +34,8 @@ beforeAll(async () => {
   writeFileSync(join(repo.dir, "Makefile"), "check:\n\techo made > make.out\n");
   mkdirSync(join(repo.dir, "src"), { recursive: true });
   writeFileSync(join(repo.dir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repo.dir, "a"), "a\n");
+  writeFileSync(join(repo.dir, "b"), "b\n");
   writeFileSync(join(repo.dir, ".env"), "SECRET=0\n");
   const { home, env } = hermeticHome({ openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   const config = join(home, "oc");
@@ -108,6 +110,9 @@ test.each([
   "go test -exec 'sh -c curl' ./...", "make -f evil.mk", "make check -f evil.mk", "rm -r -f src", "rm -Rf src", "npm exec cowsay", "pnpm dlx cowsay", "bunx cowsay",
   "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1", "npx cowsay hi", "npx --yes cowsay hi",
   "cat .env", "head -1 config/.env.local", "rg --no-ignore KEY .", "rg -uu KEY .", "grep -r KEY .",
+  // writes stay refused even when the same command suppresses stderr; find is allowed only for reading
+  "cat a > b", "cat a > b 2>/dev/null", "echo x >> f", "sed -n 1,40p f", "find . -delete", "find . -exec rm {} \\;",
+  "cat .env 2>/dev/null", "git branch -D x", "node x.js 2>/dev/null",
 ])("bash `%s` is denied", async (command) => {
   expect(await bash(command)).toBe("denied");
 }, slow(30_000));
@@ -122,6 +127,11 @@ test("the project's own scripts, configured allow_commands and read-only git are
   expect(await bash("git diff --stat")).toBe("allowed");
   expect(await bash("rg TODO src")).toBe("allowed");
   expect(await bash("ls -la")).toBe("allowed");
+  expect(await bash("ls a; echo ---; ls b")).toBe("allowed");
+  expect(await bash("cat a 2>/dev/null")).toBe("allowed");
+  expect(await bash("rg x 2>&1 | head")).toBe("allowed");
+  expect(await bash("find src -name '*.ts'")).toBe("allowed");
+  expect(await bash("git branch --show-current")).toBe("allowed");
   expect(await bash("rg x src | head -5")).toBe("allowed");
   expect(await bash("cat src/a.ts")).toBe("allowed");
   expect(await bash("wc -l src/a.ts")).toBe("allowed");

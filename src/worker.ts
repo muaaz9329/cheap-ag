@@ -18,8 +18,8 @@ export type FinishReport = { summary: string; risks: string[]; review: string[];
 export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
 /** What one prompt of a session produced; `limit` when it was aborted on a provider limit, `httpStatus` of a provider error. */
 export type RunResult = { finish?: FinishReport; text: string; error?: string; limit?: Limit; httpStatus?: number; interrupted?: boolean };
-/** Session totals so far: turns and usage accumulate across every prompt of the session; `spend` is cost per model name. */
-export type SessionTotals = { sessionID: string; turns: number; usage: Usage; rejections: Rejection[]; spend: Record<string, number> };
+/** Session totals so far: `turns` are model rounds (assistant messages with tool calls), `calls` the tool calls; usage accumulates across every prompt; `spend` is cost per model name. */
+export type SessionTotals = { sessionID: string; turns: number; calls: number; usage: Usage; rejections: Rejection[]; spend: Record<string, number> };
 /** A tool call the ruleset denied outright, or a permission request auto-rejected. */
 export type Rejection = { kind: "denied" | "asked"; permission: string; what: string };
 export type SessionResult = SessionTotals & RunResult;
@@ -38,7 +38,7 @@ export async function openSession(opts: {
   agent?: string;
   /** The session's permission ruleset (see src/permissions.ts); OpenCode enforces it, last matching rule winning. */
   permission?: Rule[];
-  /** Called with every event of this session, in order (for the job log and progress). */
+  /** Called with every event of this session, in order (for the job log and progress); `turns` is the round count. */
   onEvent: (event: Event, turns: number) => void;
   /** Called when the worker asks (one or several questions at once); the session stays paused until it resolves with one answer per question. Without it, questions are rejected. */
   onQuestion?: (questions: Question[]) => Promise<string[]>;
@@ -57,6 +57,7 @@ export async function openSession(opts: {
   if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
   let sessionID = created.data.id;
   const calls = new Set<string>();
+  const rounds = new Set<string>(); // assistant message ids that carried at least one tool call
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
 
@@ -112,6 +113,7 @@ export async function openSession(opts: {
               rejections.push({ kind: "denied", permission: part.tool, what: describeCall(part.state.input) });
             }
             calls.add(part.callID);
+            rounds.add(part.messageID);
             if (part.tool === "finish" && part.state.status === "completed") finish = asReport(part.state.input);
           }
           if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
@@ -140,7 +142,7 @@ export async function openSession(opts: {
             break;
           }
         } else if (event.type === "question.asked") {
-          opts.onEvent(event, calls.size); // logged now: the answer may be a long way off
+          opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
           const questions = event.properties.questions.map((q) => ({ question: q.question, options: q.options.map((o) => o.label) }));
           const requestID = event.properties.id;
           // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
@@ -169,7 +171,7 @@ export async function openSession(opts: {
           limit = { model: modelName(model ?? opts.model), reason: action?.reason, message: action?.message ?? message, next };
           stop();
         }
-        opts.onEvent(event, calls.size);
+        opts.onEvent(event, rounds.size);
         if (event.type === "session.idle") {
           idle = true;
           break;
@@ -197,7 +199,7 @@ export async function openSession(opts: {
       for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
       spend[m.model] = (spend[m.model] ?? 0) + m.costUsd;
     }
-    return { sessionID, turns: calls.size, usage, rejections: [...rejections], spend };
+    return { sessionID, turns: rounds.size, calls: calls.size, usage, rejections: [...rejections], spend };
   }
 
   /**

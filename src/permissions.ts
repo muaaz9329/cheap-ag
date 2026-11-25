@@ -10,7 +10,7 @@ import { join } from "node:path";
  * - edit patterns are worktree-relative and cannot deny an absolute path outside it, so `external_directory` stays
  *   denied: linked dependency dirs are read through their in-worktree symlink, and edits under them are denied.
  * - OpenCode splits `;`, `|`, `&&`, `$(…)` and backticks into separate checked commands, but not redirection, so
- *   `>` is denied outright.
+ *   `>` is denied outright except the known stderr forms on already-allowed commands (below).
  *
  * This is a guardrail against commands the model types, not a sandbox: the worker can edit source and run allowed
  * test commands, so code it writes can still run anything the developer's user can (see STATUS carry-forward).
@@ -30,6 +30,8 @@ export const HARD_DENY = [
   // seen bypassing allowed prefixes against the real OpenCode: writes past the edit rules, or arbitrary programs
   "*>*", "git *--output*", "git *--ext-diff*", "go test*-exec*", "go test*-toolexec*", "cargo test*--config*",
   "npm exec*", "pnpm dlx*", "yarn dlx*", "bunx*",
+  // find can execute or delete, and its output flags write files
+  "find*-exec*", "find*-ok*", "find*-delete*", "find*-fprint*", "find*-fls*",
   // bash segments naming a .env file (the read tool's deny does not cover bash) and rg flags that read gitignored files
   "* .env*", "*/.env*", "rg*--no-ignore*", "rg* -u*",
 ];
@@ -49,17 +51,23 @@ export const PROTECTED = [
 
 /** Always-allowed commands, each as typed and with arguments: read-only basics, git, and the common test runners. */
 const ALWAYS = [
-  "ls", "pwd", "cat", "head", "tail", "wc", "node --version", "node -v",
+  "ls", "pwd", "cat", "head", "tail", "wc", "echo", "find", "node --version", "node -v",
   "git status", "git diff", "git log", "git show",
   "git -C * diff", "git -C * status", "git -C * log", "git -C * show",
   "git --no-pager diff", "git --no-pager status", "git --no-pager log", "git --no-pager show",
   "rg", "npx eslint", "npx tsc", "npx prettier", "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "bun test",
 ];
 
+/** Commands allowed only in these exact forms (`git branch` otherwise creates or deletes branches). */
+const EXACT_ALWAYS = ["git branch", "git branch --show-current"];
+
 const allow = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "allow" });
 const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "deny" });
 /** A command allowed as typed, and with any arguments after it. */
 const command = (cmd: string) => [allow("bash", cmd), allow("bash", `${cmd} *`)];
+/** Stderr suppression on commands already allowed: never a bare `<anything> 2>/dev/null`. */
+const stderr = (cmd: string, args: boolean) =>
+  ["2>/dev/null", "2>&1"].flatMap((redir) => [allow("bash", `${cmd} ${redir}`), ...(args ? [allow("bash", `${cmd} * ${redir}`)] : [])]);
 
 /** Secrets: OpenCode's default does not cover .env reads under these rulesets; examples stay readable (last match wins). */
 const ENV_READS = [
@@ -73,6 +81,8 @@ const ENV_READS = [
  * (make targets, the step's done-when checks); `linked` are dependency dirs in the worktree (readable, never editable).
  */
 export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[]; linked?: string[] } = {}): Rule[] {
+  const commands = [...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])];
+  const exact = [...EXACT_ALWAYS, ...(opts.exact ?? [])];
   return [
     deny("*"),
     // `finish` is Cheap Agent's own tool (tools/finish.ts): custom tools are permission-checked by name, so the
@@ -84,9 +94,13 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
     ...PROTECTED.map((p) => deny("edit", p)),
     ...(opts.linked ?? []).flatMap((d) => [deny("edit", d), deny("edit", `${d}/**`)]),
     deny("bash"),
-    ...[...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])].flatMap(command),
-    ...(opts.exact ?? []).map((c) => allow("bash", c)),
-    ...HARD_DENY.map((p) => deny("bash", p)),
+    ...commands.flatMap(command),
+    ...exact.map((c) => allow("bash", c)),
+    deny("bash", "*>*"),
+    ...commands.flatMap((c) => stderr(c, true)),
+    ...exact.flatMap((c) => stderr(c, false)),
+    deny("bash", "*>*>*"),
+    ...HARD_DENY.filter((p) => p !== "*>*").map((p) => deny("bash", p)),
   ];
 }
 
@@ -96,15 +110,21 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
  * so a command that writes files cannot touch the developer's tree. Env files are unreadable; outside the repo is denied.
  */
 export function researchRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[] } = {}): Rule[] {
+  const commands = [...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])];
+  const exact = [...EXACT_ALWAYS, ...(opts.exact ?? [])];
   return [
     deny("*"),
     ...["read", "glob", "grep", "list"].map((p) => allow(p)),
     ...ENV_READS,
     ...["edit", "question", "lsp", "todowrite", "finish", "external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
     deny("bash"),
-    ...[...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])].flatMap(command),
-    ...(opts.exact ?? []).map((c) => allow("bash", c)),
-    ...HARD_DENY.map((p) => deny("bash", p)),
+    ...commands.flatMap(command),
+    ...exact.map((c) => allow("bash", c)),
+    deny("bash", "*>*"),
+    ...commands.flatMap((c) => stderr(c, true)),
+    ...exact.flatMap((c) => stderr(c, false)),
+    deny("bash", "*>*>*"),
+    ...HARD_DENY.filter((p) => p !== "*>*").map((p) => deny("bash", p)),
   ];
 }
 

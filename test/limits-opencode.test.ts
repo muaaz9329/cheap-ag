@@ -54,12 +54,13 @@ afterAll(async () => {
 
 async function session() {
   const repo = tempRepo();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(repo.dir, name), `${name}\n`);
   // dispose the repo's instance before the repo is removed: the running OpenCode holds its directory open (Windows cannot delete one)
   onTestFinished(async () => {
     await client.instance.dispose({ directory: repo.dir }).catch(() => {});
     repo.cleanup();
   });
-  return openSession({ opencode, directory: repo.dir, model: { providerID: "openrouter", id: FLASH }, onEvent: () => {} });
+  return { dir: repo.dir, s: await openSession({ opencode, directory: repo.dir, model: { providerID: "openrouter", id: FLASH }, onEvent: () => {} }) };
 }
 
 const tools = () => llm.requests.filter((r) => r.tools?.length); // title generation sends none
@@ -68,7 +69,7 @@ test("a Go limit: the retry status is read at once, the session aborted, and a m
   const before = tools().length;
   const body = { type: "error", error: { type: "GoUsageLimitError", message: "limit" }, metadata: { workspace: "wrk_test", limitName: "5h" } };
   llm.script({ status: 429, body, headers: { "retry-after": "8040" } }); // 2 h 14 min
-  const s = await session();
+  const { s } = await session();
   const started = Date.now();
   const limited = await s.run("do step 1");
   expect(Date.now() - started).toBeLessThan(15_000); // never waits out the retry-after
@@ -90,7 +91,7 @@ test("a Go limit: the retry status is read at once, the session aborted, and a m
 
 test("a plain 429 (OpenRouter rate limit) is a retry status without a Go reason, and is stopped the same way", async () => {
   llm.script({ status: 429, body: { error: { message: "Rate limit exceeded: free-models-per-min", code: 429 } }, headers: { "retry-after": "600" } });
-  const s = await session();
+  const { s } = await session();
   const limited = await s.run("do step 1");
   expect(limited.limit).toMatchObject({ model: `openrouter/${FLASH}`, reason: undefined });
   expect(limited.limit!.message).toMatch(/rate limit/i);
@@ -98,9 +99,18 @@ test("a plain 429 (OpenRouter rate limit) is a retry status without a Go reason,
 
 test("a 402 (OpenRouter out of credits) is not retried: the run ends with the error and its HTTP status", async () => {
   llm.script({ status: 402, body: { error: { message: "Insufficient credits. Add more using https://openrouter.ai/settings/credits", code: 402 } } });
-  const s = await session();
+  const { s } = await session();
   const failed = await s.run("do step 1");
   expect(failed.limit).toBeUndefined();
   expect(failed.httpStatus).toBe(402);
   expect(failed.error).toMatch(/Insufficient credits/);
+}, slow(30_000));
+
+test("turns count model rounds, not tool calls: two assistant messages of three calls each report turns=2 calls=6", async () => {
+  const { s, dir } = await session();
+  const read = (name: string) => ({ tool: "read", args: { filePath: join(dir, name) } });
+  llm.script({ tools: [read("a.txt"), read("b.txt"), read("c.txt")] }, { tools: [read("a.txt"), read("b.txt"), read("c.txt")] });
+  const result = await s.run("explore the files");
+  expect(result.error).toBeUndefined();
+  expect(s.totals()).toMatchObject({ turns: 2, calls: 6 });
 }, slow(30_000));

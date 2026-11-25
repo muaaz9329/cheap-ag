@@ -26,6 +26,8 @@ export type Action =
   | { edit: string; content: string }
   /** One tool turn: a completed (or errored) tool part. */
   | { tool: string; input?: Record<string, unknown>; output?: string; error?: string }
+  /** Several tool turns in one assistant message (one model round). */
+  | { tools: { tool: string; input?: Record<string, unknown>; output?: string; error?: string }[] }
   /** Adds to the current model step's assistant message; emits `message.updated` with that message's running totals. */
   | { usage: Usage }
   /** Assistant text, e.g. a fenced `cheapag-result` block. */
@@ -195,6 +197,9 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
         emit(dir, "file.edited", { file });
       } else if ("tool" in action) {
         part(toolPart(run, action.tool, action.input ?? {}, action.output, action.error));
+        nextStep(run);
+      } else if ("tools" in action) {
+        for (const t of action.tools) part(toolPart(run, t.tool, t.input ?? {}, t.output, t.error));
         nextStep(run);
       } else if ("usage" in action) {
         for (const key of ["cost", "input", "output", "reasoning"] as const) run.usage[key] += action.usage[key] ?? 0;

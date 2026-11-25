@@ -376,7 +376,7 @@ function runGroup(g: GroupRun) {
       missing: status === "PARTIAL" && !report.missing.length ? [`unknown: stopped (${stopped?.reason ?? "cap"}); compare the diff with the step`] : report.missing,
       reason, conflict,
       verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })), selfFix, redo: redone, ...(repro && { repro }), question: asked?.length === 1 ? asked[0] : null, ...(asked && asked.length > 1 && { questions: asked }), autoRejected: rejections,
-      usage: { turns: session?.totals().turns ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
+      usage: { turns: session?.totals().turns ?? 0, calls: session?.totals().calls ?? 0, ...(session?.totals().usage ?? { costUsd: 0 }) },
       timing: { startedAt, endedAt: status === "RUNNING" || waiting ? null : new Date(), ms: Date.now() - startedAt.getTime(), ...(waiting && { blockedAt }) },
     };
     last = record;

@@ -52,7 +52,7 @@ test.each([
     sessionID: "research-fault",
     rotate: async () => false,
     run: async () => status === "FAIL" ? { text: "", error: "API rejected request (400)" } : block("status: answer\nconfidence: high\nnotes: useful answer"),
-    totals: () => ({ sessionID: "research-fault", turns: 0, usage: { costUsd: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0 }, rejections: [], spend: {} }),
+    totals: () => ({ sessionID: "research-fault", turns: 0, calls: 0, usage: { costUsd: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0 }, rejections: [], spend: {} }),
   });
   let id = "";
   const persistedBeforeCleanup: boolean[] = [];

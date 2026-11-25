@@ -5,7 +5,7 @@ import type { Changed } from "./workspace.js";
  *
  * Record-field contract. An empty or absent field omits its section; sections keep the order listed here.
  * - Every job block: headline from status, job, steps, changed (files= +a/-d), tests (absent → no `tests=`, for a job
- *   that never reached verify, e.g. BLOCKED), usage.turns, usage.costUsd, then the optional tokens selfFix → fix=N,
+ *   that never reached verify, e.g. BLOCKED), usage.turns (model rounds), usage.costUsd, then the optional tokens selfFix → fix=N,
  *   models.escalated → esc=1, models.final ≠ models.requested → model=<final>, redo → redo=1, billing → billing=zen.
  *   Then summary, changed, risks, review, the status's own sections, and `log:` last.
  * - Status sections (STATUS_SECTIONS): OK none · PARTIAL found, missing, worktree · FAIL error, found, tried, reason, worktree ·
@@ -35,7 +35,7 @@ export type JobRecord = {
   worktree: string | null;
   /** Removing a landed job's worktree failed; the job's status is unaffected (its change already landed). */
   cleanupError?: string;
-  usage: { turns: number; costUsd: number };
+  usage: { turns: number; calls?: number; costUsd: number };
   /** Absent when verification never ran: the headline then has no `tests=`. */
   tests?: "pass" | "fail" | "none";
   selfFix: number;
@@ -68,7 +68,7 @@ export type ResearchRecord = {
   /** An ANSWER recovered after a turn cap, or one the worker marked `status: partial`: what was found so far. */
   partial?: boolean;
   filesRead: number;
-  usage: { turns: number; costUsd: number };
+  usage: { turns: number; calls?: number; costUsd: number };
   models?: { requested: string; final: string };
   /** Prose, may span lines (the brief's `notes:`). */
   answer: string;
