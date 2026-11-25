@@ -6,8 +6,8 @@ import { createServer, type IncomingMessage } from "node:http";
  * Lets tests check how OpenCode itself enforces Cheap Agent's permission ruleset, at no cost and with no network.
  */
 
-/** A model step: a tool call, plain text, or an HTTP error response (e.g. a 429 rate limit or a 402 out of credits). */
-export type Reply = { tool: string; args: Record<string, unknown> } | { text: string } | { status: number; body: unknown; headers?: Record<string, string> };
+/** A model step: a tool call, several tool calls in one assistant message, plain text, or an HTTP error response (e.g. a 429 rate limit or a 402 out of credits). */
+export type Reply = { tool: string; args: Record<string, unknown> } | { tools: { tool: string; args: Record<string, unknown> }[] } | { text: string } | { status: number; body: unknown; headers?: Record<string, string> };
 
 export async function startFakeLlm() {
   const replies: Reply[] = [];
@@ -39,6 +39,9 @@ export async function startFakeLlm() {
     res.writeHead(200, { "content-type": "text/event-stream" });
     if ("tool" in reply) {
       res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${seq}`, type: "function", function: { name: reply.tool, arguments: JSON.stringify(reply.args) } }] }));
+      res.write(chunk({}, "tool_calls", { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+    } else if ("tools" in reply) {
+      res.write(chunk({ role: "assistant", tool_calls: reply.tools.map((t, i) => ({ index: i, id: `call_${seq}_${i}`, type: "function", function: { name: t.tool, arguments: JSON.stringify(t.args) } })) }));
       res.write(chunk({}, "tool_calls", { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
     } else {
       res.write(chunk({ role: "assistant", content: reply.text }));

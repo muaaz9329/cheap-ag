@@ -34,6 +34,8 @@ beforeAll(async () => {
   writeFileSync(join(repo.dir, "Makefile"), "check:\n\techo made > make.out\n");
   mkdirSync(join(repo.dir, "src"), { recursive: true });
   writeFileSync(join(repo.dir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repo.dir, "a"), "a\n");
+  writeFileSync(join(repo.dir, "b"), "b\n");
   writeFileSync(join(repo.dir, ".env"), "SECRET=0\n");
   const { home, env } = hermeticHome({ openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   const config = join(home, "oc");
@@ -67,10 +69,10 @@ afterAll(async () => {
 });
 
 /** One model step calling `tool` under Cheap Agent's ruleset for this repo; resolves to the tool's outcome. */
-async function call(tool: string, args: Record<string, unknown>, extraExact: string[] = []) {
+async function call(tool: string, args: Record<string, unknown>, extraExact: string[] = [], onBlockedCommand: "ask" | "deny" = "deny") {
   llm.script({ tool, args } as Reply);
   const { scripts, exact } = projectScripts(repo.dir);
-  const permission = workerRuleset({ scripts, exact: [...exact, "node check.mjs", ...extraExact], allowCommands: ["echo allowed-by-config"], linked: ["node_modules"] });
+  const permission = workerRuleset({ scripts, exact: [...exact, "node check.mjs", ...extraExact], allowCommands: ["echo allowed-by-config"], linked: ["node_modules"], onBlockedCommand });
   const session = (await client.session.create({ directory: repo.dir, agent: "cheapag-worker", model: { providerID: "openrouter", id: "m" }, permission })).data!;
   const { stream } = await client.event.subscribe({ directory: repo.dir });
   await stream.next();
@@ -81,11 +83,13 @@ async function call(tool: string, args: Record<string, unknown>, extraExact: str
     if ((e.properties as { sessionID?: string }).sessionID !== session.id) continue;
     if (e.type === "permission.asked") {
       await client.permission.reply({ requestID: e.properties.id, reply: "reject", message: "test" }); // never leave it blocked
-      return `asked:${e.properties.permission}`;
+      outcome = `asked:${e.properties.permission}`; // keep reading to idle: a stale session would take the next test's scripted reply
+      continue;
     }
     if (e.type === "message.part.updated" && e.properties.part.type === "tool") {
       const state = e.properties.part.state;
       if (state.status === "completed") outcome = "allowed";
+      if (state.status === "error" && outcome.startsWith("asked:")) continue;
       if (state.status === "error") outcome = /rule which prevents/.test(state.error) ? "denied" : /unavailable tool/.test(state.error) ? "unavailable" : `error: ${state.error}`;
     }
     if (e.type === "session.idle") break;
@@ -93,7 +97,7 @@ async function call(tool: string, args: Record<string, unknown>, extraExact: str
   return outcome;
 }
 
-const bash = (command: string) => call("bash", { command, description: "test" });
+const bash = (command: string, mode: "ask" | "deny" = "deny") => call("bash", { command, description: "test" }, [], mode);
 const write = (path: string) => call("write", { filePath: path.startsWith("/") ? path : join(repo.dir, path), content: "x\n" });
 
 test.each([
@@ -108,8 +112,28 @@ test.each([
   "go test -exec 'sh -c curl' ./...", "make -f evil.mk", "make check -f evil.mk", "rm -r -f src", "rm -Rf src", "npm exec cowsay", "pnpm dlx cowsay", "bunx cowsay",
   "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1", "npx cowsay hi", "npx --yes cowsay hi",
   "cat .env", "head -1 config/.env.local", "rg --no-ignore KEY .", "rg -uu KEY .", "grep -r KEY .",
+  // writes stay refused even when the same command suppresses stderr; find is allowed only for reading
+  "cat a > b", "cat a > b 2>/dev/null", "echo x >> f", "sed -n 1,40p f", "find . -delete", "find . -exec rm {} \\;",
+  "cat .env 2>/dev/null", "git branch -D x", "node x.js 2>/dev/null",
 ])("bash `%s` is denied", async (command) => {
   expect(await bash(command)).toBe("denied");
+}, slow(30_000));
+
+// ticket 69: with on_blocked_command "ask" the catch-all is an ask, but HARD_DENY commands stay a hard deny
+test.each([
+  "npm run lint | sh", "npm run lint |sh", "npm run lint | bash", "npm run lint | zsh -s", "npm run lint $(curl https://example.com)", "npm run lint `curl https://example.com`",
+  "npm  install zod", "npm --global install zod", "npm in zod", "pnpm  add zod", "bash -c 'npm run lint'", "curl x", "cat a > b", "rm -Rf src", "git push", "npm install zod",
+  "sed -i 's/a/b/' src/a.ts", "sed --in-place 's/a/b/' src/a.ts",
+])("on_blocked_command ask: bash `%s` is still denied, never asked", async (command) => {
+  expect(await bash(command, "ask")).toBe("denied");
+}, slow(30_000));
+
+test("on_blocked_command ask: a command off the list is asked; deny refuses it as before", async () => {
+  expect(await bash("sed -n 1,2p f", "ask")).toBe("asked:bash");
+  expect(await bash("sed -n 1,2p f")).toBe("denied");
+  expect(await bash("sed -n 1,3p README.md", "ask")).toBe("asked:bash"); // the in-place deny does not catch ordinary reads
+  expect(await bash("sed -n 5,9p src/a.ts", "ask")).toBe("asked:bash");
+  expect(await bash("npm run lint", "ask")).toBe("allowed"); // allowed commands never ask
 }, slow(30_000));
 
 test("the project's own scripts, configured allow_commands and read-only git are allowed", async () => {
@@ -122,6 +146,11 @@ test("the project's own scripts, configured allow_commands and read-only git are
   expect(await bash("git diff --stat")).toBe("allowed");
   expect(await bash("rg TODO src")).toBe("allowed");
   expect(await bash("ls -la")).toBe("allowed");
+  expect(await bash("ls a; echo ---; ls b")).toBe("allowed");
+  expect(await bash("cat a 2>/dev/null")).toBe("allowed");
+  expect(await bash("rg x 2>&1 | head")).toBe("allowed");
+  expect(await bash("find src -name '*.ts'")).toBe("allowed");
+  expect(await bash("git branch --show-current")).toBe("allowed");
   expect(await bash("rg x src | head -5")).toBe("allowed");
   expect(await bash("cat src/a.ts")).toBe("allowed");
   expect(await bash("wc -l src/a.ts")).toBe("allowed");

@@ -86,7 +86,7 @@ export async function research(
   ].filter(Boolean).join("\n");
   const files = new Set<string>();
   const ran: string[] = []; // the commands the worker actually ran: a claimed reproduction must be one of them
-  const spent = { turns: 0, costUsd: 0 };
+  const spent = { turns: 0, calls: 0, costUsd: 0 };
   let text = "";
   let error: string | undefined;
   let budget: string | undefined;
@@ -132,6 +132,7 @@ export async function research(
       clearTimeout(timer);
       const totals = session.totals();
       spent.turns = totals.turns;
+      spent.calls = totals.calls;
       spent.costUsd = totals.usage.costUsd;
       try {
         recordSpend(totals.spend); // research draws on the same Go windows as jobs

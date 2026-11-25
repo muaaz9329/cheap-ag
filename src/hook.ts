@@ -23,6 +23,9 @@ const CHEAPAG_TOOL = /^mcp__(?:plugin_cheapag_)?cheapag__/;
 const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /;
 // an OK whose checks passed in the worker's worktree (ticket 30: re-running them caught nothing)
 const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
+// a command permission block (ticket 69) is the user's decision, so reply waits for AskUserQuestion like take-over "ask"
+const PERMISSION_BLOCK = /^BLOCKED (\S+) step=\S+ permission\b/m;
+const PERMISSION_REPLY = "This job is asking for a command permission: ask the user with AskUserQuestion first, then reply with their answer.";
 // shortcut: the usual runners only; add the repo's test_cmd if Claude re-runs tests through a custom script
 const TEST_CMD = /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 // sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
@@ -201,7 +204,7 @@ function guard(): number {
 // agent_id is set only on a subagent's calls (seen live on Claude Code 2.1.285); the prompt rules never count or deny them
 type Input = { session_id?: string; prompt_id?: string; agent_id?: string; cwd?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
 /** What this user prompt's cheapag results were: the worker did not finish a step (and Claude's calls since), or an OK passed its checks. */
-type PromptState = { prompt: string; calls: number; notDone?: boolean; okPassed?: boolean };
+type PromptState = { prompt: string; calls: number; notDone?: boolean; okPassed?: boolean; permission?: string };
 
 /** Per-session state; the repo-wide marker lets the plugin's shell test skip node until a cheapag result was ever seen. */
 const stateFile = (root: string, session: string) => join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
@@ -217,7 +220,7 @@ const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
  * A new user prompt clears both. cheapag's own tools and a subagent's calls are never counted or denied.
  */
 function budget(input: Input): string | undefined {
-  if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string" || CHEAPAG_TOOL.test(input.tool_name ?? "")) return;
+  if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string") return;
   const root = projectRoot(input.cwd);
   const file = stateFile(root, input.session_id);
   let state: PromptState;
@@ -227,6 +230,16 @@ function budget(input: Input): string | undefined {
     return; // no cheapag result in this session yet
   }
   if (state.prompt !== input.prompt_id) return; // a new user prompt starts fresh
+  const tool = input.tool_name ?? "";
+  if (state.permission && tool === "AskUserQuestion") {
+    // the user is being asked: whatever they pick is theirs, and the reply that follows may go through
+    state = { ...state, permission: undefined };
+    writeFileSync(file, JSON.stringify(state satisfies PromptState));
+  } else if (state.permission && CHEAPAG_TOOL.test(tool) && tool.endsWith("__reply")) {
+    const job = input.tool_input?.job;
+    if (typeof job !== "string" || job === state.permission) return PERMISSION_REPLY;
+  }
+  if (CHEAPAG_TOOL.test(tool)) return;
   const config = loadConfig(root);
   if (state.notDone && config.takeover === "ask") {
     if (input.tool_name === "AskUserQuestion") {
@@ -276,7 +289,9 @@ function result(): number {
     const notDone = didNotFinish(out), okPassed = OK_PASSED.test(out);
     // the worker's own `land applied` finished the block: drop the take-over even when the check never ran
     const cleared = /^OK j\w+ (applied|discarded)\b/m.test(out);
-    if (!notDone && !okPassed && !cleared) return 0;
+    // a command permission block: Claude must ask the user before it may reply (ticket 69)
+    const permission = PERMISSION_BLOCK.exec(out)?.[1];
+    if (!notDone && !okPassed && !cleared && !permission) return 0;
     const root = projectRoot(input.cwd);
     const file = stateFile(root, input.session_id);
     let state: PromptState = { prompt: input.prompt_id, calls: 0 };
@@ -287,7 +302,7 @@ function result(): number {
       // first cheapag result of the session
     }
     mkdirSync(join(root, ".cheapag", "hook"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ ...state, ...(notDone && { notDone }), ...(okPassed && { okPassed }), ...(cleared && { notDone: undefined }) } satisfies PromptState));
+    writeFileSync(file, JSON.stringify({ ...state, ...(notDone && { notDone }), ...(okPassed && { okPassed }), ...(cleared && { notDone: undefined }), ...(permission && { permission }) } satisfies PromptState));
     // shortcut: the marker is never removed, so a repo that once had a cheapag result runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
     writeFileSync(marker(root), "");
   } catch {

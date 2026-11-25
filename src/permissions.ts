@@ -10,7 +10,7 @@ import { join } from "node:path";
  * - edit patterns are worktree-relative and cannot deny an absolute path outside it, so `external_directory` stays
  *   denied: linked dependency dirs are read through their in-worktree symlink, and edits under them are denied.
  * - OpenCode splits `;`, `|`, `&&`, `$(…)` and backticks into separate checked commands, but not redirection, so
- *   `>` is denied outright.
+ *   `>` is denied outright except the known stderr forms on already-allowed commands (below).
  *
  * This is a guardrail against commands the model types, not a sandbox: the worker can edit source and run allowed
  * test commands, so code it writes can still run anything the developer's user can (see STATUS carry-forward).
@@ -19,6 +19,19 @@ import { join } from "node:path";
 export type Rule = { permission: string; pattern: string; action: "allow" | "deny" | "ask" };
 
 const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"];
+
+/**
+ * Programs whose "always allow" prefix could write files or run arbitrary code: `sed -i`, awk/perl/python `system`,
+ * `find -exec`, and the rest would get past the edit rules that protect .env, lockfiles and cheapag.json. They may
+ * still be allowed once, never always.
+ */
+export const WRITE_OR_RUN = new Set([
+  "sed", "awk", "perl", "python", "python3", "node", "ruby", "bash", "sh", "zsh", "find", "xargs", "env", "tee", "dd",
+  "cp", "mv", "rm", "ln", "chmod", "git", "npx", "npm", "pnpm", "yarn", "bun", "make",
+]);
+
+/** Whether "always allow" may be offered for a command's prefix. */
+export const canAlwaysAllow = (prefix: string) => !WRITE_OR_RUN.has(prefix.trim().split(/\s+/)[0] ?? "");
 
 /** Commands no project script or config may allow: always the last rules, so they always win. */
 export const HARD_DENY = [
@@ -30,8 +43,17 @@ export const HARD_DENY = [
   // seen bypassing allowed prefixes against the real OpenCode: writes past the edit rules, or arbitrary programs
   "*>*", "git *--output*", "git *--ext-diff*", "go test*-exec*", "go test*-toolexec*", "cargo test*--config*",
   "npm exec*", "pnpm dlx*", "yarn dlx*", "bunx*",
+  // find can execute or delete, and its output flags write files
+  "find*-exec*", "find*-ok*", "find*-delete*", "find*-fprint*", "find*-fls*",
+  // sed in place is a file write the edit rules never see; ordinary reads (`sed -n 1,3p README.md`) have no -i
+  "sed *-i*",
   // bash segments naming a .env file (the read tool's deny does not cover bash) and rg flags that read gitignored files
   "* .env*", "*/.env*", "rg*--no-ignore*", "rg* -u*",
+  // never asked about (ticket 69): a shell as a command or a pipe target, command substitution, installs written with extra spaces, rm flag spellings
+  ...["sh", "bash", "zsh"].flatMap((sh) => [sh, `${sh} *`, ...["", " ", "  "].flatMap((gap) => [`*|${gap}${sh}`, `*|${gap}${sh} *`])]),
+  "*$(*", "*`*", "rm -Rf*", "rm -fR*", "rm -r -f*", "rm -f -r*",
+  ...PACKAGE_MANAGERS.flatMap((pm) => [`${pm} -*install*`, `${pm} -*add*`, `${pm} in`, `${pm} in *`, `${pm} isntall*`]),
+  ...PACKAGE_MANAGERS.flatMap((pm) => ["  ", "   "].flatMap((gap) => ["install", "add", "ci", "i"].flatMap((v) => [`${pm}${gap}${v}`, `${pm}${gap}${v} *`]))),
 ];
 
 const LOCKFILES = [
@@ -49,17 +71,24 @@ export const PROTECTED = [
 
 /** Always-allowed commands, each as typed and with arguments: read-only basics, git, and the common test runners. */
 const ALWAYS = [
-  "ls", "pwd", "cat", "head", "tail", "wc", "node --version", "node -v",
+  "ls", "pwd", "cat", "head", "tail", "wc", "echo", "find", "node --version", "node -v",
   "git status", "git diff", "git log", "git show",
   "git -C * diff", "git -C * status", "git -C * log", "git -C * show",
   "git --no-pager diff", "git --no-pager status", "git --no-pager log", "git --no-pager show",
   "rg", "npx eslint", "npx tsc", "npx prettier", "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "bun test",
 ];
 
+/** Commands allowed only in these exact forms (`git branch` otherwise creates or deletes branches). */
+const EXACT_ALWAYS = ["git branch", "git branch --show-current"];
+
 const allow = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "allow" });
 const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "deny" });
+const ask = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "ask" });
 /** A command allowed as typed, and with any arguments after it. */
 const command = (cmd: string) => [allow("bash", cmd), allow("bash", `${cmd} *`)];
+/** Stderr suppression on commands already allowed: never a bare `<anything> 2>/dev/null`. */
+const stderr = (cmd: string, args: boolean) =>
+  ["2>/dev/null", "2>&1"].flatMap((redir) => [allow("bash", `${cmd} ${redir}`), ...(args ? [allow("bash", `${cmd} * ${redir}`)] : [])]);
 
 /** Secrets: OpenCode's default does not cover .env reads under these rulesets; examples stay readable (last match wins). */
 const ENV_READS = [
@@ -72,7 +101,9 @@ const ENV_READS = [
  * then the hard denylist. `scripts` and `allowCommands` are allowed with any arguments; `exact` only as written
  * (make targets, the step's done-when checks); `linked` are dependency dirs in the worktree (readable, never editable).
  */
-export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[]; linked?: string[] } = {}): Rule[] {
+export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[]; linked?: string[]; onBlockedCommand?: "ask" | "deny" } = {}): Rule[] {
+  const commands = [...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])];
+  const exact = [...EXACT_ALWAYS, ...(opts.exact ?? [])];
   return [
     deny("*"),
     // `finish` is Cheap Agent's own tool (tools/finish.ts): custom tools are permission-checked by name, so the
@@ -83,10 +114,14 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
     allow("edit"),
     ...PROTECTED.map((p) => deny("edit", p)),
     ...(opts.linked ?? []).flatMap((d) => [deny("edit", d), deny("edit", `${d}/**`)]),
-    deny("bash"),
-    ...[...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])].flatMap(command),
-    ...(opts.exact ?? []).map((c) => allow("bash", c)),
-    ...HARD_DENY.map((p) => deny("bash", p)),
+    opts.onBlockedCommand === "ask" ? ask("bash") : deny("bash"),
+    ...commands.flatMap(command),
+    ...exact.map((c) => allow("bash", c)),
+    deny("bash", "*>*"),
+    ...commands.flatMap((c) => stderr(c, true)),
+    ...exact.flatMap((c) => stderr(c, false)),
+    deny("bash", "*>*>*"),
+    ...HARD_DENY.filter((p) => p !== "*>*").map((p) => deny("bash", p)),
   ];
 }
 
@@ -96,22 +131,29 @@ export function workerRuleset(opts: { scripts?: string[]; exact?: string[]; allo
  * so a command that writes files cannot touch the developer's tree. Env files are unreadable; outside the repo is denied.
  */
 export function researchRuleset(opts: { scripts?: string[]; exact?: string[]; allowCommands?: string[] } = {}): Rule[] {
+  const commands = [...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])];
+  const exact = [...EXACT_ALWAYS, ...(opts.exact ?? [])];
   return [
     deny("*"),
     ...["read", "glob", "grep", "list"].map((p) => allow(p)),
     ...ENV_READS,
     ...["edit", "question", "lsp", "todowrite", "finish", "external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) => deny(p)),
     deny("bash"),
-    ...[...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])].flatMap(command),
-    ...(opts.exact ?? []).map((c) => allow("bash", c)),
-    ...HARD_DENY.map((p) => deny("bash", p)),
+    ...commands.flatMap(command),
+    ...exact.map((c) => allow("bash", c)),
+    deny("bash", "*>*"),
+    ...commands.flatMap((c) => stderr(c, true)),
+    ...exact.flatMap((c) => stderr(c, false)),
+    deny("bash", "*>*>*"),
+    ...HARD_DENY.filter((p) => p !== "*>*").map((p) => deny("bash", p)),
   ];
 }
 
 /** The same static rules in OpenCode's config form, for the server-wide `OPENCODE_PERMISSION` baseline. */
 export function baselinePermission() {
   const config: Record<string, string | Record<string, string>> = {};
-  for (const rule of workerRuleset()) {
+  // the server-wide baseline never pauses: a session that can be asked carries its own ruleset with `ask`
+  for (const rule of workerRuleset({ onBlockedCommand: "deny" })) {
     if (rule.pattern === "*" && !(rule.permission in config)) config[rule.permission] = rule.action;
     else {
       const current = config[rule.permission];
@@ -146,6 +188,22 @@ export function projectScripts(dir: string): { scripts: string[]; exact: string[
     exact.push("make");
   }
   return { scripts: [...new Set(commands)], exact: [...new Set(exact)] };
+}
+
+/** The program a command names, plus a bare second word (`git branch`, `npm run`), for an "always allow" prefix. */
+export function commandPrefix(command: string): string {
+  const [first, second] = command.trim().split(/\s+/);
+  return first && second && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(second) ? `${first} ${second}` : first ?? command.trim();
+}
+
+const globToRegExp = (pattern: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`);
+const HARD_DENY_MATCHERS = HARD_DENY.map(globToRegExp);
+/** The command segments OpenCode checks separately, plus the whole line. */
+const commandSegments = (command: string) => [command, ...command.split(/&&|\|\||;|\||\n|\$\(|`/).map((part) => part.trim().replace(/\)+$/, ""))];
+
+/** Whether any part of a command is on `HARD_DENY`: those are refused, never put to the user. */
+export function isHardDenied(command: string): boolean {
+  return commandSegments(command).some((part) => part && HARD_DENY_MATCHERS.some((re) => re.test(part)));
 }
 
 /** What a worker sees when a permission request is auto-rejected (spec E1). */

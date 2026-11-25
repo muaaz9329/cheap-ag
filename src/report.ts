@@ -5,7 +5,7 @@ import type { Changed } from "./workspace.js";
  *
  * Record-field contract. An empty or absent field omits its section; sections keep the order listed here.
  * - Every job block: headline from status, job, steps, changed (files= +a/-d), tests (absent → no `tests=`, for a job
- *   that never reached verify, e.g. BLOCKED), usage.turns, usage.costUsd, then the optional tokens selfFix → fix=N,
+ *   that never reached verify, e.g. BLOCKED), usage.turns (model rounds), usage.costUsd, then the optional tokens selfFix → fix=N,
  *   models.escalated → esc=1, models.final ≠ models.requested → model=<final>, redo → redo=1, billing → billing=zen.
  *   Then summary, changed, risks, review, the status's own sections, and `log:` last.
  * - Status sections (STATUS_SECTIONS): OK none · PARTIAL found, missing, worktree · FAIL error, found, tried, reason, worktree ·
@@ -35,7 +35,7 @@ export type JobRecord = {
   worktree: string | null;
   /** Removing a landed job's worktree failed; the job's status is unaffected (its change already landed). */
   cleanupError?: string;
-  usage: { turns: number; costUsd: number };
+  usage: { turns: number; calls?: number; costUsd: number };
   /** Absent when verification never ran: the headline then has no `tests=`. */
   tests?: "pass" | "fail" | "none";
   selfFix: number;
@@ -51,6 +51,8 @@ export type JobRecord = {
   question?: { text: string; options: string[]; answer?: string | null } | null;
   /** Several questions asked at once (then `question` is null), answered one by one. */
   questions?: NonNullable<JobRecord["question"]>[];
+  /** A bash command the worker asked permission for, paused as BLOCKED (ticket 69); `answer` is the reply sent, recorded not rendered. */
+  permission?: PermissionBlock | null;
   /** One line per conflicting path, e.g. `src/a.ts (also changed by j3d54, landed first; redo could not reconcile)`. */
   conflict?: string[];
   redo?: number | null;
@@ -61,6 +63,9 @@ export type JobRecord = {
   test?: string;
 };
 
+/** A command the worker asked permission for, shown as a BLOCKED block with lettered options. */
+export type PermissionBlock = { title: string; command: string; why: string; prefix: string; always?: boolean; answer?: string | null };
+
 export type ResearchRecord = {
   format: "cheapag/1";
   job: string;
@@ -68,7 +73,7 @@ export type ResearchRecord = {
   /** An ANSWER recovered after a turn cap, or one the worker marked `status: partial`: what was found so far. */
   partial?: boolean;
   filesRead: number;
-  usage: { turns: number; costUsd: number };
+  usage: { turns: number; calls?: number; costUsd: number };
   models?: { requested: string; final: string };
   /** Prose, may span lines (the brief's `notes:`). */
   answer: string;
@@ -139,8 +144,31 @@ const FULL: Cuts = { changed: 15, tried: Infinity, risks: 5, review: 5, error: I
 export const failBlock = (reason: string) => `FAIL reason: ${reason}`;
 
 /** A job block within `budget` tokens (chars/4), cutting in D9 order only while over it. Never cut: headline, question/options, conflict, reason, worktree, log. */
+/** The three lettered options a permission block offers; letter "b" names the prefix the server would save. */
+export const permissionOptions = (prefix: string) => [
+  "allow once",
+  `always allow \`${prefix}\` in this repo (adds it to cheapag.json allow_commands)`,
+  "refuse",
+];
+
+/** D5-adjacent: a BLOCKED job paused on a command permission (ticket 69), rendered outside the ordinary job layout. */
+function renderPermission(r: JobRecord) {
+  const p = r.permission!;
+  return [
+    `BLOCKED ${r.job} step=${r.steps} permission`,
+    `title: ${oneLine(p.title)}`,
+    `command: ${oneLine(p.command)}`,
+    `why: ${oneLine(p.why)}`,
+    "a) allow once",
+    ...(p.always === false ? [] : [`b) always allow \`${p.prefix}\` in this repo (adds it to cheapag.json allow_commands)`]),
+    "c) refuse",
+    "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
+  ].map(fit).join("\n");
+}
+
 export function renderJob(r: JobRecord, budget = BUDGET_TOKENS, compact = false) {
   if (r.status === "RUNNING") return fit(`RUNNING ${r.job} step=${r.steps} turns=${r.usage.turns}`);
+  if (r.status === "BLOCKED" && r.permission) return renderPermission(r);
   let cuts = FULL;
   let text = layout(r, cuts, compact);
   const over = () => text.length / 4 > budget;

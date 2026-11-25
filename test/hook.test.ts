@@ -339,6 +339,43 @@ test("takeover ask (default): after a FAIL, reads pass but Agent and repo edits 
   expect(run("Edit", { file_path: join(repo.dir, "a.ts"), old_string: "a", new_string: "b" })).toBeNull();
 });
 
+const PERMISSION_BLOCK = [
+  "BLOCKED jab12 step=1 permission",
+  "title: inspect the top of the file",
+  "command: sed -n 1,2p f",
+  "why: need to see the file's first lines",
+  "a) allow once",
+  "b) always allow `sed` in this repo (adds it to cheapag.json allow_commands)",
+  "c) refuse",
+  "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
+].join("\n");
+const REPLY_TOOL = "mcp__plugin_cheapag_cheapag__reply";
+
+test("permission block: reply is denied until AskUserQuestion has run since the block", () => {
+  const { run, result } = setup();
+  const message = "This job is asking for a command permission: ask the user with AskUserQuestion first, then reply with their answer.";
+  result(PERMISSION_BLOCK);
+  expect(run(REPLY_TOOL, { job: "jab12", answer: "a" })).toBe(message);
+  expect(run("mcp__cheapag__reply", { job: "jab12", answer: "a" })).toBe(message);
+  // another job's reply is not this job's decision
+  expect(run(REPLY_TOOL, { job: "jother", answer: "a" })).toBeNull();
+  // asking the user clears it: whatever they pick is theirs
+  expect(run("AskUserQuestion", { questions: [{ question: "Allow sed?", options: [] }] })).toBeNull();
+  expect(run(REPLY_TOOL, { job: "jab12", answer: "a" })).toBeNull();
+});
+
+test("permission block: a plain question block does not make reply wait for AskUserQuestion", () => {
+  const { run, result } = setup();
+  result([
+    "BLOCKED jab12 step=1",
+    "question: which database?",
+    "a) postgres",
+    "b) sqlite",
+    "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
+  ].join("\n"));
+  expect(run(REPLY_TOOL, { job: "jab12", answer: "a" })).toBeNull();
+});
+
 test("takeover sonnet: asking and the desktop app's own tools are allowed after a FAIL", () => {
   const { run, result, repo } = setup();
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ takeover: "sonnet" }));

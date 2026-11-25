@@ -232,3 +232,112 @@ test("while a job holds OpenCode, a config change cannot reboot it: other calls 
   const done = await reply(job, "b");
   expect(done.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `));
 });
+
+// ticket 69: a command off the allow list pauses the job; the user's letter resumes it
+const SED = { permission: "bash", patterns: ["sed -n 1,2p f"], command: "sed -n 1,2p f", description: "Peek at the start of f" } as const;
+const WHY = { text: "I need to look at the first lines of f before I edit." } as const;
+const REFUSED = "the user refused this command; don't retry it or a variant";
+const replies = (fake: { recorded: { permissionReplies: { reply: string; message?: string }[] } }) => fake.recorded.permissionReplies.map((r) => [r.reply, r.message]);
+
+test("a command off the list → BLOCKED permission block; a) allows it once and the job finishes in the same session", async () => {
+  const { fake, record, delegate, reply } = await scenario([WHY, SED, ...edit(2, "done")]);
+  const blocked = await delegate();
+  const job = jobOf(blocked);
+  expect(blocked).toBe([
+    `BLOCKED ${job} step=1 permission`,
+    "title: Peek at the start of f",
+    "command: sed -n 1,2p f",
+    "why: I need to look at the first lines of f before I edit.",
+    "a) allow once",
+    "c) refuse",
+    "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
+  ].join("\n"));
+  expect(record(job)).toMatchObject({ status: "BLOCKED", permission: { command: "sed -n 1,2p f", prefix: "sed", always: false } });
+  expect(await reply(job, "free text")).toBe("FAIL reason: answer a or c");
+  expect((await reply(job, "a")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(replies(fake)).toEqual([["once", undefined]]);
+  expect(fake.recorded.sessions).toHaveLength(1);
+});
+
+test("a reasoning-only message gives that why; no description gives the step-based title; sed offers no b and rejects b", async () => {
+  const sed = { permission: "bash", patterns: ["sed -n 1,3p README.md"], command: "sed -n 1,3p README.md" } as const;
+  const { fake, delegate, reply } = await scenario([{ reasoning: "Let me run the sed command and check README." }, sed, ...edit(2, "done")]);
+  const blocked = await delegate();
+  const job = jobOf(blocked);
+  expect(blocked).toBe([
+    `BLOCKED ${job} step=1 permission`,
+    "title: sed for step 1: limit login",
+    "command: sed -n 1,3p README.md",
+    "why: Let me run the sed command and check README.",
+    "a) allow once",
+    "c) refuse",
+    "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
+  ].join("\n"));
+  expect(await reply(job, "b")).toBe("FAIL reason: answer a or c");
+  expect(fake.recorded.permissionReplies).toEqual([]);
+  expect((await reply(job, "a")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(replies(fake)).toEqual([["once", undefined]]);
+});
+
+test("a non-writer command (rg) keeps option b", async () => {
+  const rg = { permission: "bash", patterns: ["rg -n TODO src"], command: "rg -n TODO src" } as const;
+  const { repo, delegate, reply } = await scenario([WHY, rg, ...edit(2, "done")]);
+  const blocked = await delegate();
+  const job = jobOf(blocked);
+  expect(blocked).toContain("title: rg for step 1: limit login");
+  expect(blocked).toContain("b) always allow `rg` in this repo (adds it to cheapag.json allow_commands)");
+  expect((await reply(job, "b")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(JSON.parse(readFileSync(join(repo.dir, "cheapag.json"), "utf8"))).toEqual({ allow_commands: ["rg"] });
+});
+
+test("c) refuses with the no-retry message, and the same command asked again is rejected without a new block", async () => {
+  const { fake, delegate, reply } = await scenario([WHY, SED, SED, ...edit(2, "done")]);
+  const job = jobOf(await delegate());
+  const done = await reply(job, "c");
+  expect(done.split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(replies(fake)).toEqual([["reject", REFUSED], ["reject", REFUSED]]);
+});
+
+test("b) saves the prefix to allow_commands (other keys kept); the next job's ruleset allows it; curl and writes are still never asked", async () => {
+  const FILE = { permission: "bash", patterns: ["file README.md"], command: "file README.md", description: "Check the README type" } as const;
+  const { repo, fake, delegate, reply } = await scenario(
+    [WHY, FILE, { permission: "bash", patterns: ["cat a > b"], command: "cat a > b" }, { permission: "bash", patterns: ["curl x"], command: "curl x" }, ...edit(2, "done")],
+    [...edit(2, "again")],
+  );
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ test_cmd: "node check.mjs", allow_commands: ["echo hi"] }));
+  const job = jobOf(await delegate());
+  expect((await reply(job, "b")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(JSON.parse(readFileSync(join(repo.dir, "cheapag.json"), "utf8"))).toEqual({ test_cmd: "node check.mjs", allow_commands: ["echo hi", "file"] });
+  expect(Object.keys(JSON.parse(readFileSync(join(repo.dir, "cheapag.json"), "utf8")))).toEqual(["test_cmd", "allow_commands"]);
+  // `cat a > b` and `curl x` were rejected with no block; only file asked
+  expect(replies(fake).map(([r]) => r)).toEqual(["once", "reject", "reject"]);
+  await delegate();
+  const rules = fake.recorded.sessions[1].permission as { permission: string; pattern: string; action: string }[];
+  expect(rules).toContainEqual({ permission: "bash", pattern: "file *", action: "allow" });
+});
+
+test("b) creates cheapag.json with only allow_commands when the repo has none", async () => {
+  const RG = { permission: "bash", patterns: ["rg -n TODO src"], command: "rg -n TODO src" } as const;
+  const { repo, delegate, reply } = await scenario([WHY, RG, ...edit(2, "done")]);
+  const job = jobOf(await delegate());
+  await reply(job, "b");
+  expect(JSON.parse(readFileSync(join(repo.dir, "cheapag.json"), "utf8"))).toEqual({ allow_commands: ["rg"] });
+});
+
+test("the 4th ask in a job is rejected, not shown", async () => {
+  const ask = (n: number) => ({ permission: "bash", patterns: [`sed -n ${n}p f`], command: `sed -n ${n}p f` }) as const;
+  const { fake, delegate, reply } = await scenario([ask(1), ask(2), ask(3), ask(4), ...edit(2, "done")]);
+  let out = await delegate();
+  const job = jobOf(out);
+  for (let n = 0; n < 3; n++) out = await reply(job, "a");
+  expect(out.split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(replies(fake).map(([r]) => r)).toEqual(["once", "once", "once", "reject"]);
+});
+
+test("on_blocked_command deny: the worker's catch-all bash rule is deny, so nothing asks", async () => {
+  const { repo, fake, delegate } = await scenario([...edit(2, "done")]);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ on_blocked_command: "deny" }));
+  await delegate();
+  const rules = fake.recorded.sessions[0].permission as { permission: string; pattern: string; action: string }[];
+  expect(rules.find((r) => r.permission === "bash" && r.pattern === "*")?.action).toBe("deny");
+});

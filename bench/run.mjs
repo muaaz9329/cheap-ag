@@ -46,7 +46,7 @@ async function runOne(task, arm, n) {
   const mcp = join(runs, `${task.id}_${arm}_${n}.mcp.json`);
   const extra = [];
   if (arm.startsWith("cheapag")) {
-    writeFileSync(join(dir, "cheapag.json"), JSON.stringify({ test_cmd: "node --test" }));
+    writeFileSync(join(dir, "cheapag.json"), JSON.stringify({ test_cmd: "node --test", on_blocked_command: "deny" }));
     const allow = spawnSync(process.execPath, [dist, "allow"], { cwd: dir, encoding: "utf8" });
     if (allow.status !== 0) fail(`cheapag allow failed in ${dir}:\n${allow.stdout}${allow.stderr}`);
     writeFileSync(mcp, JSON.stringify({ mcpServers: { cheapag: { command: process.execPath, args: [dist] } } }));

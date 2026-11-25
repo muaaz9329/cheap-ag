@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { PRESET_NAMES, type ModelsConfig, type Preset } from "./routing.js";
@@ -7,7 +7,11 @@ import { PRESET_NAMES, type ModelsConfig, type Preset } from "./routing.js";
 export type Config = {
   test_cmd?: string; integration_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
   models: ModelsConfig; preset?: Preset; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks; takeover: TakeOver;
+  on_blocked_command: OnBlockedCommand;
 };
+/** Whether a command off the allow list pauses the job for the user, or is refused as before (ticket 69). */
+export const ON_BLOCKED_COMMAND = ["ask", "deny"] as const;
+export type OnBlockedCommand = (typeof ON_BLOCKED_COMMAND)[number];
 /** Who implements a hard task (ticket 26): the worker on `models.hard`, Claude itself, or Claude's own Sonnet subagent. */
 export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
 export type HardTasks = (typeof HARD_TASKS)[number];
@@ -28,6 +32,7 @@ const DEFAULTS: Config = {
   guard_lines: 20,
   hard_tasks: "delegate",
   takeover: "ask",
+  on_blocked_command: "ask",
 };
 // build output is never linked: a job must build its own (ADR-0003)
 const BUILD_OUTPUT = /^(dist|build|out|\.next|\.nuxt|target|coverage)$/;
@@ -197,7 +202,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, local, ollama, preset, provider } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, on_blocked_command, local, ollama, preset, provider } = value as Record<string, unknown>;
   if (provider !== undefined) {
     if (file !== userConfigFile()) throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
     if (typeof provider !== "string") throw new Error(`${file}: provider must be a provider id, e.g. opencode-go; switch with cheapag provider`);
@@ -257,6 +262,9 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   }
   if (hard_tasks !== undefined && !HARD_TASKS.includes(hard_tasks as HardTasks)) throw new Error(`${file}: hard_tasks must be one of ${HARD_TASKS.join(", ")}`);
   if (takeover !== undefined && !TAKE_OVER.includes(takeover as TakeOver)) throw new Error(`${file}: takeover must be one of ${TAKE_OVER.join(", ")}`);
+  if (on_blocked_command !== undefined && !ON_BLOCKED_COMMAND.includes(on_blocked_command as OnBlockedCommand)) {
+    throw new Error(`${file}: on_blocked_command must be one of ${ON_BLOCKED_COMMAND.join(", ")}`);
+  }
   if (guard_lines !== undefined && (typeof guard_lines !== "number" || !Number.isInteger(guard_lines) || guard_lines <= 0)) {
     throw new Error(`${file}: guard_lines must be a positive whole number`);
   }
@@ -286,5 +294,15 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     ...(guard_lines !== undefined && { guard_lines }),
     ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
     ...(takeover !== undefined && { takeover: takeover as TakeOver }),
+    ...(on_blocked_command !== undefined && { on_blocked_command: on_blocked_command as OnBlockedCommand }),
   };
+}
+
+/** "Always allow" (ticket 69): appends `prefix` to `allow_commands` in the repo's cheapag.json, creating the file with only that key; every other key and its order stay. */
+export function addAllowCommand(root: string, prefix: string) {
+  const file = join(root, "cheapag.json");
+  const json: Record<string, unknown> = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  const list = Array.isArray(json.allow_commands) ? (json.allow_commands as string[]) : [];
+  if (!list.includes(prefix)) json.allow_commands = [...list, prefix];
+  writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
 }
