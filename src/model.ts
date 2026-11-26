@@ -113,6 +113,8 @@ function currentRoute(provider: Provider) {
   return { main: route.implement, fallback: route.fallbacks[0] as WorkerModel | undefined };
 }
 
+type CurrentRoute = ReturnType<typeof currentRoute>;
+
 /** The id without this provider's prefix, the way the catalog lists it. */
 function bareId(provider: Provider, id: string) {
   const prefix = `${provider.provider}/`;
@@ -162,11 +164,7 @@ function suggestions(provider: Provider, models: CatalogModel[], main: WorkerMod
   return [...new Set(found)].slice(0, SHOWN);
 }
 
-function describe(
-  provider: Provider,
-  models: CatalogModel[],
-  current: ReturnType<typeof currentRoute>,
-) {
+function describe(provider: Provider, models: CatalogModel[], current: CurrentRoute) {
   const { main, fallback } = current;
   return [
     `Provider: ${providerLabel(provider.provider)}`,
@@ -238,11 +236,7 @@ async function askEffort(role: string, entry: CatalogModel, current?: string) {
   return index ? entry.efforts[index - 1] : undefined;
 }
 
-async function pick(
-  provider: Provider,
-  models: CatalogModel[],
-  current: ReturnType<typeof currentRoute>,
-) {
+async function pick(provider: Provider, models: CatalogModel[], current: CurrentRoute) {
   const rows = models.map((entry) => ({ label: entry.id, hint: details(entry) }));
   const mainQuestion = `Main model on ${providerLabel(provider.provider)} (writes the code):`;
   const currentIndex = models.findIndex((entry) => entry.id === current.main.id);
