@@ -492,6 +492,7 @@ function asReport(input: Record<string, unknown>): FinishReport {
   const list = (v: unknown) =>
     Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : [];
   return {
+    // oxlint-disable-next-line typescript/no-base-to-string -- a safer cast changes the report text
     summary: String(input.summary ?? ""),
     risks: list(input.risks),
     review: list(input.review),
@@ -517,6 +518,7 @@ function isLimit(status: { action?: { reason?: string }; next: number }, provide
 /** The command or path a tool call targeted, for rejection records. */
 function describeCall(input: Record<string, unknown>) {
   return String(
+    // oxlint-disable-next-line typescript/no-base-to-string -- a safer cast changes the record text
     input.command ?? input.filePath ?? input.url ?? input.pattern ?? JSON.stringify(input),
   ).slice(0, 200);
 }

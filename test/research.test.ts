@@ -17,7 +17,7 @@ import * as routing from "../src/routing.js";
 import * as worker from "../src/worker.js";
 import * as workspace from "../src/workspace.js";
 import { BRIEF_FORMAT, REPRO_RULE, refTokens, research as runResearch } from "../src/research.js";
-import { startFakeOpencode, type Action } from "./fake-opencode.js";
+import { startFakeOpencode } from "./fake-opencode.js";
 import { callText, removeDir, slow, startServer, tempRepo, type Logins } from "./harness.js";
 
 /** Research through the MCP seam, with the fake OpenCode. Read-only enforcement itself: research-permissions.test.ts. */

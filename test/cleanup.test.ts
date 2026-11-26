@@ -303,7 +303,9 @@ test("periodic cleanup: a failing run is logged to stderr in one line and the ti
   };
   stale();
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-  onTestFinished(() => void stderr.mockRestore());
+  onTestFinished(() => {
+    stderr.mockRestore();
+  });
   const timer = startPeriodicCleanup(
     root,
     { retention: { unlanded_worktree_days: 0, job_log_days: 0 }, link_dirs: [] } as never,

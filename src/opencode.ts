@@ -180,10 +180,7 @@ function opencodeConfig(provider: Provider, route: Route) {
       name,
       options: { baseURL: at.base_url, ...(apiKey && { apiKey }) },
       models: Object.fromEntries(
-        routeModels(route).map((m) => [
-          m.id,
-          { name: m.id, ...limit, ...cost, ...(models[m.id] ?? {}) },
-        ]),
+        routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...models[m.id] }]),
       ),
     };
   };
@@ -191,7 +188,7 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "commandcode") {
     Object.assign(providerConfig, COMMAND_CODE, {
       models: Object.fromEntries(
-        routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }]),
+        routeModels(route).map((m) => [m.id, { name: m.id, ...models[m.id] }]),
       ),
     });
   }

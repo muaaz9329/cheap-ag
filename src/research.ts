@@ -169,6 +169,7 @@ export async function research(
           if (state.status === "completed" && tool === "read")
             files.add(String(state.input.filePath));
           if (state.status === "completed" && tool === "bash")
+            // oxlint-disable-next-line typescript/no-base-to-string -- safer cast changes the text
             ran.push(String(state.input.command ?? ""));
           if (state.status === "completed" || state.status === "error") {
             ctx.progress(turns, `turn ${turns}: ${tool}`);

@@ -349,7 +349,7 @@ test("config models override the role defaults; a model for another provider is 
 });
 
 test("config models: the job runs on the configured implement model; a malformed models entry is a FAIL before any job", async () => {
-  const { repo, fake, server, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
+  const { repo, fake, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
   writeFileSync(
     join(repo.dir, "cheapag.json"),
     JSON.stringify({ models: { implement: "opencode-go/glm-5.3" } }),

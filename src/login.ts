@@ -285,7 +285,7 @@ function migratePreset(provider: Provider["provider"], out: (line?: string) => v
       (p) => JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][p]),
     );
     if (!name) return;
-    const { models, ...rest } = config;
+    const { models: _models, ...rest } = config;
     writeFileSync(userConfigFile(), JSON.stringify({ ...rest, preset: name }, null, 2) + "\n");
     out(`✓ worker models: ${name} preset (follows new releases)`);
   } catch {} // a damaged config is reported by the config load
@@ -321,7 +321,7 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
   }
   let listed = await listModels(base);
   // most servers serve the OpenAI API under /v1: accept the bare host too
-  if (listed === "unreachable" && !/\/v1$/.test(base)) {
+  if (listed === "unreachable" && !base.endsWith("/v1")) {
     const v1 = await listModels(`${base}/v1`);
     if (v1 !== "unreachable") [base, listed] = [`${base}/v1`, v1];
   }
@@ -603,7 +603,7 @@ async function contextOf(base: string, model: string): Promise<number | undefine
 /** Sets one key of the user config, other keys kept; undefined removes it. False (and said) when the file cannot be written. */
 export function setUserKey(key: string, value: unknown, out: (line?: string) => void) {
   return updateUser(
-    ({ [key]: _, ...rest }) => (value === undefined ? rest : { ...rest, [key]: value }),
+    ({ [key]: _removed, ...rest }) => (value === undefined ? rest : { ...rest, [key]: value }),
     out,
   );
 }

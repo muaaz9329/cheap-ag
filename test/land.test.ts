@@ -260,10 +260,12 @@ test("two server processes on one repository wait for the lock and land one at a
 
   // both are ready to land, each waiting with its own pending lock file, and neither has touched the tree
   const waiting = () =>
+    // oxlint-disable-next-line typescript/require-array-sort-compare -- a comparator changes order
     readdirSync(inRepo(".cheapag"))
       .filter((f) => f.startsWith("land.lock."))
       .map((f) => Number(f.split(".")[2]))
       .sort();
+  // oxlint-disable-next-line typescript/require-array-sort-compare -- a comparator changes order
   await vi.waitFor(() => expect(waiting()).toEqual([one.pid, two.pid].sort()), { timeout: 5000 });
   expect(existsSync(inRepo("a.txt")) || existsSync(inRepo("b.txt"))).toBe(false);
 

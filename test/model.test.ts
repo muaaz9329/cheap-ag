@@ -106,7 +106,9 @@ test("select: arrows and Enter, Enter alone, a number jumps, and the terminal is
 
 test("select: Ctrl-C restores the terminal and exits 130", async () => {
   const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-  onTestFinished(() => void exit.mockRestore());
+  onTestFinished(() => {
+    exit.mockRestore();
+  });
   const { input } = drive("\x03");
   await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(130));
   expect(input.setRawMode).toHaveBeenLastCalledWith(false);

@@ -313,7 +313,9 @@ test("the CONSENT block names /cheapag:allow only when the session runs in that 
   onTestFinished(repo.cleanup);
   const home = userConfig({});
   const cwd = vi.spyOn(process, "cwd");
-  onTestFinished(() => void cwd.mockRestore());
+  onTestFinished(() => {
+    cwd.mockRestore();
+  });
   const block = () => (consentGate(repo.dir, "opencode-go") as { block: string }).block;
   cwd.mockReturnValue(repo.dir);
   expect(block()).toContain(

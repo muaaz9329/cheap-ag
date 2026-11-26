@@ -59,11 +59,11 @@ export function hermeticHome(logins: Logins = {}) {
 export function homeEnv(home: string) {
   // OLLAMA_API_KEY alone is an implicit Ollama Cloud opt-in, so a developer's key would change every detection test
   const {
-    OPENCODE_GO_API_KEY,
-    OPENROUTER_API_KEY,
-    DEEPSEEK_API_KEY,
-    OLLAMA_API_KEY,
-    CHEAPAG_OPENCODE_URL,
+    OPENCODE_GO_API_KEY: _OPENCODE_GO_API_KEY,
+    OPENROUTER_API_KEY: _OPENROUTER_API_KEY,
+    DEEPSEEK_API_KEY: _DEEPSEEK_API_KEY,
+    OLLAMA_API_KEY: _OLLAMA_API_KEY,
+    CHEAPAG_OPENCODE_URL: _CHEAPAG_OPENCODE_URL,
     ...inherited
   } = process.env as Record<string, string>;
   return {

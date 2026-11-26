@@ -162,7 +162,7 @@ test("cheapag status with no login, no jobs and no spend; outside a repository; 
 });
 
 test("cheapag status shows the size of .cheapag and points to clean above 1GB", () => {
-  const { repo, env, status } = setup();
+  const { repo, status } = setup();
   const jobs = join(repo.dir, ".cheapag", "jobs");
   mkdirSync(join(jobs, "jbig1"), { recursive: true });
   writeFileSync(join(jobs, "jbig1", "events.jsonl"), Buffer.alloc(2 * 1024 * 1024));

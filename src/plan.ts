@@ -22,12 +22,12 @@ export function parsePlan(source: string): Plan {
 
   lines.forEach((line, i) => {
     const at = `line ${i + 1}`;
-    if (/^# /.test(line)) {
+    if (line.startsWith("# ")) {
       if (title !== undefined) throw new Error(`${at}: a plan has exactly one H1 title`);
       title = line.slice(2).trim();
       return;
     }
-    if (/^## /.test(line)) {
+    if (line.startsWith("## ")) {
       if (title === undefined) throw new Error(`${at}: step before the plan's H1 title`);
       // s1, step2, step-2 and plain 3 all normalise to the digits (plus an optional letter, like 3a)
       const m = line.match(/^## +(?:step-?|s)?(\d+[a-z]?)(?: +(.*))?$/);
@@ -94,7 +94,7 @@ export function parsePlan(source: string): Plan {
   return {
     title,
     context: context.join("\n").trim(),
-    steps: steps.map(({ line, ...step }) => ({ ...step, text: step.text.trim() })),
+    steps: steps.map(({ line: _line, ...step }) => ({ ...step, text: step.text.trim() })),
   };
 }
 
@@ -147,7 +147,7 @@ export function selectGroups(plan: Plan, spec: string): Group[] {
     }
     return { label: m[2] ? `${m[1]}-${m[2]}` : m[1], steps, at: from };
   });
-  const sorted = groups.sort((a, b) => a.at - b.at).map(({ at, ...g }) => g);
+  const sorted = groups.sort((a, b) => a.at - b.at).map(({ at: _at, ...g }) => g);
   // groups land in step order, so a group waiting on a later one would never land
   sorted.forEach((g, i) => {
     const later = needsOf(g).find((id) =>

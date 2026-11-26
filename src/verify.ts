@@ -177,6 +177,7 @@ export function errorTail(run: VerifyRun, root: string): string[] {
   // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
   const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
   const lines = run.output
+    // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
       rest.replace(/\\/g, "/"),
