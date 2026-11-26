@@ -18,37 +18,37 @@ function eraseLinesAbove(lineCount: number) {
   return `\x1b[${lineCount}A\x1b[J`;
 }
 
-/** Keeps `value` between `low` and `high`. `high` wins when it is below `low`, as for an empty list. */
+/** Keeps `value` between `low` and `high`. `high` wins when it is below `low` (an empty list). */
 function clamp(value: number, low: number, high: number) {
   return Math.min(Math.max(value, low), high);
 }
 
-/** One list row: a marker on the selected row, the row number counted from 1, the label and its hint. */
+/** One list row: a marker on the selected row, the row number from 1, the label and its hint. */
 function formatRow(option: Option, rowIndex: number, selectedIndex: number) {
   const marker = rowIndex === selectedIndex ? "❯" : " ";
   const hint = option.hint ? `  ${option.hint}` : "";
   return `${marker} ${rowIndex + 1}) ${option.label}${hint}`;
 }
 
-/** The rows to draw: at most MAX_VISIBLE_ROWS, scrolled so the selected row stays near the middle. */
+/** Rows to draw: at most MAX_VISIBLE_ROWS, scrolled to keep the selected row near the middle. */
 function visibleRows(options: Option[], selectedIndex: number, columns: number) {
   const rowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
   const centred = selectedIndex - Math.floor(rowCount / 2);
   const first = clamp(centred, 0, options.length - rowCount);
   return options.slice(first, first + rowCount).map((option, offset) => {
     const row = formatRow(option, first + offset, selectedIndex);
-    // one short of the width: a row that reaches the last column can wrap, and the redraw counts lines
+    // one short of the width: a row filling the last column can wrap, and the redraw counts lines
     return row.slice(0, columns - 1);
   });
 }
 
-/** One row up or down, wrapping around at both ends. An arrow key forgets the digits typed before it. */
+/** One row up or down, wrapping around at both ends. An arrow key forgets the typed digits. */
 function moveSelection(selection: Selection, direction: "up" | "down", optionCount: number) {
   const step = direction === "up" ? -1 : 1;
   return { index: (selection.index + step + optionCount) % optionCount, typedNumber: "" };
 }
 
-/** Adds a digit to the typed number and selects that row. A number that names no row leaves the row as it is. */
+/** Adds a digit to the typed number and selects that row, if the list has a row of that number. */
 function typeDigit(selection: Selection, digit: string, optionCount: number) {
   const longer = selection.typedNumber + digit;
   // a number past the end of the list starts over from the digit just typed
