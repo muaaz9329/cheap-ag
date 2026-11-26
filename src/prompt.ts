@@ -27,6 +27,18 @@ function formatRow(option: Option, rowIndex: number, selectedIndex: number) {
   return `${marker} ${rowIndex + 1}) ${option.label}${hint}`;
 }
 
+/** The rows to draw: at most MAX_VISIBLE_ROWS, scrolled so the selected row stays near the middle. */
+function visibleRows(options: Option[], selectedIndex: number, columns: number) {
+  const rowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
+  const centred = selectedIndex - Math.floor(rowCount / 2);
+  const first = clamp(centred, 0, options.length - rowCount);
+  return options.slice(first, first + rowCount).map((option, offset) => {
+    const row = formatRow(option, first + offset, selectedIndex);
+    // one short of the width: a row that reaches the last column can wrap, and the redraw counts lines
+    return row.slice(0, columns - 1);
+  });
+}
+
 /**
  * An arrow-key list on a terminal: ↑/↓ move, Enter picks, typing a number jumps to that row, Ctrl-C exits 130.
  * Redraws in place and always gives the terminal back (raw mode off, cursor shown) on Enter, Ctrl-C and errors.
@@ -44,14 +56,8 @@ export function select(
     let index = clamp(initial, 0, options.length - 1);
     let typedNumber = "";
     let drawnLineCount = 0;
-    const visibleRowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
-    const fitToWidth = (line: string) => line.slice(0, (output.columns || DEFAULT_COLUMNS) - 1);
     const draw = () => {
-      const centred = index - Math.floor(visibleRowCount / 2);
-      const first = clamp(centred, 0, options.length - visibleRowCount);
-      const rows = options
-        .slice(first, first + visibleRowCount)
-        .map((option, offset) => fitToWidth(formatRow(option, first + offset, index)));
+      const rows = visibleRows(options, index, output.columns || DEFAULT_COLUMNS);
       if (drawnLineCount) output.write(eraseLinesAbove(drawnLineCount));
       output.write([question, ...rows].join("\n") + "\n");
       drawnLineCount = rows.length + 1;
