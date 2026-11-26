@@ -256,15 +256,7 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   lines.push(...questions);
   if (has("conflict") && r.conflict?.length)
     lines.push("conflict:", ...r.conflict.map((x) => `  ${oneLine(x)}`));
-  if (has("error") && r.error?.length) {
-    const e = r.error.slice(0, c.error);
-    if (e.length < r.error.length)
-      e[e.length - 1] = `  … +${r.error.length - e.length + 1} more lines (see log)`;
-    // an env failure carries the reason first, then the ordinary tail (the command and its output)
-    if (r.check === "env")
-      lines.push(`error: environment: the check could not run (${e[0]})`, ...e.slice(1));
-    else lines.push(`error: ${e[0]}`, ...e.slice(1));
-  }
+  if (has("error") && r.error?.length) lines.push(...errorLines(r.error, c.error, r.check));
   if (has("found") && r.found && !lead) lines.push(...wrap(`found: ${oneLine(r.found)}`));
   if (has("tried") && r.tried?.length)
     lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
@@ -285,6 +277,17 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   return lines
     .map((line) => (neverElided.has(line) ? line.replaceAll("\t", "  ") : fit(line)))
     .join("\n");
+}
+
+/** The `error:` tail, cut to `limit` lines with its last line counting the rest. */
+function errorLines(error: string[], limit: number, check: JobRecord["check"]) {
+  const kept = error.slice(0, limit);
+  if (kept.length < error.length)
+    kept[kept.length - 1] = `  … +${error.length - kept.length + 1} more lines (see log)`;
+  const [first, ...rest] = kept;
+  // an env failure carries the reason first, then the ordinary tail (the command and its output)
+  if (check === "env") return [`error: environment: the check could not run (${first})`, ...rest];
+  return [`error: ${first}`, ...rest];
 }
 
 /** Every question asked, numbered when there are several, each with its lettered options. */
