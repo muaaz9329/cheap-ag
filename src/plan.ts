@@ -121,14 +121,16 @@ function checkKind(step: DraftStep): void {
 
 /** Workers cannot see `.cheapag/`, so a step aimed at a file there could never succeed. */
 function checkFilesVisible(step: DraftStep): void {
-  const hidden = step.fields.files
-    .split(/[,\n]/)
-    .map((f) => f.trim().replace(/^\.\//, ""))
-    .find((f) => f.split("/")[0] === ".cheapag");
+  const hidden = splitFiles(step.fields.files).find((f) => f.split("/")[0] === ".cheapag");
   if (hidden)
     throw new Error(
       `line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`,
     );
+}
+
+/** The entries of a `files:` value: split on commas and lines, trimmed, without a leading `./`. */
+function splitFiles(files: string): string[] {
+  return files.split(/[,\n]/).map((f) => f.trim().replace(/^\.\//, ""));
 }
 
 function checkChangeCount(step: DraftStep): void {
@@ -212,19 +214,22 @@ function checkNeedsOrder(groups: Group[], spec: string): void {
 
 /** Where two groups' `files:` overlap: an equal entry, or one inside the other's directory entry. Returns the inner path. */
 export function overlap(a: Group, b: Group): string | undefined {
-  const files = (g: Group) =>
-    g.steps
-      .flatMap((s) => s.fields.files.split(/[,\n]/))
-      .map((f) => f.trim().replace(/^\.\//, "").replace(/\/+$/, ""))
-      .filter(Boolean);
-  const theirs = files(b);
-  for (const x of files(a)) {
+  const theirs = groupFiles(b);
+  for (const x of groupFiles(a)) {
     for (const y of theirs) {
       if (x === y || x.startsWith(`${y}/`)) return x;
       if (y.startsWith(`${x}/`)) return y;
     }
   }
   return undefined;
+}
+
+/** A group's `files:` entries without trailing slashes, so a directory compares by its plain path. */
+function groupFiles(group: Group): string[] {
+  return group.steps
+    .flatMap((s) => splitFiles(s.fields.files))
+    .map((f) => f.replace(/\/+$/, ""))
+    .filter(Boolean);
 }
 
 /** The step ids a group's `needs:` names, outside the group itself (a range already runs in order). */
