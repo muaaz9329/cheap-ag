@@ -246,31 +246,22 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
   // unique per call: parallel groups in one process wait on the lock at once, and must not delete each other's file
   const mine = `${lock}.${process.pid}.${token}`;
   mkdirSync(join(root, ".cheapag"), { recursive: true });
+  const ours = { pid: process.pid, at: new Date().toISOString(), token } satisfies Holder;
   // written whole, then hard-linked into place: the lock never exists without its contents
-  writeFileSync(
-    mine,
-    JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token } satisfies Holder),
-  );
+  writeFileSync(mine, JSON.stringify(ours));
   const timeout = lockTimeoutMs();
   const deadline = Date.now() + timeout;
   try {
-    for (;;) {
-      try {
-        linkSync(mine, lock);
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
+    while (!takeLock(mine, lock)) {
       const holder = readHolder(lock); // gone: released meanwhile, so try again at once
       if (!holder) continue;
-      if (!(holder.pid > 0 && isAlive(holder.pid))) breakStale(lock, holder);
-      else if (Date.now() > deadline) {
-        const waited =
-          timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
-        throw new Error(
-          `timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`,
-        );
-      } else await new Promise((resolve) => setTimeout(resolve, 200));
+      const alive = holder.pid > 0 && isAlive(holder.pid);
+      if (!alive) {
+        breakStale(lock, holder);
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error(lockTimeoutMessage(timeout, holder));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
   } finally {
     rmSync(mine, { force: true });
@@ -281,6 +272,22 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
     // only our own: never a lock someone else holds now
     if (readHolder(lock)?.token === token) rmSync(lock, { force: true });
   }
+}
+
+/** Hard-links our file into place as the lock; false when another holder has it. */
+function takeLock(mine: string, lock: string) {
+  try {
+    linkSync(mine, lock);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return false;
+  }
+}
+
+function lockTimeoutMessage(timeout: number, holder: Holder) {
+  const waited = timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
+  return `timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`;
 }
 
 /**
