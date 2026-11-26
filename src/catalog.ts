@@ -49,7 +49,7 @@ async function opencodeCatalogEntry(provider: Provider, cwd: string) {
   return entry;
 }
 
-/** The models of the Ollama endpoint the user config sets up, with the key from the env variable it names. */
+/** The models of the user config's Ollama endpoint, with the key from the env variable it names. */
 async function configuredOllamaModels(): Promise<CatalogModel[]> {
   const ollama = ollamaEndpoint();
   if (!ollama) throw new Error("no Ollama endpoint configured; run npx cheap-agent login");
@@ -84,7 +84,7 @@ async function localModels(base: string): Promise<CatalogModel[]> {
   }));
 }
 
-/** The ids of the models pulled on this machine, from GET /api/tags, without duplicates and sorted. */
+/** The ids of the models pulled on this machine (GET /api/tags), deduplicated and sorted. */
 async function pulledModelIds(root: string): Promise<string[]> {
   let response: Response;
   try {
@@ -143,9 +143,8 @@ async function cloudModels(base: string, apiKey: string | undefined): Promise<Ca
       signal: AbortSignal.timeout(10_000),
     });
   } catch (error) {
-    throw new Error(
-      `could not reach Ollama Cloud at ${base} (${(error as Error).message}); is this machine online?`,
-    );
+    const reason = (error as Error).message;
+    throw new Error(`could not reach Ollama Cloud at ${base} (${reason}); is this machine online?`);
   }
   if (response.status === 401 || response.status === 403)
     throw new Error(`Ollama Cloud rejected the key (${response.status}); check OLLAMA_API_KEY`);
