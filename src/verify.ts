@@ -117,30 +117,31 @@ function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyR
       exitSignal = exitSignalValue;
       killGroup();
     });
-    child.on("close", () => {
+    const finish = (run: VerifyRun) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", halt);
-      resolve({
+      resolve(run);
+    };
+    child.on("close", () =>
+      finish({
         cmd,
         ok: code === 0 && !signal?.aborted,
         ms: Date.now() - started,
         output,
         code,
         signal: exitSignal,
-      });
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", halt);
-      resolve({
+      }),
+    );
+    child.on("error", (error) =>
+      finish({
         cmd,
         ok: false,
         ms: Date.now() - started,
-        output: err.message,
+        output: error.message,
         code: null,
         signal: null,
-      });
-    });
+      }),
+    );
   });
 }
 
