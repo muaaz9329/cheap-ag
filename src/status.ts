@@ -190,13 +190,17 @@ function storageLine(root: string): string {
       return 0;
     }
   };
-  const size =
-    bytes >= GB
-      ? `${(bytes / GB).toFixed(1)} GB`
-      : bytes >= MB
-        ? `${(bytes / MB).toFixed(1)} MB`
-        : `${(bytes / KB).toFixed(1)} KB`;
-  return `storage: ${size} in .cheapag (${folders(jobs)} job folders, ${folders(trees)} worktrees)${bytes > GB ? " · run: npx cheap-agent clean" : ""}`;
+  const size = formatSize(bytes);
+  const counts = `${folders(jobs)} job folders, ${folders(trees)} worktrees`;
+  const hint = bytes > GB ? " · run: npx cheap-agent clean" : "";
+  return `storage: ${size} in .cheapag (${counts})${hint}`;
+}
+
+/** `bytes` in KB, MB or GB, one decimal. */
+function formatSize(bytes: number): string {
+  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
+  if (bytes >= MB) return `${(bytes / MB).toFixed(1)} MB`;
+  return `${(bytes / KB).toFixed(1)} KB`;
 }
 
 /**
