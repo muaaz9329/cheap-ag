@@ -154,10 +154,11 @@ const URGENCY: JobStatus[] = [
   "RUNNING",
   "OK",
 ];
-const rank = (s: JobStatus) =>
-  s === "PROVIDER" || s === "TIMEOUT" || s === "CANCELLED"
-    ? URGENCY.indexOf("BUDGET")
-    : URGENCY.indexOf(s);
+function urgencyRank(status: JobStatus) {
+  if (status === "PROVIDER" || status === "TIMEOUT" || status === "CANCELLED")
+    return URGENCY.indexOf("BUDGET");
+  return URGENCY.indexOf(status);
+}
 
 /** The summary a worker that never reported gets (src/worker.ts). */
 export const NO_SUMMARY = "(worker gave no summary)";
@@ -195,16 +196,16 @@ export const permissionOptions = (prefix: string) => [
 ];
 
 /** D5-adjacent: a BLOCKED job paused on a command permission, rendered outside the ordinary job layout. */
-function renderPermission(r: JobRecord) {
-  const p = r.permission!;
-  const [once, always, refuse] = permissionOptions(p.prefix);
+function renderPermission(record: JobRecord) {
+  const permission = record.permission!;
+  const [once, always, refuse] = permissionOptions(permission.prefix);
   return [
-    `BLOCKED ${r.job} step=${r.steps} permission`,
-    `title: ${oneLine(p.title)}`,
-    `command: ${oneLine(p.command)}`,
-    `why: ${oneLine(p.why)}`,
+    `BLOCKED ${record.job} step=${record.steps} permission`,
+    `title: ${oneLine(permission.title)}`,
+    `command: ${oneLine(permission.command)}`,
+    `why: ${oneLine(permission.why)}`,
     `a) ${once}`,
-    ...(p.always === false ? [] : [`b) ${always}`]),
+    ...(permission.always === false ? [] : [`b) ${always}`]),
     `c) ${refuse}`,
     "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
   ]
@@ -459,7 +460,9 @@ function refText(ref: Range) {
  * adjacent single lines), then `next:`. The fix job is not a group: it counts in the cost only.
  */
 export function renderBatch(b: BatchRecord, jobs: JobRecord[], fix?: JobRecord) {
-  const sorted = [...jobs].sort((left, right) => rank(left.status) - rank(right.status));
+  const sorted = [...jobs].sort(
+    (left, right) => urgencyRank(left.status) - urgencyRank(right.status),
+  );
   const head = [batchHeadline(b, jobs, fix)];
   if (b.notes.length) head.push(`note: ${b.notes.join("; ")}`);
   if (b.integrationError?.length)
@@ -518,24 +521,34 @@ export const renderConsent = (c: ConsentRecord) =>
     .map(fit)
     .join("\n");
 
-const oneLine = (s: string) => s.trim().replace(/\s*\n\s*/g, " ");
-const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+/** Trimmed, with each newline and the whitespace around it made one space. */
+function oneLine(text: string) {
+  return text.trim().replace(/\s*\n\s*/g, " ");
+}
+
+/** Cut to `max` chars, the last of them an ellipsis. */
+function clip(text: string, max: number) {
+  if (text.length > max) return `${text.slice(0, max - 1)}…`;
+  return text;
+}
 
 /** A line broken at spaces into lines of at most 200 chars (a longer word is left to `fit`). */
 function wrap(line: string) {
-  const out = [""];
+  const lines = [""];
   for (const word of line.replaceAll("\t", "  ").split(" ")) {
-    const last = out[out.length - 1];
-    if (last && last.length + 1 + word.length > LINE_MAX) out.push(word);
-    else out[out.length - 1] = last ? `${last} ${word}` : word;
+    const last = lines[lines.length - 1];
+    if (last && last.length + 1 + word.length > LINE_MAX) lines.push(word);
+    else lines[lines.length - 1] = last ? `${last} ${word}` : word;
   }
-  return out;
+  return lines;
 }
 
 /** D9 line rules: no tabs (2 spaces), at most 200 chars with the middle elided. */
 function fit(line: string) {
-  const l = line.replaceAll("\t", "  ");
-  if (l.length <= LINE_MAX) return l;
+  const untabbed = line.replaceAll("\t", "  ");
+  if (untabbed.length <= LINE_MAX) return untabbed;
   const half = (LINE_MAX - 1) / 2;
-  return `${l.slice(0, Math.ceil(half))}…${l.slice(l.length - Math.floor(half))}`;
+  const head = untabbed.slice(0, Math.ceil(half));
+  const tail = untabbed.slice(untabbed.length - Math.floor(half));
+  return `${head}…${tail}`;
 }
