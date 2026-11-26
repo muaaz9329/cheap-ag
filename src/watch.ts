@@ -48,11 +48,7 @@ export function scan(state: WatchState): string[] {
   const lines: string[] = [];
   for (const id of readdirSync(base).sort()) {
     const dir = join(base, id);
-    try {
-      if (!statSync(dir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
+    if (!isDirectory(dir)) continue;
     const resultFile = join(dir, "result.txt");
     let job = state.jobs.get(dir);
     if (!job) {
@@ -106,6 +102,15 @@ export function scan(state: WatchState): string[] {
     }
   }
   return lines;
+}
+
+/** Whether `path` is a directory; false when it cannot be examined, such as a dangling link. */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** The first word of a result.txt, or undefined when the file is missing or empty. Short, so re-read every scan. */
