@@ -371,25 +371,32 @@ function isTransient(result: Pick<RunResult, "error" | "httpStatus">) {
 
 /** The BUDGET reason once every allowed model is limited, with the earliest reset the provider gave. */
 function exhausted(provider: ProviderId, limits: Limit[]) {
-  const ids = [...new Set(limits.map((l) => l.model.slice(l.model.indexOf("/") + 1)))].join(", ");
+  const bareIds = limits.map((limit) => limit.model.slice(limit.model.indexOf("/") + 1));
+  const ids = [...new Set(bareIds)].join(", ");
+  const when = resetTime(limits);
+  const go = limits.find(
+    (limit) => limit.reason === "account_rate_limit" || limit.reason === "free_tier_limit",
+  );
+  if (go) return `Go ${goWindow(go)} window exhausted for ${ids} (resets ${when})`;
+  return `${providerLabel(provider)} rate limit on every allowed model: ${ids} (retry ${when})`;
+}
+
+/** When the limits lift: `~` and the earliest reset the provider gave, else the last limit's own text. */
+function resetTime(limits: Limit[]) {
   // OpenCode's next retry honours the provider's retry-after, i.e. the reset; a next only seconds away is just its backoff
   // (no retry-after was sent), so then quote the provider's own text instead
-  const next = Math.min(
-    ...limits.map((l) => l.next).filter((n) => Number.isFinite(n) && n > Date.now() + 60_000),
-  );
-  const when = Number.isFinite(next) ? `~${clock(next)}` : limits.at(-1)!.message;
-  const go = limits.find(
-    (l) => l.reason === "account_rate_limit" || l.reason === "free_tier_limit",
-  );
-  if (go) {
-    // OpenCode words it "<limitName> usage limit reached. It will reset in …"
-    const window =
-      go.reason === "free_tier_limit"
-        ? "free tier"
-        : (go.message.match(/^(.+?) usage limit reached/i)?.[1].toLowerCase() ?? "usage");
-    return `Go ${window} window exhausted for ${ids} (resets ${when})`;
-  }
-  return `${providerLabel(provider)} rate limit on every allowed model: ${ids} (retry ${when})`;
+  const resets = limits
+    .map((limit) => limit.next)
+    .filter((next) => Number.isFinite(next) && next > Date.now() + 60_000);
+  const earliest = Math.min(...resets);
+  return Number.isFinite(earliest) ? `~${clock(earliest)}` : limits.at(-1)!.message;
+}
+
+/** The name of the Go window a limit hit. */
+function goWindow(limit: Limit) {
+  if (limit.reason === "free_tier_limit") return "free tier";
+  // OpenCode words it "<limitName> usage limit reached. It will reset in …"
+  return limit.message.match(/^(.+?) usage limit reached/i)?.[1].toLowerCase() ?? "usage";
 }
 
 /** Local time as HH:MM, with the date in front when it is not today. */
