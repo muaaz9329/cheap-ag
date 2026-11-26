@@ -355,7 +355,9 @@ function spawnServer(configDir: string, password: string) {
       reject(error);
     };
     // keep draining both pipes for the server's lifetime (a full pipe blocks it), but only buffer until it listens
-    server.stderr!.on("data", (chunk) => listening || (output += chunk));
+    server.stderr!.on("data", (chunk) => {
+      if (!listening) output += chunk;
+    });
     server.stdout!.on("data", (chunk) => {
       if (listening) return;
       output += chunk;
@@ -386,13 +388,16 @@ export function stopOpencode(exiting = false) {
   started = undefined; // the next ensureOpencode boots afresh
   const server = child;
   child = undefined;
-  if (server?.exitCode !== null || !server.pid) return;
-  if (exiting) return killProcessGroup(server.pid, "SIGKILL");
+  if (!server || server.exitCode !== null || !server.pid) return;
+  if (exiting) {
+    killProcessGroup(server.pid, "SIGKILL");
+    return;
+  }
   killProcessGroup(server.pid);
-  setTimeout(
-    () => server.exitCode === null && killProcessGroup(server.pid, "SIGKILL"),
-    STOP_GRACE_MS,
-  ).unref();
+  const killIfStillRunning = () => {
+    if (server.exitCode === null) killProcessGroup(server.pid, "SIGKILL");
+  };
+  setTimeout(killIfStillRunning, STOP_GRACE_MS).unref();
 }
 
 const STOP_GRACE_MS = 3_000;
