@@ -178,18 +178,7 @@ const MAX_LINES = 25;
  * Falls back to the last lines when no failure marker is found.
  */
 export function errorTail(run: VerifyRun, root: string): string[] {
-  // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
-  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
-  const lines = run.output
-    // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
-      rest.replace(/\\/g, "/"),
-    )
-    .split(/\r?\n/)
-    .map((l) => l.replace(/\t/g, "  ").trimEnd())
-    .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
-
+  const lines = tailLines(run.output, root);
   const failures: { key: string; lines: string[]; count: number }[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (!MARKER.test(lines[i])) continue;
@@ -234,6 +223,25 @@ export function errorTail(run: VerifyRun, root: string): string[] {
         ])
     : lines.slice(-(MAX_LINES - 1));
   return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
+}
+
+/**
+ * The output's lines worth reading: ANSI codes stripped, `root` made repo-relative, tabs expanded, and pass lines,
+ * progress and blank lines dropped.
+ */
+function tailLines(output: string, root: string): string[] {
+  // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
+  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
+  const lines = output
+    // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
+      rest.replace(/\\/g, "/"),
+    )
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\t/g, "  ").trimEnd())
+    .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
+  return lines;
 }
 
 /** Whether two tails show the same failure, ignoring numbers (timings, counts, ports). */
