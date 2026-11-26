@@ -3,7 +3,13 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, modelWarnings, presetHere, readConsent, routeMoved } from "./consent.js";
-import { detectProvider, LOGIN_COMMAND, providerLabel, redact } from "./credentials.js";
+import {
+  detectProvider,
+  LOGIN_COMMAND,
+  providerLabel,
+  redact,
+  type Provider,
+} from "./credentials.js";
 import { blockedFor, newestFirst } from "./jobs.js";
 import { isAlive } from "./platform.js";
 import { renderJob } from "./report.js";
@@ -12,6 +18,8 @@ import { projectRoot } from "./workspace.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 const RECENT = 5;
+
+type ProviderId = Provider["provider"];
 
 /**
  * `cheapag status` (spec story 112): provider, this repo's consent, running jobs, recent results, and tracked spend
@@ -23,9 +31,7 @@ export function status(args: string[]): number {
     return 1;
   }
   const provider = detectProvider()?.provider;
-  print(
-    `cheapag ${version} provider=${provider ? `${provider} preset=${presetHere(provider)}` : `none (run ${LOGIN_COMMAND})`}`,
-  );
+  print(`cheapag ${version} provider=${providerText(provider)}`);
 
   let root: string | undefined;
   try {
@@ -84,6 +90,12 @@ export function status(args: string[]): number {
     );
   }
   return 0;
+}
+
+/** The `provider=` value: the provider and its preset, or how to log in when there is none. */
+function providerText(provider: ProviderId | undefined): string {
+  if (!provider) return `none (run ${LOGIN_COMMAND})`;
+  return `${provider} preset=${presetHere(provider)}`;
 }
 
 /** Writes one line of the report, with any API key in it redacted. */
