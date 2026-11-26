@@ -24,27 +24,31 @@ const SHOWN = 4;
 const effort = (e?: string) => `effort ${e ?? "default"}`;
 const list = (xs: string[]) => (xs.length ? xs.join(", ") : "none");
 
+// every line goes through redact, so a key quoted in an error never reaches the terminal
+function print(line: string) {
+  process.stdout.write(redact(line) + "\n");
+}
+
 /** `cheapag model`: choose the worker's main and fallback models, each with an effort, from the provider's own catalog. */
 export async function model(args: string[]): Promise<number> {
-  const out = (line: string) => process.stdout.write(redact(line) + "\n");
   const flags = parse(args);
-  if (typeof flags === "string") return (out(`✗ ${flags}\n${USAGE}`), 1);
+  if (typeof flags === "string") return (print(`✗ ${flags}\n${USAGE}`), 1);
   const provider = detectProvider();
-  if (!provider) return (out(`✗ no worker provider; run ${LOGIN_COMMAND} first`), 1);
+  if (!provider) return (print(`✗ no worker provider; run ${LOGIN_COMMAND} first`), 1);
   process.on("exit", () => stopOpencode(true));
   const dir = mkdtempSync(join(tmpdir(), "cheapag-model-"));
   try {
     const models = await catalog(provider, dir);
     const current = currentRoute(provider);
-    if (flags.main !== undefined) return save(provider, models, flags as Required<Flags>, out);
-    if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current, out);
-    out(describe(provider, models, current));
+    if (flags.main !== undefined) return save(provider, models, flags as Required<Flags>);
+    if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current);
+    print(describe(provider, models, current));
     // a `models` entry naming another provider is ignored when the next job routes
-    for (const warning of modelWarnings(provider.provider, repoRoot())) out(`! ${warning}`);
-    if (!flags.list) out(USAGE);
+    for (const warning of modelWarnings(provider.provider, repoRoot())) print(`! ${warning}`);
+    if (!flags.list) print(USAGE);
     return 0;
   } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+    print(`✗ ${(err as Error).message}`);
     return 1;
   } finally {
     stopOpencode();
@@ -137,43 +141,34 @@ function describe(
   ].join("\n");
 }
 
-function save(
-  provider: Provider,
-  models: CatalogModel[],
-  flags: Required<Flags>,
-  out: (l: string) => void,
-) {
+function save(provider: Provider, models: CatalogModel[], flags: Required<Flags>) {
   const label = providerLabel(provider.provider);
   const check = (id: string, wanted?: string) => {
     const found = models.find((m) => m.id === bare(provider, id));
     if (!found)
       return (
-        out(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`),
+        print(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`),
         undefined
       );
     if (wanted !== undefined && !found.efforts.includes(wanted))
-      return (out(`✗ ${id} has no effort ${wanted}; it has: ${list(found.efforts)}`), undefined);
+      return (print(`✗ ${id} has no effort ${wanted}; it has: ${list(found.efforts)}`), undefined);
     return found;
   };
   const none = flags.fallback === undefined || flags.fallback === "none";
   if (none && flags.fallbackEffort !== undefined)
-    return (out("✗ --fallback-effort needs --fallback <id>"), 1);
+    return (print("✗ --fallback-effort needs --fallback <id>"), 1);
   const main = check(flags.main, flags.effort);
   const fallback = none ? null : check(flags.fallback, flags.fallbackEffort);
   if (!main || fallback === undefined) return 1;
-  return apply(
-    provider,
-    {
-      main: main.id,
-      mainEffort: flags.effort,
-      fallback: fallback?.id ?? null,
-      fallbackEffort: flags.fallbackEffort,
-    },
-    out,
-  );
+  return apply(provider, {
+    main: main.id,
+    mainEffort: flags.effort,
+    fallback: fallback?.id ?? null,
+    fallbackEffort: flags.fallbackEffort,
+  });
 }
 
-function apply(provider: Provider, chosen: Pick, out: (l: string) => void) {
+function apply(provider: Provider, chosen: Pick) {
   saveModels(provider, chosen);
   // on OpenRouter the model decides the upstream company: picking it is the consent for this repo
   if (provider.provider === "openrouter") {
@@ -185,7 +180,7 @@ function apply(provider: Provider, chosen: Pick, out: (l: string) => void) {
   const second = chosen.fallback
     ? `${name(chosen.fallback)} (${effort(chosen.fallbackEffort)})`
     : "none";
-  out(
+  print(
     `✓ main ${name(chosen.main)} (${effort(chosen.mainEffort)}), fallback ${second} — saved in ${userConfigFile()}; the next job uses it`,
   );
   return 0;
@@ -206,7 +201,6 @@ async function pick(
   provider: Provider,
   models: CatalogModel[],
   current: ReturnType<typeof currentRoute>,
-  out: (l: string) => void,
 ) {
   const row = (m: CatalogModel) => ({
     label: m.id,
@@ -231,9 +225,10 @@ async function pick(
   );
   const fallback = f ? models[f - 1] : undefined;
   const fallbackEffort = fallback && (await askEffort("fallback", fallback));
-  return apply(
-    provider,
-    { main: main.id, mainEffort, fallback: fallback?.id ?? null, fallbackEffort },
-    out,
-  );
+  return apply(provider, {
+    main: main.id,
+    mainEffort,
+    fallback: fallback?.id ?? null,
+    fallbackEffort,
+  });
 }
