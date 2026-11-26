@@ -149,11 +149,10 @@ export function localEndpoint(provider: ProviderId) {
 export function presetOf(provider: ProviderId, models: ModelsConfig = {}): Preset | "custom" {
   if (localEndpoint(provider)) return "custom";
   const presets = PRESETS[provider as Exclude<ProviderId, "local">];
-  const key = (m: ModelsConfig) => JSON.stringify(fullRoute(provider, m));
-  return (
-    (["balanced", "cheapest", "strongest"] as const).find((p) => key(presets[p]) === key(models)) ??
-    "custom"
-  );
+  const routeKey = (candidate: ModelsConfig) => JSON.stringify(fullRoute(provider, candidate));
+  const tieOrder = ["balanced", "cheapest", "strongest"] as const;
+  const match = tieOrder.find((preset) => routeKey(presets[preset]) === routeKey(models));
+  return match ?? "custom";
 }
 
 function workerModel(provider: ProviderId, id: string): WorkerModel {
