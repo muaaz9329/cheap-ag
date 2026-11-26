@@ -6,16 +6,22 @@ import { projectRoot } from "./workspace.js";
 
 /** What a tool call touched, for a one-line display. Never throws on a missing or odd input. */
 export function toolTarget(tool: string, input: unknown, base?: string): string {
-  const field = (key: string): string | undefined => {
-    const value = (input as Record<string, unknown> | null | undefined)?.[key];
-    return typeof value === "string" ? value : undefined;
-  };
   if (tool === "edit" || tool === "write" || tool === "read") {
-    const filePath = field("filePath") ?? "";
-    return base && filePath.startsWith(base + sep) ? filePath.slice(base.length + 1) : filePath;
+    const filePath = stringField(input, "filePath") ?? "";
+    const insideBase = base && filePath.startsWith(base + sep);
+    return insideBase ? filePath.slice(base.length + 1) : filePath;
   }
-  if (tool === "bash") return (field("command") ?? "").split(/\r?\n/)[0].slice(0, 40);
+  if (tool === "bash") {
+    const command = stringField(input, "command") ?? "";
+    return command.split(/\r?\n/)[0].slice(0, 40);
+  }
   return "";
+}
+
+/** A tool input's field when it is a string, else undefined. */
+function stringField(input: unknown, key: string): string | undefined {
+  const value = (input as Record<string, unknown> | null | undefined)?.[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 /** Per job dir: the byte offset already read in events.jsonl, and whether each line was printed. `skipped` marks a job that finished before watch started. */
@@ -47,65 +53,75 @@ export function scan(state: WatchState): string[] {
   if (!existsSync(base)) return [];
   const lines: string[] = [];
   for (const id of readdirSync(base).sort()) {
-    const dir = join(base, id);
-    try {
-      if (!statSync(dir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    const resultFile = join(dir, "result.txt");
-    let job = state.jobs.get(dir);
-    if (!job) {
-      // a job that already finished before watch started is never shown; one still RUNNING (or BLOCKED) was just created
-      const word = firstWord(resultFile);
-      if (word && isFinal(word)) {
-        state.jobs.set(dir, { offset: 0, started: true, verdict: true, skipped: true });
-        continue;
-      }
-      job = { offset: 0, started: false, verdict: false, skipped: false };
-      state.jobs.set(dir, job);
-    }
+    const directory = join(base, id);
+    if (!isDirectory(directory)) continue;
+    const job = trackedJob(state.jobs, directory);
     if (job.skipped) continue;
 
     if (!job.started) {
       job.started = true;
-      const request = readJson(join(dir, "request.json"));
-      if (request) {
-        const model = typeof request.model === "string" ? request.model : undefined;
-        const short = model?.split("/").pop();
-        lines.push(
-          `▶ ${id}${request.steps !== undefined ? ` · steps ${request.steps}` : ""}${short ? ` · ${short}` : ""}`,
-        );
-      } else {
-        lines.push(`▶ ${id}`);
-      }
+      lines.push(startLine(id, directory));
     }
 
-    const eventsFile = join(dir, "events.jsonl");
-    if (existsSync(eventsFile)) {
-      const buffer = readFileSync(eventsFile);
-      const text = buffer.subarray(job.offset).toString("utf8");
-      const lastNewline = text.lastIndexOf("\n");
-      if (lastNewline !== -1) {
-        job.offset += Buffer.byteLength(text.slice(0, lastNewline + 1));
-        for (const line of text.slice(0, lastNewline).split("\n")) {
-          const shown = toolLine(id, line, state.root);
-          if (shown) lines.push(shown);
-        }
-      }
+    for (const line of readAppendedLines(join(directory, "events.jsonl"), job)) {
+      const shown = toolLine(id, line, state.root);
+      if (shown) lines.push(shown);
     }
 
     // result.txt is rewritten each turn (RUNNING …): only a final first word is the verdict
-    if (!job.verdict) {
-      const word = firstWord(resultFile);
-      if (word && isFinal(word)) {
-        job.verdict = true;
-        const first = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
-        lines.push(`■ ${id} ${first}`);
-      }
+    const resultFile = join(directory, "result.txt");
+    if (!job.verdict && hasFinalResult(resultFile)) {
+      job.verdict = true;
+      const firstLine = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
+      lines.push(`■ ${id} ${firstLine}`);
     }
   }
   return lines;
+}
+
+/** The watch record for a job directory, made the first time a scan sees it. */
+function trackedJob(jobs: Map<string, JobWatch>, directory: string): JobWatch {
+  const known = jobs.get(directory);
+  if (known) return known;
+  // a job that already finished before watch started is never shown; one still RUNNING (or BLOCKED) was just created
+  const job = hasFinalResult(join(directory, "result.txt"))
+    ? { offset: 0, started: true, verdict: true, skipped: true }
+    : { offset: 0, started: false, verdict: false, skipped: false };
+  jobs.set(directory, job);
+  return job;
+}
+
+/** The ▶ line that opens a job: its id, then the steps and the model's last segment when request.json has them. */
+function startLine(id: string, directory: string): string {
+  const request = readJson(join(directory, "request.json"));
+  if (!request) return `▶ ${id}`;
+  const model = typeof request.model === "string" ? request.model : undefined;
+  const modelName = model?.split("/").pop();
+  const steps = request.steps !== undefined ? ` · steps ${request.steps}` : "";
+  const modelText = modelName ? ` · ${modelName}` : "";
+  return `▶ ${id}${steps}${modelText}`;
+}
+
+/**
+ * The complete lines added to `file` since `job.offset`, moving the offset past them. A last line without its
+ * newline is still being written, so it waits for the next call.
+ */
+function readAppendedLines(file: string, job: JobWatch): string[] {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file).subarray(job.offset).toString("utf8");
+  const lastNewline = text.lastIndexOf("\n");
+  if (lastNewline === -1) return [];
+  job.offset += Buffer.byteLength(text.slice(0, lastNewline + 1));
+  return text.slice(0, lastNewline).split("\n");
+}
+
+/** Whether `path` is a directory; false when it cannot be examined, such as a dangling link. */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** The first word of a result.txt, or undefined when the file is missing or empty. Short, so re-read every scan. */
@@ -116,6 +132,12 @@ function firstWord(file: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a result.txt starts with a final status word. */
+function hasFinalResult(file: string): boolean {
+  const word = firstWord(file);
+  return word !== undefined && isFinal(word);
 }
 
 /** Whether a job's status is final: RUNNING and BLOCKED are the two live states. */
@@ -139,7 +161,9 @@ function toolLine(id: string, line: string, root: string): string | undefined {
   if (status !== "completed" && status !== "error") return undefined;
   const tool = typeof part.tool === "string" ? part.tool : "";
   const target = toolTarget(tool, part.state?.input, sessionDirectory(event, part, id, root));
-  return `  ${id}  ${tool}${target ? ` ${target}` : ""}${status === "error" ? " ✗" : ""}`;
+  const targetText = target ? ` ${target}` : "";
+  const errorMark = status === "error" ? " ✗" : "";
+  return `  ${id}  ${tool}${targetText}${errorMark}`;
 }
 
 function readJson(file: string): Record<string, any> | undefined {
@@ -166,40 +190,36 @@ export async function follow(
   for (;;) {
     for (const id of ids) {
       if (final.has(id)) continue;
-      const dir = join(base, id);
-      if (!existsSync(dir)) {
+      const directory = join(base, id);
+      if (!existsSync(directory)) {
         out.write(`✗ no job ${id}\n`);
         final.add(id);
         continue;
       }
-      const progressFile = join(dir, "progress.txt");
-      if (existsSync(progressFile)) {
-        let line = "";
-        try {
-          line = readFileSync(progressFile, "utf8").trim();
-        } catch {
-          line = "";
-        }
-        if (line && line !== printed.get(id)) {
-          printed.set(id, line);
-          out.write(`  ${id}  ${line}\n`);
-        }
+      const progressFile = join(directory, "progress.txt");
+      const line = existsSync(progressFile) ? readTrimmed(progressFile) : "";
+      if (line && line !== printed.get(id)) {
+        printed.set(id, line);
+        out.write(`  ${id}  ${line}\n`);
       }
-      const resultFile = join(dir, "result.txt");
+      const resultFile = join(directory, "result.txt");
       const word = firstWord(resultFile);
       if (word && word !== "RUNNING") {
         final.add(id);
-        let result = "";
-        try {
-          result = readFileSync(resultFile, "utf8").trim();
-        } catch {
-          result = "";
-        }
-        out.write(`\n${result}\n`);
+        out.write(`\n${readTrimmed(resultFile)}\n`);
       }
     }
     if (ids.every((id) => final.has(id))) return 0;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/** A file's text without surrounding whitespace, or "" when it cannot be read. */
+function readTrimmed(file: string): string {
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -215,8 +235,8 @@ export async function watch(
   let project: string;
   try {
     project = root ?? projectRoot(process.cwd());
-  } catch (err) {
-    out.write(`✗ ${(err as Error).message}\n`);
+  } catch (error) {
+    out.write(`✗ ${(error as Error).message}\n`);
     process.exit(1);
   }
   out.write(`watching ${join(project, ".cheapag", "jobs")} (Ctrl-C to stop)\n`);
