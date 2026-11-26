@@ -77,16 +77,11 @@ export async function research(
 
   const opencode = await ctx.opencode(gate.route);
   const release = holdOpencode();
-  const { id, dir } = newResearch(root);
-  const write = (name: string, value: unknown) =>
-    writeFileSync(
-      join(dir, name),
-      redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"),
-    );
+  const { id, directory } = newResearch(root);
   // the research model, then its fallbacks, each only if the repo's allowlist kept it (src/consent.ts)
   const models = chain(gate.route.research ?? gate.route.implement, gate.route.researchFallbacks);
   const startedAt = new Date();
-  write("request.json", {
+  writeLog(directory, "request.json", {
     ...input,
     scope,
     maxWords,
@@ -132,7 +127,7 @@ export async function research(
       permission,
       signal: halt.signal,
       onEvent: (event, turns) => {
-        appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+        appendFileSync(join(directory, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
         if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
           const { tool, state } = event.properties.part;
           if (state.status === "completed" && tool === "read")
@@ -239,8 +234,8 @@ export async function research(
   const save = () => {
     block = renderResearch(record);
     // research.json, not result.json: `jobs list` reads only job records
-    write("research.json", record);
-    write("result.txt", block + "\n");
+    writeLog(directory, "research.json", record);
+    writeLog(directory, "result.txt", block + "\n");
   };
   save();
   if (worktree) {
@@ -254,7 +249,7 @@ export async function research(
       save();
     }
   }
-  if (answer.status === "ANSWER") gzipEvents(dir);
+  if (answer.status === "ANSWER") gzipEvents(directory);
   return block;
 }
 
@@ -489,9 +484,15 @@ function capWords(text: string, max: number) {
 function newResearch(root: string) {
   for (;;) {
     const id = newId("r");
-    const dir = join(root, ".cheapag", "jobs", id);
-    if (existsSync(dir)) continue;
-    mkdirSync(dir, { recursive: true });
-    return { id, dir };
+    const directory = join(root, ".cheapag", "jobs", id);
+    if (existsSync(directory)) continue;
+    mkdirSync(directory, { recursive: true });
+    return { id, directory };
   }
+}
+
+/** Writes one file of the research log with keys redacted; a value that is not a string is written as JSON. */
+function writeLog(directory: string, name: string, value: unknown) {
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n";
+  writeFileSync(join(directory, name), redact(text));
 }
