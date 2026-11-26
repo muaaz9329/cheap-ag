@@ -44,7 +44,8 @@ function isConfigBased(id: Provider["provider"]) {
 export function savedProviders(): Provider["provider"][] {
   let saved: Record<string, unknown>;
   try {
-    saved = existsSync(authFile()) ? JSON.parse(readFileSync(authFile(), "utf8")) : {};
+    const file = authFile();
+    saved = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   } catch {
     return []; // an unreadable auth file is the same as no login
   }
