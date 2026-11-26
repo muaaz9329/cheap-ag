@@ -37,11 +37,13 @@ export type Consent = {
   approvedAt: string;
 };
 
-const file = (root: string) => join(root, ".cheapag", "consent.json");
+function consentFile(root: string) {
+  return join(root, ".cheapag", "consent.json");
+}
 
 /** The repo's consent, or undefined when there is none (a damaged record counts as none; `cheapag allow` rewrites it). */
 export function readConsent(root: string): Consent | undefined {
-  const path = file(root);
+  const path = consentFile(root);
   if (!existsSync(path)) return undefined;
   const stored = readJson(path);
   return isConsent(stored) ? stored : undefined;
@@ -75,7 +77,7 @@ export function writeConsent(root: string, consent: Consent) {
     consent.mode === "models"
       ? undefined
       : routeNames(fullRoute(consent.provider, configuredModels(root, consent.provider)));
-  writeFileSync(file(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
+  writeFileSync(consentFile(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
 }
 
 /** Records the current route as the repo's consented one (after a model pick on OpenRouter); nothing without consent. */
@@ -85,9 +87,9 @@ export function acceptRoute(root: string) {
 }
 
 // a local model is named with its server: pointing the same model id at another URL is another recipient
-function routeNames(r: Route) {
-  const url = recipientUrl(r.implement.providerID);
-  return routeModels(r).map((m) => modelName(m) + (url ? `@${url}` : ""));
+function routeNames(route: Route) {
+  const url = recipientUrl(route.implement.providerID);
+  return routeModels(route).map((model) => modelName(model) + (url ? `@${url}` : ""));
 }
 
 /** The server URL that is part of the recipient: the custom endpoint's or a local Ollama's; none for a hosted provider. */
@@ -153,27 +155,27 @@ const ZDR_OPTION = { zdr: true };
 /** What is known about a model's retention: only the spec's facts (A21), never guessed. */
 function retention(
   provider: Provider["provider"],
-  m: WorkerModel,
+  model: WorkerModel,
 ): "zero" | "upstream" | "not stated" {
   // Ollama on this machine sends nothing; Ollama Cloud's terms are not stated here (never guessed)
   if (provider === "ollama") return ollamaIsLocal() ? "zero" : "not stated";
   if (provider === "openrouter") return "upstream"; // depends on the endpoint OpenRouter routes to
   // A21: on OpenCode Go, DeepSeek and Qwen models are zero-retention; GLM and Kimi are not listed that way
-  if (provider === "opencode-go" && /^(deepseek|qwen)/.test(m.id)) return "zero";
+  if (provider === "opencode-go" && /^(deepseek|qwen)/.test(model.id)) return "zero";
   return "not stated";
 }
 
 /** Whether a model may run under the consent; on OpenRouter, zero-retention-only is enforced by its zdr routing instead. */
-function allowed(provider: Provider["provider"], consent: Consent, m: WorkerModel) {
+function allowed(provider: Provider["provider"], consent: Consent, model: WorkerModel) {
   if (consent.mode === "all") return true;
-  if (consent.mode === "models") return consent.models!.includes(modelName(m));
-  return provider === "openrouter" || retention(provider, m) === "zero";
+  if (consent.mode === "models") return consent.models!.includes(modelName(model));
+  return provider === "openrouter" || retention(provider, model) === "zero";
 }
 
 /** With zero-retention-only on OpenRouter, every request also asks for ZDR endpoints. */
-function withZdr(m: WorkerModel): WorkerModel {
-  const options = m.options as { provider?: Record<string, unknown> } | undefined;
-  return { ...m, options: { ...options, provider: { ...options?.provider, ...ZDR_OPTION } } };
+function withZdr(model: WorkerModel): WorkerModel {
+  const options = model.options as { provider?: Record<string, unknown> } | undefined;
+  return { ...model, options: { ...options, provider: { ...options?.provider, ...ZDR_OPTION } } };
 }
 
 /**
@@ -203,15 +205,16 @@ export function consentGate(
 /** The full route with every role and fallback the consent does not allow taken out; undefined when no model may implement. */
 function allowedRoute(full: Route, provider: Provider["provider"], consent: Consent) {
   const zdr = consent.mode === "zdr-only" && provider === "openrouter";
-  const pick = (ms: (WorkerModel | undefined)[]) =>
-    ms
-      .filter((m): m is WorkerModel => !!m && allowed(provider, consent, m))
-      .map((m) => (zdr ? withZdr(m) : m));
+  const pick = (models: (WorkerModel | undefined)[]) =>
+    models
+      .filter((model): model is WorkerModel => !!model && allowed(provider, consent, model))
+      .map((model) => (zdr ? withZdr(model) : model));
   const [implement, ...fallbacks] = pick([full.implement, ...full.fallbacks, full.escalation]);
   if (!implement) return undefined;
   const [escalation] = pick([full.escalation]);
-  const notImplementOrEscalation = (m: WorkerModel) =>
-    modelName(m) !== modelName(implement) && modelName(m) !== modelName(escalation ?? implement);
+  const notImplementOrEscalation = (model: WorkerModel) =>
+    modelName(model) !== modelName(implement) &&
+    modelName(model) !== modelName(escalation ?? implement);
   // research with nothing of its own allowed runs on the implement chain
   const [research, ...researchFallbacks] = pick([full.research, ...full.researchFallbacks]);
   return {
@@ -248,8 +251,9 @@ export const describe = (c: Consent) => {
 function consentBlock(root: string, provider: Provider["provider"], full: Route) {
   const models = routeModels(full);
   // D5: the role models, then the fallbacks
-  const main = routeModels({ ...full, fallbacks: [], researchFallbacks: [] }).map((m) => m.id);
-  const extra = models.map((m) => m.id).filter((id) => !main.includes(id));
+  const roleModels = routeModels({ ...full, fallbacks: [], researchFallbacks: [] });
+  const main = roleModels.map((model) => model.id);
+  const extra = models.map((model) => model.id).filter((id) => !main.includes(id));
   const ids = main.join(", ") + (extra.length ? ` (+fallbacks ${extra.join(", ")})` : "");
   const endpoints = {
     local: provider === "local" ? localServer() : undefined,
@@ -306,7 +310,10 @@ function retentionLine(
   if (local)
     return `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`;
   return models
-    .map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`)
+    .map(
+      (model) =>
+        `${model.id} = ${retention(provider, model) === "zero" ? "zero retention" : "not stated"}`,
+    )
     .join("; ");
 }
 
