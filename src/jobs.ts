@@ -1453,47 +1453,58 @@ async function checkRepro(
   let failsWithout = false;
   let restored = true;
   try {
-    for (const file of fix) {
-      const path = join(cwd, file);
-      saved.set(file, existsSync(path) ? readFileSync(path) : null);
-      const inBase =
-        spawnSync("git", ["cat-file", "-e", `${worktree.base}:${file}`], { cwd, stdio: "pipe" })
-          .status === 0;
-      if (inBase) {
-        const base = spawnSync("git", ["show", `${worktree.base}:${file}`], {
-          cwd,
-          stdio: "pipe",
-          maxBuffer: 256 * 1024 * 1024,
-        });
-        if (base.status !== 0) throw new Error(`git show ${worktree.base}:${file} failed`);
-        writeFileSync(path, base.stdout);
-      } else {
-        rmSync(path, { force: true });
-      }
-    }
+    for (const file of fix) setAside(worktree, file, saved);
     failsWithout = !(await runs(claim));
   } catch {
     failsWithout = false;
     restored = false;
   } finally {
     // a failed restore only affects the worktree: the landing applies the diff taken before this check
-    for (const [file, content] of saved) {
-      try {
-        const path = join(cwd, file);
-        if (content === null) rmSync(path, { force: true });
-        else {
-          mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, content);
-        }
-      } catch {
-        restored = false;
-      }
-    }
+    if (!restoreFiles(cwd, saved)) restored = false;
   }
   if (!restored) return unverified("could not set the fix aside to rerun the reproduction");
   return failsWithout
     ? { repro: "fail→pass" }
     : unverified(`\`${claim}\` also passes without the fix`);
+}
+
+/** Puts one changed file back to its base content, or removes it when the base has none; what it held goes into `saved`. */
+function setAside(worktree: Worktree, file: string, saved: Map<string, Buffer | null>) {
+  const cwd = worktree.path;
+  const path = join(cwd, file);
+  saved.set(file, existsSync(path) ? readFileSync(path) : null);
+  const inBase =
+    spawnSync("git", ["cat-file", "-e", `${worktree.base}:${file}`], { cwd, stdio: "pipe" })
+      .status === 0;
+  if (!inBase) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const base = spawnSync("git", ["show", `${worktree.base}:${file}`], {
+    cwd,
+    stdio: "pipe",
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (base.status !== 0) throw new Error(`git show ${worktree.base}:${file} failed`);
+  writeFileSync(path, base.stdout);
+}
+
+/** Writes every saved file back, removing those that did not exist; false when any of them could not be restored. */
+function restoreFiles(cwd: string, saved: Map<string, Buffer | null>) {
+  let restored = true;
+  for (const [file, content] of saved) {
+    try {
+      const path = join(cwd, file);
+      if (content === null) rmSync(path, { force: true });
+      else {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content);
+      }
+    } catch {
+      restored = false;
+    }
+  }
+  return restored;
 }
 
 /** A question the worker asked, with the user's answer once given. */
