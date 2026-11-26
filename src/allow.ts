@@ -57,13 +57,20 @@ export function allow(args: string[]): number {
   const gate = consentGate(root, provider.provider);
   if ("block" in gate) out(`! ${gate.block}`);
   else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
-  // .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
-  if (
-    spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0
-  ) {
-    mkdirSync(join(root, ".git", "info"), { recursive: true });
-    appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
+  if (!isStateFolderIgnored(root)) {
+    excludeStateFolder(root);
     out("✓ .cheapag/ added to .git/info/exclude (local, never committed)");
   }
   return 0;
+}
+
+function isStateFolderIgnored(root: string): boolean {
+  const check = spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" });
+  return check.status === 0;
+}
+
+// .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
+function excludeStateFolder(root: string) {
+  mkdirSync(join(root, ".git", "info"), { recursive: true });
+  appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
 }
