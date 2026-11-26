@@ -2,7 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
 import { failBlock, renderConsent } from "./report.js";
-import { loadConfig, localServer, ollamaEndpoint, ollamaIsLocal } from "./config.js";
+import {
+  loadConfig,
+  localServer,
+  ollamaEndpoint,
+  ollamaIsLocal,
+  type LocalServer,
+  type OllamaConfig,
+} from "./config.js";
 import {
   effectiveModels,
   foreignModels,
@@ -30,22 +37,37 @@ export type Consent = {
   approvedAt: string;
 };
 
-const file = (root: string) => join(root, ".cheapag", "consent.json");
+function consentFile(root: string) {
+  return join(root, ".cheapag", "consent.json");
+}
 
 /** The repo's consent, or undefined when there is none (a damaged record counts as none; `cheapag allow` rewrites it). */
 export function readConsent(root: string): Consent | undefined {
+  const path = consentFile(root);
+  if (!existsSync(path)) return undefined;
+  const stored = readJson(path);
+  return isConsent(stored) ? stored : undefined;
+}
+
+/** The file's parsed JSON, or undefined when it cannot be read or parsed (a damaged record counts as none). */
+function readJson(path: string): unknown {
   try {
-    if (!existsSync(file(root))) return undefined;
-    const c = JSON.parse(readFileSync(file(root), "utf8")) as Consent;
-    const valid =
-      ["all", "zdr-only", "models"].includes(c.mode) &&
-      typeof c.provider === "string" &&
-      (c.mode !== "models" ||
-        (Array.isArray(c.models) && c.models.every((m) => typeof m === "string")));
-    return valid ? c : undefined;
+    return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return undefined;
   }
+}
+
+const MODES = ["all", "zdr-only", "models"];
+
+/** A stored record is a consent when its mode and provider are set; the models mode needs its list of names too. */
+function isConsent(value: unknown): value is Consent {
+  if (typeof value !== "object" || value === null) return false;
+  const { mode, provider, models } = value as Record<string, unknown>;
+  if (typeof mode !== "string" || !MODES.includes(mode)) return false;
+  if (typeof provider !== "string") return false;
+  if (mode !== "models") return true;
+  return Array.isArray(models) && models.every((name) => typeof name === "string");
 }
 
 export function writeConsent(root: string, consent: Consent) {
@@ -55,7 +77,7 @@ export function writeConsent(root: string, consent: Consent) {
     consent.mode === "models"
       ? undefined
       : routeNames(fullRoute(consent.provider, configuredModels(root, consent.provider)));
-  writeFileSync(file(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
+  writeFileSync(consentFile(root), JSON.stringify({ ...consent, route }, null, 2) + "\n");
 }
 
 /** Records the current route as the repo's consented one (after a model pick on OpenRouter); nothing without consent. */
@@ -65,16 +87,17 @@ export function acceptRoute(root: string) {
 }
 
 // a local model is named with its server: pointing the same model id at another URL is another recipient
-const routeNames = (r: Route) => {
-  const provider = r.implement.providerID;
-  const url =
-    provider === "local"
-      ? localServer()?.base_url
-      : provider === "ollama" && ollamaIsLocal()
-        ? ollamaEndpoint()?.base_url
-        : undefined;
-  return routeModels(r).map((m) => modelName(m) + (url ? `@${url}` : ""));
-};
+function routeNames(route: Route) {
+  const url = recipientUrl(route.implement.providerID);
+  return routeModels(route).map((model) => modelName(model) + (url ? `@${url}` : ""));
+}
+
+/** The server URL that is part of the recipient: the custom endpoint's or a local Ollama's; none for a hosted provider. */
+function recipientUrl(provider: string) {
+  if (provider === "local") return localServer()?.base_url;
+  if (provider === "ollama" && ollamaIsLocal()) return ollamaEndpoint()?.base_url;
+  return undefined;
+}
 
 /**
  * The models config now routes to other models than the consent was shown (not judged on a damaged config, which the job's own load reports; a record from before routes were kept has none).
@@ -90,20 +113,23 @@ export function routeMoved(root: string, consent: Consent) {
     (consent.provider === "ollama" && ollamaIsLocal());
   if (!checksRoute) return false;
   const models = configuredModels(root, consent.provider);
-  return (
-    !!models &&
-    !!consent.route &&
-    String(consent.route) !== String(routeNames(fullRoute(consent.provider, models)))
-  );
+  if (!models || !consent.route) return false;
+  const current = routeNames(fullRoute(consent.provider, models));
+  return String(consent.route) !== String(current);
 }
 
 /** `preset=` for ping and status: the preset the effective `models` here match (the repo's config too, inside one). */
 export function presetHere(provider: Provider["provider"], cwd = process.cwd()) {
-  let root = cwd;
+  return presetOf(provider, configuredModels(configRoot(cwd), provider));
+}
+
+/** The root of the repo `cwd` is in, or `cwd` itself outside a repo. */
+function configRoot(cwd: string) {
   try {
-    root = projectRoot(root);
-  } catch {} // outside a repo only the user's config applies
-  return presetOf(provider, configuredModels(root, provider));
+    return projectRoot(cwd);
+  } catch {
+    return cwd; // outside a repo only the user's config applies
+  }
 }
 
 /**
@@ -129,27 +155,27 @@ const ZDR_OPTION = { zdr: true };
 /** What is known about a model's retention: only the spec's facts (A21), never guessed. */
 function retention(
   provider: Provider["provider"],
-  m: WorkerModel,
+  model: WorkerModel,
 ): "zero" | "upstream" | "not stated" {
   // Ollama on this machine sends nothing; Ollama Cloud's terms are not stated here (never guessed)
   if (provider === "ollama") return ollamaIsLocal() ? "zero" : "not stated";
   if (provider === "openrouter") return "upstream"; // depends on the endpoint OpenRouter routes to
   // A21: on OpenCode Go, DeepSeek and Qwen models are zero-retention; GLM and Kimi are not listed that way
-  if (provider === "opencode-go" && /^(deepseek|qwen)/.test(m.id)) return "zero";
+  if (provider === "opencode-go" && /^(deepseek|qwen)/.test(model.id)) return "zero";
   return "not stated";
 }
 
 /** Whether a model may run under the consent; on OpenRouter, zero-retention-only is enforced by its zdr routing instead. */
-function allowed(provider: Provider["provider"], consent: Consent, m: WorkerModel) {
+function allowed(provider: Provider["provider"], consent: Consent, model: WorkerModel) {
   if (consent.mode === "all") return true;
-  if (consent.mode === "models") return consent.models!.includes(modelName(m));
-  return provider === "openrouter" || retention(provider, m) === "zero";
+  if (consent.mode === "models") return consent.models!.includes(modelName(model));
+  return provider === "openrouter" || retention(provider, model) === "zero";
 }
 
 /** With zero-retention-only on OpenRouter, every request also asks for ZDR endpoints. */
-function withZdr(m: WorkerModel): WorkerModel {
-  const options = m.options as { provider?: Record<string, unknown> } | undefined;
-  return { ...m, options: { ...options, provider: { ...options?.provider, ...ZDR_OPTION } } };
+function withZdr(model: WorkerModel): WorkerModel {
+  const options = model.options as { provider?: Record<string, unknown> } | undefined;
+  return { ...model, options: { ...options, provider: { ...options?.provider, ...ZDR_OPTION } } };
 }
 
 /**
@@ -167,36 +193,41 @@ export function consentGate(
   // consent names the provider it was given for: a new login elsewhere needs a new opt-in; so does another route
   if (!consent || consent.provider !== provider || routeMoved(root, consent))
     return { block: consentBlock(root, provider, full) };
+  const route = allowedRoute(full, provider, consent);
+  if (route) return { route };
+  return {
+    block: failBlock(
+      `no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`,
+    ),
+  };
+}
+
+/** The full route with every role and fallback the consent does not allow taken out; undefined when no model may implement. */
+function allowedRoute(full: Route, provider: Provider["provider"], consent: Consent) {
   const zdr = consent.mode === "zdr-only" && provider === "openrouter";
-  const pick = (ms: (WorkerModel | undefined)[]) =>
-    ms
-      .filter((m): m is WorkerModel => !!m && allowed(provider, consent, m))
-      .map((m) => (zdr ? withZdr(m) : m));
+  const pick = (models: (WorkerModel | undefined)[]) =>
+    models
+      .filter((model): model is WorkerModel => !!model && allowed(provider, consent, model))
+      .map((model) => (zdr ? withZdr(model) : model));
   const [implement, ...fallbacks] = pick([full.implement, ...full.fallbacks, full.escalation]);
-  if (!implement)
-    return {
-      block: failBlock(
-        `no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`,
-      ),
-    };
+  if (!implement) return undefined;
   const [escalation] = pick([full.escalation]);
-  const others = (m: WorkerModel) =>
-    modelName(m) !== modelName(implement) && modelName(m) !== modelName(escalation ?? implement);
+  const notImplementOrEscalation = (model: WorkerModel) =>
+    modelName(model) !== modelName(implement) &&
+    modelName(model) !== modelName(escalation ?? implement);
   // research with nothing of its own allowed runs on the implement chain
   const [research, ...researchFallbacks] = pick([full.research, ...full.researchFallbacks]);
   return {
-    route: {
-      implement,
-      // the escalation model never doubles as a fallback; it keeps its own place (and cap check) in the job
-      fallbacks: fallbacks.filter(others),
-      escalation:
-        escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined,
-      research: research ?? implement,
-      researchFallbacks: research ? researchFallbacks : fallbacks.filter(others),
-      // a disallowed tier model is dropped: that tier then runs on the implement model
-      medium: pick([full.medium])[0],
-      hard: pick([full.hard])[0],
-    },
+    implement,
+    // the escalation model never doubles as a fallback; it keeps its own place (and cap check) in the job
+    fallbacks: fallbacks.filter(notImplementOrEscalation),
+    escalation:
+      escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined,
+    research: research ?? implement,
+    researchFallbacks: research ? researchFallbacks : fallbacks.filter(notImplementOrEscalation),
+    // a disallowed tier model is dropped: that tier then runs on the implement model
+    medium: pick([full.medium])[0],
+    hard: pick([full.hard])[0],
   };
 }
 
@@ -210,56 +241,80 @@ function configuredModels(root: string, provider: Provider["provider"]) {
   }
 }
 
-export const describe = (c: Consent) =>
-  c.mode === "all"
-    ? "all models"
-    : c.mode === "zdr-only"
-      ? "zero-retention only"
-      : `models ${c.models!.join(", ")}`;
+export const describe = (c: Consent) => {
+  if (c.mode === "all") return "all models";
+  if (c.mode === "zdr-only") return "zero-retention only";
+  return `models ${c.models!.join(", ")}`;
+};
 
 /** Spec D5's CONSENT block: who would receive the code, their known retention, and how the user approves. */
 function consentBlock(root: string, provider: Provider["provider"], full: Route) {
   const models = routeModels(full);
   // D5: the role models, then the fallbacks
-  const main = routeModels({ ...full, fallbacks: [], researchFallbacks: [] }).map((m) => m.id);
-  const extra = models.map((m) => m.id).filter((id) => !main.includes(id));
+  const roleModels = routeModels({ ...full, fallbacks: [], researchFallbacks: [] });
+  const main = roleModels.map((model) => model.id);
+  const extra = models.map((model) => model.id).filter((id) => !main.includes(id));
   const ids = main.join(", ") + (extra.length ? ` (+fallbacks ${extra.join(", ")})` : "");
-  const local = provider === "local" ? localServer() : undefined;
-  let ollama: ReturnType<typeof ollamaEndpoint>;
-  try {
-    ollama = provider === "ollama" ? ollamaEndpoint() : undefined;
-  } catch {} // a damaged entry is reported by the config load, not as a consent line
-  const retentionLine =
-    provider === "openrouter"
-      ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
-      : ollama
-        ? ollama.endpoint === "local"
-          ? "nothing leaves this machine: your own Ollama keeps what it is set up to keep"
-          : "Ollama Cloud's terms (ollama.com); retention is not stated here"
-        : local
-          ? `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`
-          : models
-              .map(
-                (m) =>
-                  `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`,
-              )
-              .join("; ");
-  const recipient = ollama
-    ? ollama.endpoint === "local"
-      ? `your local Ollama at ${ollama.base_url}`
-      : "Ollama Cloud (ollama.com)"
-    : local
-      ? `custom endpoint at ${local.base_url}`
-      : providerLabel(provider);
+  const endpoints = {
+    local: provider === "local" ? localServer() : undefined,
+    ollama: provider === "ollama" ? configuredOllama() : undefined,
+  };
+  const recipient = recipientName(provider, endpoints);
   return renderConsent({
     repo: basename(root),
     send: `code from this repo → ${recipient}: ${ids}`,
-    retention: retentionLine,
-    // the caller passed the root, so "this root" names it; a path here would push the line past the 200-char cap
-    approve: sessionRepo(root)
-      ? "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself"
-      : "ask the user to run npx cheap-agent allow in a terminal in this root (/cheapag:allow approves the session's repo); add --zdr-only or --models a,b to narrow it; never approve yourself",
+    retention: retentionLine(provider, models, endpoints),
+    approve: sessionRepo(root) ? APPROVE_IN_SESSION : APPROVE_IN_TERMINAL,
   });
+}
+
+const APPROVE_IN_SESSION =
+  "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself";
+// the caller passed the root, so "this root" names it; a path here would push the line past the 200-char cap
+const APPROVE_IN_TERMINAL =
+  "ask the user to run npx cheap-agent allow in a terminal in this root (/cheapag:allow approves the session's repo); add --zdr-only or --models a,b to narrow it; never approve yourself";
+
+/** The config-based endpoint the provider sends to, if it is one; at most one is set. */
+type Endpoints = { local: LocalServer | undefined; ollama: OllamaConfig | undefined };
+
+/** The Ollama endpoint, or none when its entry is damaged. */
+function configuredOllama() {
+  try {
+    return ollamaEndpoint();
+  } catch {
+    return undefined; // a damaged entry is reported by the config load, not as a consent line
+  }
+}
+
+/** Who receives the code: this machine's Ollama, Ollama Cloud, the custom endpoint, or the provider itself. */
+function recipientName(provider: Provider["provider"], endpoints: Endpoints) {
+  const { local, ollama } = endpoints;
+  if (ollama?.endpoint === "local") return `your local Ollama at ${ollama.base_url}`;
+  if (ollama) return "Ollama Cloud (ollama.com)";
+  if (local) return `custom endpoint at ${local.base_url}`;
+  return providerLabel(provider);
+}
+
+/** What is known about how long the recipient keeps the code (A21's facts, never guessed). */
+function retentionLine(
+  provider: Provider["provider"],
+  models: WorkerModel[],
+  endpoints: Endpoints,
+) {
+  const { local, ollama } = endpoints;
+  if (provider === "openrouter")
+    return `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`;
+  if (ollama?.endpoint === "local")
+    return "nothing leaves this machine: your own Ollama keeps what it is set up to keep";
+  if (ollama) return "Ollama Cloud's terms (ollama.com); retention is not stated here";
+  if (local)
+    return `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`;
+  return models
+    .map(
+      (model) =>
+        `${model.id} = ${retention(provider, model) === "zero" ? "zero retention" : "not stated"}`,
+    )
+    .join("; ");
 }
 
 /** Whether `root` is the repo the server (the session) runs in, which is the one /cheapag:allow approves. */
