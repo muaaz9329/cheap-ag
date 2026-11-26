@@ -4,7 +4,8 @@ import type { TakeOver } from "./config.js";
  * The verification budget (ticket 23.3): Claude ran tests ~3 times per task, and again after an OK job. Part of the
  * server instructions, and appended verbatim to the benchmark's baseline arm so both arms get the same rule.
  */
-export const VERIFY_RULE = "Tests: run only the test file or id the task concerns, once before if it names a failure and once after; never the whole suite; chain commands with &&.";
+export const VERIFY_RULE =
+  "Tests: run only the test file or id the task concerns, once before if it names a failure and once after; never the whole suite; chain commands with &&.";
 
 /**
  * Trusting results (ticket 24.1): reading the diff of every bigger OK cost +28% tokens and caught no wrong fix. Ticket 30:
@@ -20,7 +21,8 @@ export const REVIEW_RULE = "An OK is done: don't re-run its tests or read its di
  */
 export const TAKE_OVER_RULE: Record<TakeOver, string> = {
   ask: "After a FAIL, PARTIAL or TIMEOUT, stop and ask the user one question: Claude (Sonnet subagent from found:, test= and worktree; 100k+ Claude tokens), retry the worker with model: (found: as note:), or stop. Do what they pick; never pick for them. A PARTIAL waits in worktree; land apply if they continue.",
-  sonnet: "After a FAIL or PARTIAL (land apply a PARTIAL first), don't delegate it again or open files: give the step to your Agent tool with model: sonnet, passing the task, the user's words and the block's found:, test=, error: and worktree; report its answer, and if it did not finish, say what is left.",
+  sonnet:
+    "After a FAIL or PARTIAL (land apply a PARTIAL first), don't delegate it again or open files: give the step to your Agent tool with model: sonnet, passing the task, the user's words and the block's found:, test=, error: and worktree; report its answer, and if it did not finish, say what is left.",
   self: "After a FAIL or PARTIAL, do the task yourself instead of delegating it again: start from its found:, test= and worktree, open only the files they name, no background runs.",
 };
 
@@ -29,4 +31,5 @@ export const TAKE_OVER_RULE: Record<TakeOver, string> = {
  * anyway and the worker only typed. Ticket 65, speed test 2026-11-22: research on a 2-file repo cost 47s before the first
  * delegate and the worker re-read the same files anyway. Part of the server instructions.
  */
-export const SCOUT_RULE = "Don't open source files or research before delegating; the worker explores. Research only a question the task depends on; pass its id as delegate brief:.";
+export const SCOUT_RULE =
+  "Don't open source files or research before delegating; the worker explores. Research only a question the task depends on; pass its id as delegate brief:.";

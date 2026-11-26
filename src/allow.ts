@@ -18,8 +18,18 @@ export function allow(args: string[]): number {
   let consent: Omit<Consent, "provider" | "approvedAt">;
   if (!args.length) consent = { mode: "all" };
   else if (args.length === 1 && args[0] === "--zdr-only") consent = { mode: "zdr-only" };
-  else if (args.length === 2 && args[0] === "--models" && args[1].split(",").some((m) => m.trim())) {
-    consent = { mode: "models", models: args[1].split(",").map((m) => m.trim()).filter(Boolean) };
+  else if (
+    args.length === 2 &&
+    args[0] === "--models" &&
+    args[1].split(",").some((m) => m.trim())
+  ) {
+    consent = {
+      mode: "models",
+      models: args[1]
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
+    };
   } else {
     out(`✗ ${USAGE}`);
     return 1;
@@ -36,7 +46,11 @@ export function allow(args: string[]): number {
     out(`✗ ${(err as Error).message}`);
     return 1;
   }
-  const record: Consent = { ...consent, provider: provider.provider, approvedAt: new Date().toISOString() };
+  const record: Consent = {
+    ...consent,
+    provider: provider.provider,
+    approvedAt: new Date().toISOString(),
+  };
   writeConsent(root, record);
   out(`✓ ${root}: code may go to ${providerLabel(provider.provider)} (${describe(record)})`);
   // the same gate delegate uses, so what this prints is what jobs will run
@@ -44,7 +58,9 @@ export function allow(args: string[]): number {
   if ("block" in gate) out(`! ${gate.block}`);
   else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
   // .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
-  if (spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0) {
+  if (
+    spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0
+  ) {
     mkdirSync(join(root, ".git", "info"), { recursive: true });
     appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
     out("✓ .cheapag/ added to .git/info/exclude (local, never committed)");

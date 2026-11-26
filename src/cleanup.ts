@@ -24,7 +24,12 @@ const UNKNOWN_GRACE_MS = 60 * 60_000;
 
 export type Cleaned = { removed: string[]; kept: string[] };
 
-export function cleanup(root: string, retention: Config["retention"], linkDirs: string[], opts: { all?: boolean; now?: number } = {}): Cleaned {
+export function cleanup(
+  root: string,
+  retention: Config["retention"],
+  linkDirs: string[],
+  opts: { all?: boolean; now?: number } = {},
+): Cleaned {
   const now = opts.now ?? Date.now();
   const out: Cleaned = { removed: [], kept: [] };
   const state = join(root, ".cheapag");
@@ -38,10 +43,14 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
   /** A job folder's record: whether it is in flight, and its age from when it ended (else started), else the folder's mtime. */
   const job = (id: string) => {
     const dir = join(jobsDir, id);
-    let record: { status?: string; pid?: number; timing?: { startedAt?: string; endedAt?: string | null } } | undefined;
+    let record:
+      | { status?: string; pid?: number; timing?: { startedAt?: string; endedAt?: string | null } }
+      | undefined;
     try {
       // research logs keep their record as research.json (never in flight across a restart: it has no RUNNING state)
-      record = JSON.parse(readFileSync(join(dir, id.startsWith("r") ? "research.json" : "result.json"), "utf8"));
+      record = JSON.parse(
+        readFileSync(join(dir, id.startsWith("r") ? "research.json" : "result.json"), "utf8"),
+      );
     } catch {
       // no record (yet), or unreadable
     }
@@ -49,16 +58,28 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
     const at = Date.parse(record?.timing?.endedAt ?? record?.timing?.startedAt ?? "");
     // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
     const unknown = !record && now - (mtime(dir) ?? 0) < UNKNOWN_GRACE_MS;
-    const live = unknown || ((record?.status === "RUNNING" || record?.status === "BLOCKED") && !!record.pid && isAlive(record.pid));
-    return { live, status: record?.status ?? (unknown ? "STARTING" : undefined), since: Number.isNaN(at) ? mtime(dir) ?? mtime(join(treesDir, id)) ?? now : at };
+    const live =
+      unknown ||
+      ((record?.status === "RUNNING" || record?.status === "BLOCKED") &&
+        !!record.pid &&
+        isAlive(record.pid));
+    return {
+      live,
+      status: record?.status ?? (unknown ? "STARTING" : undefined),
+      since: Number.isNaN(at) ? (mtime(dir) ?? mtime(join(treesDir, id)) ?? now) : at,
+    };
   };
 
   let removedTree = false;
-  for (const id of entries(treesDir, LOG_ID)) { // r…: a research worktree left by a crash
+  for (const id of entries(treesDir, LOG_ID)) {
+    // r…: a research worktree left by a crash
     const path = join(treesDir, id);
     const j = job(id);
     if (j.live) out.kept.push(`worktree ${id}: ${j.status} job in flight`);
-    else if (!old(j.since, retention.unlanded_worktree_days)) out.kept.push(`worktree ${id}: ${days(j.since)}d old, kept ${retention.unlanded_worktree_days}d`);
+    else if (!old(j.since, retention.unlanded_worktree_days))
+      out.kept.push(
+        `worktree ${id}: ${days(j.since)}d old, kept ${retention.unlanded_worktree_days}d`,
+      );
     else {
       // unlink first, so nothing can reach through into the real dependency dirs
       for (const dir of linkDirs) removeLink(join(path, dir));
@@ -78,7 +99,8 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
     if (j.live) out.kept.push(`job ${id}: ${j.status} job in flight`);
     // the record explains its worktree: it stays while the worktree does
     else if (realDir(join(treesDir, id))) out.kept.push(`job ${id}: its worktree is kept`);
-    else if (!old(j.since, retention.job_log_days)) out.kept.push(`job ${id}: ${days(j.since)}d old, kept ${retention.job_log_days}d`);
+    else if (!old(j.since, retention.job_log_days))
+      out.kept.push(`job ${id}: ${days(j.since)}d old, kept ${retention.job_log_days}d`);
     else {
       rmSync(join(jobsDir, id), { recursive: true, force: true });
       out.removed.push(`job ${id}: ${opts.all ? "--all" : `${days(j.since)}d old`}`);
@@ -100,7 +122,9 @@ export function cleanup(root: string, retention: Config["retention"], linkDirs: 
       const since = mtime(file) ?? now;
       if (jobs.length === 0 && !old(since, retention.job_log_days)) continue;
       rmSync(file, { force: true });
-      out.removed.push(`batch ${id}: ${jobs.length ? "its jobs are gone" : opts.all ? "--all" : `${days(since)}d old`}`);
+      out.removed.push(
+        `batch ${id}: ${jobs.length ? "its jobs are gone" : opts.all ? "--all" : `${days(since)}d old`}`,
+      );
     }
   }
   return out;
@@ -115,7 +139,9 @@ export function startPeriodicCleanup(root: string, config: Config, everyMs: numb
     try {
       cleanup(root, config.retention, config.link_dirs);
     } catch (err) {
-      process.stderr.write(`cheapag: periodic cleanup failed: ${(err as Error).message.replace(/\s+/g, " ")}\n`);
+      process.stderr.write(
+        `cheapag: periodic cleanup failed: ${(err as Error).message.replace(/\s+/g, " ")}\n`,
+      );
     }
   }, everyMs);
   timer.unref();
@@ -164,7 +190,8 @@ export function gitignoreHint(cwd: string) {
 }
 
 /** Our job-id folders directly under `dir`, if `dir` is a real directory. */
-const entries = (dir: string, ids = JOB_ID) => (realDir(dir) ? readdirSync(dir).filter((id) => ids.test(id) && realDir(join(dir, id))) : []);
+const entries = (dir: string, ids = JOB_ID) =>
+  realDir(dir) ? readdirSync(dir).filter((id) => ids.test(id) && realDir(join(dir, id))) : [];
 
 /** A directory that is not a symlink. */
 function realDir(path: string) {

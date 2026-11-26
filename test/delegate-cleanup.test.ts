@@ -12,7 +12,9 @@ import { tempRepo } from "./harness.js";
 test("a landed job whose worktree can't be removed stays OK, landed, with the cleanup error on its record and block", async () => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
-  onTestFinished(() => { vi.restoreAllMocks(); });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
   vi.spyOn(consent, "consentGate").mockReturnValue({ route: routing.fullRoute("opencode-go") });
   vi.spyOn(routing, "recordSpend").mockImplementation(() => {});
   const fake = await startFakeOpencode();
@@ -22,54 +24,97 @@ test("a landed job whose worktree can't be removed stays OK, landed, with the cl
     { tool: "write" },
     { finish: { summary: "added kept", risks: [], review: [], missing: [] } },
   );
-  const locked = Object.assign(new Error("EPERM, Permission denied: .cheapag/worktrees/jxxxx"), { code: "EPERM" });
+  const locked = Object.assign(new Error("EPERM, Permission denied: .cheapag/worktrees/jxxxx"), {
+    code: "EPERM",
+  });
   const removeWorktree = vi.spyOn(workspace, "removeWorktree").mockImplementation(() => {
     throw locked;
   });
 
   // root, not a projectRoot spy: delegate resolves its repo through callRoot, which a spy on the module export cannot reach
-  const text = await delegate({ task: "Add src/kept.ts exporting kept = 1", files: "src/kept.ts", done_when: "kept is exported", root: repo.dir }, {
-    provider: { provider: "opencode-go", via: "login" },
-    opencode: async () => ({ url: fake.url, password: "unused", version: "test" }),
-    progress: () => {},
-  });
+  const text = await delegate(
+    {
+      task: "Add src/kept.ts exporting kept = 1",
+      files: "src/kept.ts",
+      done_when: "kept is exported",
+      root: repo.dir,
+    },
+    {
+      provider: { provider: "opencode-go", via: "login" },
+      opencode: async () => ({ url: fake.url, password: "unused", version: "test" }),
+      progress: () => {},
+    },
+  );
 
   const job = text.match(/^\w+ (j[0-9a-z]{4}) /)![1];
   expect(text.split("\n")[0]).toMatch(new RegExp(`^OK ${job} step=1 `));
-  expect(text).toContain(`cleanup error: ${locked.message} (the change landed; only its worktree folder was left behind)`);
+  expect(text).toContain(
+    `cleanup error: ${locked.message} (the change landed; only its worktree folder was left behind)`,
+  );
   expect(text).not.toContain("reason:");
   expect(removeWorktree).toHaveBeenCalledOnce();
-  expect(readFileSync(join(repo.dir, "src", "kept.ts"), "utf8").replace(/\r\n/g, "\n")).toBe("export const kept = 1;\n");
-  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"));
-  expect(record).toMatchObject({ status: "OK", landed: true, cleanupError: locked.message, worktree: null });
+  expect(readFileSync(join(repo.dir, "src", "kept.ts"), "utf8").replace(/\r\n/g, "\n")).toBe(
+    "export const kept = 1;\n",
+  );
+  const record = JSON.parse(
+    readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"),
+  );
+  expect(record).toMatchObject({
+    status: "OK",
+    landed: true,
+    cleanupError: locked.message,
+    worktree: null,
+  });
 });
 
 test("land apply: a worktree that can't be removed still records the landing and answers OK with the cleanup error", async () => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
-  onTestFinished(() => { vi.restoreAllMocks(); });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
   vi.spyOn(consent, "consentGate").mockReturnValue({ route: routing.fullRoute("opencode-go") });
   vi.spyOn(routing, "recordSpend").mockImplementation(() => {});
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   // the worker writes the file, then errors: a FAIL that keeps its worktree for land apply
-  fake.script({ edit: "src/kept.ts", content: "export const kept = 1;\n" }, { tool: "write" }, { error: { name: "APIError", message: "boom" } });
+  fake.script(
+    { edit: "src/kept.ts", content: "export const kept = 1;\n" },
+    { tool: "write" },
+    { error: { name: "APIError", message: "boom" } },
+  );
   const ctx = {
     provider: { provider: "opencode-go" as const, via: "login" as const },
     opencode: async () => ({ url: fake.url, password: "unused", version: "test" }),
     progress: () => {},
   };
-  const failed = await delegate({ task: "Add src/kept.ts exporting kept = 1", files: "src/kept.ts", done_when: "kept is exported", root: repo.dir }, ctx);
+  const failed = await delegate(
+    {
+      task: "Add src/kept.ts exporting kept = 1",
+      files: "src/kept.ts",
+      done_when: "kept is exported",
+      root: repo.dir,
+    },
+    ctx,
+  );
   expect(failed).toMatch(/^FAIL j[0-9a-z]{4} /);
   const job = failed.match(/^FAIL (j[0-9a-z]{4}) /)![1];
 
-  const locked = Object.assign(new Error("EPERM, Permission denied: .cheapag/worktrees/jxxxx"), { code: "EPERM" });
+  const locked = Object.assign(new Error("EPERM, Permission denied: .cheapag/worktrees/jxxxx"), {
+    code: "EPERM",
+  });
   vi.spyOn(workspace, "removeWorktree").mockImplementation(() => {
     throw locked;
   });
   const text = await landJobs({ job, action: "apply", root: repo.dir }, ctx);
-  expect(text).toBe(`OK ${job} applied files=1 +1/-0\ncleanup error: ${locked.message} (the change landed; only its worktree folder was left behind)`);
-  expect(readFileSync(join(repo.dir, "src", "kept.ts"), "utf8").replace(/\r\n/g, "\n")).toBe("export const kept = 1;\n");
-  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"));
+  expect(text).toBe(
+    `OK ${job} applied files=1 +1/-0\ncleanup error: ${locked.message} (the change landed; only its worktree folder was left behind)`,
+  );
+  expect(readFileSync(join(repo.dir, "src", "kept.ts"), "utf8").replace(/\r\n/g, "\n")).toBe(
+    "export const kept = 1;\n",
+  );
+  const record = JSON.parse(
+    readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"),
+  );
   expect(record).toMatchObject({ landed: true, cleanupError: locked.message, worktree: null });
 });

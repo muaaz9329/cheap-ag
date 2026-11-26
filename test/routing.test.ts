@@ -1,68 +1,134 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, onTestFinished, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from "./harness.js";
 import { loadConfig } from "../src/config.js";
 import { PROVIDERS } from "../src/credentials.js";
 import { parsePlan } from "../src/plan.js";
-import { clock, effectiveModels, fullRoute, modelName, PRESETS, presetOf, routeModels, tierModel, type Difficulty, type ModelsConfig } from "../src/routing.js";
+import {
+  clock,
+  effectiveModels,
+  fullRoute,
+  modelName,
+  PRESETS,
+  presetOf,
+  routeModels,
+  tierModel,
+  type Difficulty,
+  type ModelsConfig,
+} from "../src/routing.js";
 import { instructions } from "../src/server.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
 
-const PLAN = (doneWhen = "hello is written") => `# Hello\n\n## 1 hello\nfiles: hello.txt\ndo: write hello.txt\ndone-when: ${doneWhen}\n`;
+const PLAN = (doneWhen = "hello is written") =>
+  `# Hello\n\n## 1 hello\nfiles: hello.txt\ndo: write hello.txt\ndone-when: ${doneWhen}\n`;
 const EDIT: Action = { edit: "hello.txt", content: "hi\n" };
 const FINISH: Action = { finish: { summary: "wrote hello", risks: [], review: [], missing: [] } };
 const GO_LIMIT = (next?: number): Action => ({
-  retry: { reason: "account_rate_limit", message: "5h usage limit reached. It will reset in 2 hours 14 minutes. To continue using this model now, enable usage from your available balance", next },
+  retry: {
+    reason: "account_rate_limit",
+    message:
+      "5h usage limit reached. It will reset in 2 hours 14 minutes. To continue using this model now, enable usage from your available balance",
+    next,
+  },
 });
 
-async function scenario(opts: { scripts: Action[][]; logins?: Logins; allow?: string[]; doneWhen?: string; ledger?: { model: string; costUsd: number }[]; env?: Record<string, string> }) {
+async function scenario(opts: {
+  scripts: Action[][];
+  logins?: Logins;
+  allow?: string[];
+  doneWhen?: string;
+  ledger?: { model: string; costUsd: number }[];
+  env?: Record<string, string>;
+}) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   writeFileSync(join(repo.dir, "plan.md"), PLAN(opts.doneWhen));
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   for (const s of opts.scripts) fake.script(...s);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url, ...opts.env }, logins: opts.logins ?? { "opencode-go": "k" }, allow: opts.allow ?? [] });
+  const server = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url, ...opts.env },
+    logins: opts.logins ?? { "opencode-go": "k" },
+    allow: opts.allow ?? [],
+  });
   onTestFinished(server.close);
   // the user-wide spend ledger lives in the (hermetic) XDG state dir
   const ledger = join(server.home, "state", "cheapag", "spend.jsonl");
   if (opts.ledger) {
     mkdirSync(join(ledger, ".."), { recursive: true });
-    writeFileSync(ledger, opts.ledger.map((e) => JSON.stringify({ at: new Date(Date.now() - 60_000).toISOString(), ...e }) + "\n").join(""));
+    writeFileSync(
+      ledger,
+      opts.ledger
+        .map(
+          (e) => JSON.stringify({ at: new Date(Date.now() - 60_000).toISOString(), ...e }) + "\n",
+        )
+        .join(""),
+    );
   }
-  const delegate = (model?: string) => callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...(model && { model }) });
-  const record = (text: string) => JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", text.match(/^\w+ (j[0-9a-z]{4}) /)![1], "result.json"), "utf8"));
+  const delegate = (model?: string) =>
+    callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...(model && { model }) });
+  const record = (text: string) =>
+    JSON.parse(
+      readFileSync(
+        join(repo.dir, ".cheapag", "jobs", text.match(/^\w+ (j[0-9a-z]{4}) /)![1], "result.json"),
+        "utf8",
+      ),
+    );
   const models = () => fake.recorded.prompts.map((p) => p.model?.modelID);
   return { repo, fake, server, delegate, record, models, ledger };
 }
 
 test("a Go limit: aborted at once, the same session continues on the next fallback, model= in the headline; not a cap stop", async () => {
-  const { repo, fake, delegate, record, models } = await scenario({ scripts: [[{ tool: "read" }, GO_LIMIT()], [EDIT, { tool: "write" }, FINISH]] });
+  const { repo, fake, delegate, record, models } = await scenario({
+    scripts: [
+      [{ tool: "read" }, GO_LIMIT()],
+      [EDIT, { tool: "write" }, FINISH],
+    ],
+  });
   const started = Date.now();
   const text = await delegate();
   expect(Date.now() - started).toBeLessThan(10_000); // the hour-long retry is never waited out
-  expect(text.split("\n")[0]).toMatch(/^OK j\w{4} step=1 files=1 \+1\/-0 tests=none turns=3 cost=\$0\.000 model=opencode-go\/qwen3\.7-plus$/);
+  expect(text.split("\n")[0]).toMatch(
+    /^OK j\w{4} step=1 files=1 \+1\/-0 tests=none turns=3 cost=\$0\.000 model=opencode-go\/qwen3\.7-plus$/,
+  );
   expect(readFileSync(join(repo.dir, "hello.txt"), "utf8")).toBe("hi\n");
   const session = fake.recorded.sessions[0].id;
   expect(fake.recorded.sessions).toHaveLength(1);
   expect(fake.recorded.aborts).toEqual([session]);
   expect(fake.recorded.prompts.map((p) => p.sessionID)).toEqual([session, session]);
-  expect(fake.recorded.prompts[1].model).toEqual({ providerID: "opencode-go", modelID: "qwen3.7-plus" });
+  expect(fake.recorded.prompts[1].model).toEqual({
+    providerID: "opencode-go",
+    modelID: "qwen3.7-plus",
+  });
   expect(models()).toEqual([undefined, "qwen3.7-plus"]);
-  expect(record(text).models).toEqual({ requested: "opencode-go/deepseek-v4.1-flash", final: "opencode-go/qwen3.7-plus", fallbacks: ["opencode-go/qwen3.7-plus"], escalated: false });
+  expect(record(text).models).toEqual({
+    requested: "opencode-go/deepseek-v4.1-flash",
+    final: "opencode-go/qwen3.7-plus",
+    fallbacks: ["opencode-go/qwen3.7-plus"],
+    escalated: false,
+  });
 });
 
 test("every allowed model capped → BUDGET with the Go window and the provider's reset time; the allowlist keeps GLM and Kimi out", async () => {
   const reset = Date.now() + 2 * 3_600_000;
-  const { repo, delegate, models } = await scenario({ allow: ["--zdr-only"], scripts: [[EDIT, { tool: "write" }, GO_LIMIT(reset + 600_000)], [GO_LIMIT(reset)]] });
+  const { repo, delegate, models } = await scenario({
+    allow: ["--zdr-only"],
+    scripts: [[EDIT, { tool: "write" }, GO_LIMIT(reset + 600_000)], [GO_LIMIT(reset)]],
+  });
   const text = await delegate();
   const job = text.match(/^BUDGET (j\w{4}) /)![1];
-  expect(text.split("\n")[0]).toBe(`BUDGET ${job} step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000 model=opencode-go/qwen3.7-plus`);
+  expect(text.split("\n")[0]).toBe(
+    `BUDGET ${job} step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000 model=opencode-go/qwen3.7-plus`,
+  );
   // the earliest reset among the capped models
-  expect(text).toContain(`\nreason: Go 5h window exhausted for deepseek-v4.1-flash, qwen3.7-plus (resets ~${clock(reset)})\n`);
+  expect(text).toContain(
+    `\nreason: Go 5h window exhausted for deepseek-v4.1-flash, qwen3.7-plus (resets ~${clock(reset)})\n`,
+  );
   expect(text).toContain(`\nworktree: .cheapag/worktrees/${job}/\n`);
   expect(models()).toEqual([undefined, "qwen3.7-plus"]); // glm-5.3 and kimi-k3 are not zero-retention: never tried
   expect(existsSync(join(repo.dir, "hello.txt"))).toBe(false);
@@ -79,10 +145,16 @@ test("an explicit allowlist: the fallback skips models it does not name", async 
 
 test("escalation is skipped near its tracked cap (tried: says why); escalation_skip_at in the config raises the bar", async () => {
   // V4 Pro's Go cap is $15/month, $3 per 5 h: $2.55 is 85%
-  const { repo, fake, delegate, models } = await scenario({ doneWhen: "`test -f never-there`", scripts: [[FINISH]], ledger: [{ model: "opencode-go/deepseek-v4-pro", costUsd: 2.55 }] });
+  const { repo, fake, delegate, models } = await scenario({
+    doneWhen: "`test -f never-there`",
+    scripts: [[FINISH]],
+    ledger: [{ model: "opencode-go/deepseek-v4-pro", costUsd: 2.55 }],
+  });
   const text = await delegate();
   expect(text.split("\n")[0]).toMatch(/^FAIL j\w{4} step=1 .* fix=2$/);
-  expect(text).toContain("\n  - esc: skipped, deepseek-v4-pro at 85% of its tracked 5h cap ($3.00)\n");
+  expect(text).toContain(
+    "\n  - esc: skipped, deepseek-v4-pro at 85% of its tracked 5h cap ($3.00)\n",
+  );
   expect(models()).not.toContain("deepseek-v4-pro");
 
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ escalation_skip_at: 0.9 }));
@@ -94,7 +166,10 @@ test("escalation is skipped near its tracked cap (tried: says why); escalation_s
 
 test("spend is recorded per model in the user-wide ledger; past a Go window's cap the job shows billing=zen", async () => {
   // Flash's 5h window is $16 (20% of $80): already past it, yet the model kept answering
-  const { delegate, ledger } = await scenario({ scripts: [[EDIT, { usage: { cost: 0.02 } }, FINISH]], ledger: [{ model: "opencode-go/deepseek-v4.1-flash", costUsd: 16 }] });
+  const { delegate, ledger } = await scenario({
+    scripts: [[EDIT, { usage: { cost: 0.02 } }, FINISH]],
+    ledger: [{ model: "opencode-go/deepseek-v4.1-flash", costUsd: 16 }],
+  });
   const text = await delegate();
   expect(text.split("\n")[0]).toMatch(/^OK j\w{4} .* cost=\$0\.020 billing=zen$/);
   const last = JSON.parse(readFileSync(ledger, "utf8").trim().split("\n").at(-1)!);
@@ -109,7 +184,17 @@ test("a job well inside its windows shows no billing token", async () => {
 test("OpenRouter out of credits (402) → BUDGET, with no fallback since every model draws on the same credit", async () => {
   const { delegate, models } = await scenario({
     logins: { openrouter: "sk-or-v1-testkeytestkeytestkey" },
-    scripts: [[{ error: { name: "APIError", message: "Insufficient credits. Add more using https://openrouter.ai/settings/credits", statusCode: 402 } }]],
+    scripts: [
+      [
+        {
+          error: {
+            name: "APIError",
+            message: "Insufficient credits. Add more using https://openrouter.ai/settings/credits",
+            statusCode: 402,
+          },
+        },
+      ],
+    ],
   });
   const text = await delegate();
   expect(text.split("\n")[0]).toMatch(/^BUDGET j\w{4} step=1 /);
@@ -133,12 +218,22 @@ test("an OpenRouter rate limit on every allowed model → BUDGET naming the prov
     allow: ["--models", "openrouter/deepseek/deepseek-v4.1-flash"],
     scripts: [[{ retry: { message: "Rate limit exceeded" } }]],
   });
-  expect(await delegate()).toMatch(/\nreason: OpenRouter rate limit on every allowed model: deepseek\/deepseek-v4\.1-flash \(retry ~[^)]*\d\d:\d\d\)\n/);
+  expect(await delegate()).toMatch(
+    /\nreason: OpenRouter rate limit on every allowed model: deepseek\/deepseek-v4\.1-flash \(retry ~[^)]*\d\d:\d\d\)\n/,
+  );
 });
 
 test("a transient retry on Go (no limit reason, a quick backoff) is not a limit: no abort, no fallback, same model", async () => {
   const { delegate, fake, models } = await scenario({
-    scripts: [[{ tool: "read" }, { retry: { message: "Overloaded", next: Date.now() + 2_000, recoverAfter: 300 } }, EDIT, { tool: "write" }, FINISH]],
+    scripts: [
+      [
+        { tool: "read" },
+        { retry: { message: "Overloaded", next: Date.now() + 2_000, recoverAfter: 300 } },
+        EDIT,
+        { tool: "write" },
+        FINISH,
+      ],
+    ],
   });
   const text = await delegate();
   expect(text.split("\n")[0]).toMatch(/^OK j\w{4} step=1 .* cost=\$0\.000$/); // no model= token
@@ -146,7 +241,12 @@ test("a transient retry on Go (no limit reason, a quick backoff) is not a limit:
   expect(models()).toEqual([undefined]);
 });
 
-const OVERLOADED: Action = { error: { name: "APIError", message: "Upstream request failed: [overloaded] the server is overloaded; retry shortly" } };
+const OVERLOADED: Action = {
+  error: {
+    name: "APIError",
+    message: "Upstream request failed: [overloaded] the server is overloaded; retry shortly",
+  },
+};
 
 test("a capacity error is retried once in a forked session on the same model, then lands OK", async () => {
   const { delegate, fake } = await scenario({ scripts: [[OVERLOADED], [EDIT, FINISH]] });
@@ -156,7 +256,9 @@ test("a capacity error is retried once in a forked session on the same model, th
   const [first, second] = fake.recorded.prompts;
   expect(second.sessionID).toBe(fake.recorded.forks[0].to);
   expect(second.sessionID).not.toBe(first.sessionID);
-  expect(JSON.stringify(second.parts)).toContain("The previous attempt hit a provider capacity error");
+  expect(JSON.stringify(second.parts)).toContain(
+    "The previous attempt hit a provider capacity error",
+  );
   expect(second.model).toEqual(first.model);
 });
 
@@ -181,7 +283,9 @@ test("delegate model: runs the job on that allowed model (bare or full id); an u
   expect(await delegate("qwen3.7-plus")).toMatch(/^OK .* model=opencode-go\/qwen3\.7-plus/);
   expect(fake.recorded.sessions.map((s) => s.model?.id)).toEqual(["qwen3.7-plus"]); // the session itself starts on it
   const refused = await delegate("gpt-9");
-  expect(refused).toMatch(/^FAIL reason: model gpt-9 is not allowed here; allowed: deepseek-v4\.1-flash, .*; run \/cheapag:allow to add it/);
+  expect(refused).toMatch(
+    /^FAIL reason: model gpt-9 is not allowed here; allowed: deepseek-v4\.1-flash, .*; run \/cheapag:allow to add it/,
+  );
   expect(fake.recorded.sessions).toHaveLength(1);
 });
 
@@ -200,32 +304,66 @@ test("a BUDGET whose retry time is only OpenCode's short backoff quotes the prov
   const { delegate } = await scenario({
     logins: { openrouter: "sk-or-v1-testkeytestkeytestkey" },
     allow: ["--models", "openrouter/deepseek/deepseek-v4.1-flash"],
-    scripts: [[{ retry: { message: "Rate limit exceeded: free-models-per-day. Resets tomorrow", next: Date.now() + 5_000 } }]],
+    scripts: [
+      [
+        {
+          retry: {
+            message: "Rate limit exceeded: free-models-per-day. Resets tomorrow",
+            next: Date.now() + 5_000,
+          },
+        },
+      ],
+    ],
   });
-  expect(await delegate()).toMatch(/\nreason: OpenRouter rate limit on every allowed model: deepseek\/deepseek-v4\.1-flash \(retry Rate limit exceeded: free-models-per-day\. Resets tomorrow\)\n/);
+  expect(await delegate()).toMatch(
+    /\nreason: OpenRouter rate limit on every allowed model: deepseek\/deepseek-v4\.1-flash \(retry Rate limit exceeded: free-models-per-day\. Resets tomorrow\)\n/,
+  );
 });
 
 test("config models override the role defaults; a model for another provider is ignored", async () => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   writeFileSync(join(repo.dir, "plan.md"), PLAN());
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/glm-5.3", fallback: ["opencode-go/kimi-k3"], escalation: "openrouter/x/y" } }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({
+      models: {
+        implement: "opencode-go/glm-5.3",
+        fallback: ["opencode-go/kimi-k3"],
+        escalation: "openrouter/x/y",
+      },
+    }),
+  );
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" } });
+  const server = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url },
+    logins: { "opencode-go": "k" },
+  });
   onTestFinished(server.close);
   const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1" });
-  expect(text).toContain("send: code from this repo → OpenCode Go: glm-5.3, qwen3.8-flash, deepseek-v4-pro (+fallbacks kimi-k3, deepseek-v4.1-flash)\n");
+  expect(text).toContain(
+    "send: code from this repo → OpenCode Go: glm-5.3, qwen3.8-flash, deepseek-v4-pro (+fallbacks kimi-k3, deepseek-v4.1-flash)\n",
+  );
 });
 
 test("config models: the job runs on the configured implement model; a malformed models entry is a FAIL before any job", async () => {
   const { repo, fake, server, delegate } = await scenario({ scripts: [[EDIT, FINISH]] });
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { implement: "opencode-go/glm-5.3" } }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: { implement: "opencode-go/glm-5.3" } }),
+  );
   expect(await delegate()).toMatch(/^OK /); // same provider: another model never asks for consent again
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
 
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { fallback: "opencode-go/kimi-k3" } }));
-  expect(await delegate()).toMatch(/^FAIL reason: .*cheapag\.json: models\.fallback must be a list of provider\/model names$/);
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: { fallback: "opencode-go/kimi-k3" } }),
+  );
+  expect(await delegate()).toMatch(
+    /^FAIL reason: .*cheapag\.json: models\.fallback must be a list of provider\/model names$/,
+  );
 });
 
 // ---- ticket 26: difficulty routing ----
@@ -233,29 +371,45 @@ test("config models: the job runs on the configured implement model; a malformed
 test("tierModel: hard → models.hard ?? models.medium ?? implement; medium → models.medium ?? implement; easy or no hint → implement", () => {
   const ids = (models: ModelsConfig) => {
     const r = fullRoute("opencode-go", models);
-    return [undefined, "easy", "medium", "hard"].map((d) => tierModel(r, d as Difficulty | undefined).id);
+    return [undefined, "easy", "medium", "hard"].map(
+      (d) => tierModel(r, d as Difficulty | undefined).id,
+    );
   };
   const flash = "deepseek-v4.1-flash";
   expect(ids({})).toEqual([flash, flash, flash, flash]); // no default tier model: the GLM-5.3 gain in 25 did not hold on the hard tier
   expect(ids({ medium: "opencode-go/glm-5.3" })).toEqual([flash, flash, "glm-5.3", "glm-5.3"]);
-  expect(ids({ medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" })).toEqual([flash, flash, "glm-5.3", "kimi-k3"]);
+  expect(ids({ medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" })).toEqual([
+    flash,
+    flash,
+    "glm-5.3",
+    "kimi-k3",
+  ]);
   expect(ids({ hard: "openrouter/x/y" })).toEqual([flash, flash, flash, flash]); // another provider's: ignored
   // the tier models are models the route may send code to, so consent (the CONSENT block, cheapag allow) names them
-  expect(routeModels(fullRoute("opencode-go", { hard: "opencode-go/minimax-m3" })).map(modelName)).toContain("opencode-go/minimax-m3");
+  expect(
+    routeModels(fullRoute("opencode-go", { hard: "opencode-go/minimax-m3" })).map(modelName),
+  ).toContain("opencode-go/minimax-m3");
 });
 
 test("models.variants: a full model name's effort becomes the WorkerModel's variant; a model without an entry has none", () => {
-  const route = fullRoute("opencode-go", { implement: "opencode-go/glm-5.3", variants: { "opencode-go/glm-5.3": "high" } });
+  const route = fullRoute("opencode-go", {
+    implement: "opencode-go/glm-5.3",
+    variants: { "opencode-go/glm-5.3": "high" },
+  });
   expect(route.implement.variant).toBe("high");
   expect(route.fallbacks.find((m) => m.id === "qwen3.7-plus")!.variant).toBeUndefined();
   expect(route.research!.variant).toBeUndefined();
-  expect(fullRoute("opencode-go", { implement: "opencode-go/glm-5.3" }).implement.variant).toBeUndefined();
+  expect(
+    fullRoute("opencode-go", { implement: "opencode-go/glm-5.3" }).implement.variant,
+  ).toBeUndefined();
 });
 
 test("plan steps accept difficulty:; any other value is a plan error", () => {
   const plan = (d: string) => `# P\n## 1 a\nfiles: a.txt\ndone-when: done\ndifficulty: ${d}\n`;
   expect(parsePlan(plan("hard")).steps[0].fields.difficulty).toBe("hard");
-  expect(() => parsePlan(plan("tricky"))).toThrow("step 1 (line 2): difficulty: must be easy, medium, hard or left out");
+  expect(() => parsePlan(plan("tricky"))).toThrow(
+    "step 1 (line 2): difficulty: must be easy, medium, hard or left out",
+  );
 });
 
 test("config: models.medium and models.hard take provider/model names; hard_tasks is delegate, self or sonnet (default delegate)", () => {
@@ -266,44 +420,81 @@ test("config: models.medium and models.hard take provider/model names; hard_task
     return loadConfig(repo.dir);
   };
   expect(load({}).hard_tasks).toBe("delegate");
-  expect(load({ models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" }, hard_tasks: "sonnet" }))
-    .toMatchObject({ models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" }, hard_tasks: "sonnet" });
-  expect(() => load({ models: { medium: "glm-5.3" } })).toThrow("models.medium must be a provider/model name");
+  expect(
+    load({
+      models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" },
+      hard_tasks: "sonnet",
+    }),
+  ).toMatchObject({
+    models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" },
+    hard_tasks: "sonnet",
+  });
+  expect(() => load({ models: { medium: "glm-5.3" } })).toThrow(
+    "models.medium must be a provider/model name",
+  );
   expect(() => load({ models: { hard: 3 } })).toThrow("models.hard must be a provider/model name");
-  expect(() => load({ hard_tasks: "opus" })).toThrow("hard_tasks must be one of delegate, self, sonnet");
+  expect(() => load({ hard_tasks: "opus" })).toThrow(
+    "hard_tasks must be one of delegate, self, sonnet",
+  );
 });
 
 test("server instructions: one hint sentence, and hard_tasks adds its rule; every variant stays under the 4,096-character cut", () => {
-  const hint = "Pass difficulty from the issue: time a new engineer needs to fix and test it, easy < 15 min, medium < 1 h, hard > 1 h.";
-  const [delegate, self, sonnet] = (["delegate", "self", "sonnet"] as const).map((h) => instructions(h));
+  const hint =
+    "Pass difficulty from the issue: time a new engineer needs to fix and test it, easy < 15 min, medium < 1 h, hard > 1 h.";
+  const [delegate, self, sonnet] = (["delegate", "self", "sonnet"] as const).map((h) =>
+    instructions(h),
+  );
   for (const text of [delegate, self, sonnet]) {
     expect(text).toContain(hint);
     expect(text.length).toBeLessThan(4096);
   }
   expect(delegate).toContain(`${hint}\n`);
   expect(self).toContain(`${hint} For a hard task, do it yourself instead of delegating.\n`);
-  expect(sonnet).toContain(`${hint} For a hard task, use your Agent tool with model: sonnet to implement it instead of delegating.\n`);
+  expect(sonnet).toContain(
+    `${hint} For a hard task, use your Agent tool with model: sonnet to implement it instead of delegating.\n`,
+  );
 });
 
 test("a difficulty hint routes the job to its tier model: model= in the headline, the hint on the record; a step's own key wins", async () => {
-  const { repo, fake, server, record } = await scenario({ scripts: [[EDIT, FINISH], [EDIT, FINISH], [EDIT, FINISH]] });
+  const { repo, fake, server, record } = await scenario({
+    scripts: [
+      [EDIT, FINISH],
+      [EDIT, FINISH],
+      [EDIT, FINISH],
+    ],
+  });
   const { tools } = await server.client.listTools();
-  expect(tools.find((t) => t.name === "delegate")!.inputSchema.properties!.difficulty).toMatchObject({ type: "string", enum: ["easy", "medium", "hard"] });
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { medium: "opencode-go/glm-5.3" } }));
+  expect(
+    tools.find((t) => t.name === "delegate")!.inputSchema.properties!.difficulty,
+  ).toMatchObject({ type: "string", enum: ["easy", "medium", "hard"] });
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: { medium: "opencode-go/glm-5.3" } }),
+  );
   allowRepo(repo.dir, homeEnv(server.home)); // a tier model changes the route, so consent is given again (ticket 27)
-  const delegate = (args: Record<string, unknown>) => callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...args });
+  const delegate = (args: Record<string, unknown>) =>
+    callText(server.client, "delegate", { plan: "plan.md", steps: "1", ...args });
 
   const medium = await delegate({ difficulty: "medium" });
   expect(medium.split("\n")[0]).toMatch(/^OK j\w{4} step=1 .* model=opencode-go\/glm-5\.3$/);
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
-  expect(record(medium)).toMatchObject({ difficulty: "medium", models: { requested: "opencode-go/deepseek-v4.1-flash", final: "opencode-go/glm-5.3" } });
+  expect(record(medium)).toMatchObject({
+    difficulty: "medium",
+    models: { requested: "opencode-go/deepseek-v4.1-flash", final: "opencode-go/glm-5.3" },
+  });
 
   const easy = await delegate({ difficulty: "easy" });
   expect(easy.split("\n")[0]).not.toContain("model=");
-  expect(fake.recorded.sessions[1].model).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" });
+  expect(fake.recorded.sessions[1].model).toEqual({
+    providerID: "opencode-go",
+    id: "deepseek-v4.1-flash",
+  });
 
   // a plan step rated hard, no models.hard: the medium model, whatever the call said
-  writeFileSync(join(repo.dir, "plan.md"), PLAN().replace("done-when:", "difficulty: hard\ndone-when:"));
+  writeFileSync(
+    join(repo.dir, "plan.md"),
+    PLAN().replace("done-when:", "difficulty: hard\ndone-when:"),
+  );
   const hard = await delegate({ difficulty: "easy" });
   expect(hard.split("\n")[0]).toMatch(/ model=opencode-go\/glm-5\.3$/);
   expect(record(hard).difficulty).toBe("hard");
@@ -313,21 +504,48 @@ test("consent covers the tier models: the CONSENT block names them; one the allo
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   writeFileSync(join(repo.dir, "plan.md"), PLAN());
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { hard: "opencode-go/kimi-k3" }, hard_tasks: "self" }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: { hard: "opencode-go/kimi-k3" }, hard_tasks: "self" }),
+  );
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
-  const unapproved = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" } });
+  const unapproved = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url },
+    logins: { "opencode-go": "k" },
+  });
   onTestFinished(unapproved.close);
   // the repo's hard_tasks reaches the instructions, read at startup
-  expect(unapproved.client.getInstructions()).toContain("For a hard task, do it yourself instead of delegating.");
-  expect(await callText(unapproved.client, "delegate", { plan: "plan.md", steps: "1", difficulty: "hard" })).toContain("send: code from this repo → OpenCode Go: deepseek-v4.1-flash, kimi-k3, ");
+  expect(unapproved.client.getInstructions()).toContain(
+    "For a hard task, do it yourself instead of delegating.",
+  );
+  expect(
+    await callText(unapproved.client, "delegate", {
+      plan: "plan.md",
+      steps: "1",
+      difficulty: "hard",
+    }),
+  ).toContain("send: code from this repo → OpenCode Go: deepseek-v4.1-flash, kimi-k3, ");
 
   fake.script(EDIT, FINISH);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: ["--models", "opencode-go/deepseek-v4.1-flash"] });
+  const server = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url },
+    logins: { "opencode-go": "k" },
+    allow: ["--models", "opencode-go/deepseek-v4.1-flash"],
+  });
   onTestFinished(server.close);
-  const text = await callText(server.client, "delegate", { plan: "plan.md", steps: "1", difficulty: "hard" });
+  const text = await callText(server.client, "delegate", {
+    plan: "plan.md",
+    steps: "1",
+    difficulty: "hard",
+  });
   expect(text.split("\n")[0]).toMatch(/^OK .* cost=\$0\.000$/);
-  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" });
+  expect(fake.recorded.sessions[0].model).toEqual({
+    providerID: "opencode-go",
+    id: "deepseek-v4.1-flash",
+  });
 });
 
 // ---- commandcode presets and role defaults ----
@@ -347,7 +565,15 @@ test("commandcode presets: cheapest and balanced implement on Flash, strongest o
 // ---- opencode (Zen) presets and role defaults ----
 
 test("Ollama is listed 4th, after DeepSeek; the hosted providers keep their relative order, and the custom endpoint stays last", () => {
-  expect(PROVIDERS.map((p) => p.id)).toEqual(["opencode-go", "openrouter", "deepseek", "ollama", "commandcode", "opencode", "local"]);
+  expect(PROVIDERS.map((p) => p.id)).toEqual([
+    "opencode-go",
+    "openrouter",
+    "deepseek",
+    "ollama",
+    "commandcode",
+    "opencode",
+    "local",
+  ]);
 });
 
 test("opencode (Zen) presets: cheapest and balanced implement on Flash, strongest on GLM; roles default Flash with V4 Pro escalation and no Go-only fallback", () => {
@@ -363,12 +589,47 @@ test("opencode (Zen) presets: cheapest and balanced implement on Flash, stronges
   expect(modelName(route.research!)).toBe("opencode/qwen3.8-flash");
   expect(routeModels(route).map(modelName)).not.toContain("opencode/qwen3.7-plus");
   expect(routeModels(route).every((m) => m.providerID === "opencode")).toBe(true);
-  expect(modelName(fullRoute("opencode", { implement: "opencode-go/glm-5.3" }).implement)).toBe("opencode/deepseek-v4.1-flash");
+  expect(modelName(fullRoute("opencode", { implement: "opencode-go/glm-5.3" }).implement)).toBe(
+    "opencode/deepseek-v4.1-flash",
+  );
 });
 
 test("effectiveModels: the preset's models, with an explicit models role winning", () => {
-  expect(effectiveModels("opencode-go", { preset: "strongest", models: {} })).toEqual(PRESETS["opencode-go"].strongest);
-  expect(effectiveModels("opencode-go", { models: { medium: "opencode-go/glm-5.3" } })).toEqual({ medium: "opencode-go/glm-5.3" });
-  expect(effectiveModels("opencode-go", { preset: "strongest", models: { implement: "opencode-go/kimi-k3" } }))
-    .toEqual({ implement: "opencode-go/kimi-k3", medium: PRESETS["opencode-go"].strongest.medium });
+  expect(effectiveModels("opencode-go", { preset: "strongest", models: {} })).toEqual(
+    PRESETS["opencode-go"].strongest,
+  );
+  expect(effectiveModels("opencode-go", { models: { medium: "opencode-go/glm-5.3" } })).toEqual({
+    medium: "opencode-go/glm-5.3",
+  });
+  expect(
+    effectiveModels("opencode-go", {
+      preset: "strongest",
+      models: { implement: "opencode-go/kimi-k3" },
+    }),
+  ).toEqual({ implement: "opencode-go/kimi-k3", medium: PRESETS["opencode-go"].strongest.medium });
+});
+
+test("a damaged ollama entry does not count as a local endpoint: the preset still applies (the config load reports the damage)", () => {
+  const config = mkdtempSync(join(tmpdir(), "cheapag-routing-"));
+  vi.stubEnv("XDG_CONFIG_HOME", config);
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+    rmSync(config, { recursive: true, force: true });
+  });
+  mkdirSync(join(config, "cheapag"));
+  writeFileSync(
+    join(config, "cheapag", "config.json"),
+    JSON.stringify({ ollama: { endpoint: "bogus" } }),
+  );
+  expect(effectiveModels("ollama", { preset: "cheapest", models: {} })).toEqual(
+    effectiveModels("opencode-go", { models: PRESETS.ollama.cheapest }),
+  );
+  // a valid local endpoint has no presets: only the configured models count
+  writeFileSync(
+    join(config, "cheapag", "config.json"),
+    JSON.stringify({ ollama: { endpoint: "local", model: "llama3.2" } }),
+  );
+  expect(
+    effectiveModels("ollama", { preset: "cheapest", models: { implement: "ollama/x" } }),
+  ).toEqual({ implement: "ollama/x" });
 });

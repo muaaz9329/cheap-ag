@@ -17,7 +17,12 @@ export type Model = { providerID: string; modelID: string };
 /** Model as `POST /session` takes it (note: `id`, not `modelID`). */
 export type SessionModel = { id: string; providerID: string; variant?: string };
 /** The custom `finish` tool's arguments (spec D8). */
-export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[] };
+export type FinishReport = {
+  summary: string;
+  risks: string[];
+  review: string[];
+  missing: string[];
+};
 type Usage = { cost: number; input?: number; output?: number; reasoning?: number };
 
 /** One scripted thing the worker does. ("Action", not "step": a step is a plan unit.) */
@@ -45,7 +50,14 @@ export type Action =
    * With `reason`, a Go/free-tier limit (`action` set, as OpenCode 1.19 builds it); without, a plain rate limit such as
    * OpenRouter's 429 (no `action`). `next` is when OpenCode would retry (default in an hour).
    */
-  | { retry: { reason?: "account_rate_limit" | "free_tier_limit"; message: string; next?: number; recoverAfter?: number } }
+  | {
+      retry: {
+        reason?: "account_rate_limit" | "free_tier_limit";
+        message: string;
+        next?: number;
+        recoverAfter?: number;
+      };
+    }
   /** Calls the custom `finish` tool with this report (as a completed `finish` tool part). */
   | { finish: FinishReport }
   /** A long model step: pauses this many ms, or until the session is aborted. */
@@ -58,42 +70,108 @@ export type Action =
    */
   | { error: { name: string; message: string; statusCode?: number }; on?: "session" | "message" };
 
-type Session = { id: string; directory: string; agent?: string; model?: SessionModel; permission?: unknown; status: Status };
-type Status = { type: "idle" } | { type: "busy" } | { type: "retry"; attempt: number; message: string; next: number; action?: unknown };
+type Session = {
+  id: string;
+  directory: string;
+  agent?: string;
+  model?: SessionModel;
+  permission?: unknown;
+  status: Status;
+};
+type Status =
+  | { type: "idle" }
+  | { type: "busy" }
+  | { type: "retry"; attempt: number; message: string; next: number; action?: unknown };
 /**
  * OpenCode's processing of one prompt (not a Cheap Agent job). Observed live on 1.19.0: each model step is its own
  * assistant message, opened at cost 0, re-emitted with running totals, and a tool call ends the step.
  */
-type Run = { session: Session; model: Model; userMessageID: string; assistantID: string; usage: Required<Usage>; resume?: () => void; aborted: boolean };
+type Run = {
+  session: Session;
+  model: Model;
+  userMessageID: string;
+  assistantID: string;
+  usage: Required<Usage>;
+  resume?: () => void;
+  aborted: boolean;
+};
 
 // stands in for whatever model the real server would pick from its config
 const DEFAULT_MODEL: Model = { providerID: "fake", modelID: "fake-default" };
 
 /** `GET /config/providers` as the real server answers it (only the fields Cheap Agent reads). */
-type FakeModel = { id: string; name: string; toolcall: boolean; input: number; output: number; context: number; variants?: string[] };
+type FakeModel = {
+  id: string;
+  name: string;
+  toolcall: boolean;
+  input: number;
+  output: number;
+  context: number;
+  variants?: string[];
+};
 type FakeProvider = { id: string; models: FakeModel[] };
 
-const DEFAULT_PROVIDERS: FakeProvider[] = [{
-  id: "opencode-go",
-  models: [
-    { id: "big-reasoner", name: "Big Reasoner", toolcall: true, input: 0.9, output: 2.7, context: 256_000, variants: ["high", "max"] },
-    { id: "small-flash", name: "Small Flash", toolcall: true, input: 0.14, output: 0.28, context: 128_000 },
-    { id: "chat-only", name: "Chat Only", toolcall: false, input: 0.05, output: 0.1, context: 32_000 },
-  ],
-}];
+const DEFAULT_PROVIDERS: FakeProvider[] = [
+  {
+    id: "opencode-go",
+    models: [
+      {
+        id: "big-reasoner",
+        name: "Big Reasoner",
+        toolcall: true,
+        input: 0.9,
+        output: 2.7,
+        context: 256_000,
+        variants: ["high", "max"],
+      },
+      {
+        id: "small-flash",
+        name: "Small Flash",
+        toolcall: true,
+        input: 0.14,
+        output: 0.28,
+        context: 128_000,
+      },
+      {
+        id: "chat-only",
+        name: "Chat Only",
+        toolcall: false,
+        input: 0.05,
+        output: 0.1,
+        context: 32_000,
+      },
+    ],
+  },
+];
 
 const catalogOf = (providers: FakeProvider[]) => ({
   default: {},
   providers: providers.map((p) => ({
-    id: p.id, name: p.id, source: "api", env: [], options: {},
-    models: Object.fromEntries(p.models.map((m) => [m.id, {
-      id: m.id, providerID: p.id, name: m.name, capabilities: { toolcall: m.toolcall }, cost: { input: m.input, output: m.output, cache: { read: 0, write: 0 } },
-      limit: { context: m.context, output: 8192 }, variants: m.variants && Object.fromEntries(m.variants.map((v) => [v, {}])),
-    }])),
+    id: p.id,
+    name: p.id,
+    source: "api",
+    env: [],
+    options: {},
+    models: Object.fromEntries(
+      p.models.map((m) => [
+        m.id,
+        {
+          id: m.id,
+          providerID: p.id,
+          name: m.name,
+          capabilities: { toolcall: m.toolcall },
+          cost: { input: m.input, output: m.output, cache: { read: 0, write: 0 } },
+          limit: { context: m.context, output: 8192 },
+          variants: m.variants && Object.fromEntries(m.variants.map((v) => [v, {}])),
+        },
+      ]),
+    ),
   })),
 });
 
-export async function startFakeOpencode(opts: { version?: string; providers?: FakeProvider[] } = {}) {
+export async function startFakeOpencode(
+  opts: { version?: string; providers?: FakeProvider[] } = {},
+) {
   const version = opts.version ?? OPENCODE_PIN;
   let seq = 0;
   const id = (prefix: string) => `${prefix}_fake${String(++seq).padStart(4, "0")}`;
@@ -108,7 +186,13 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
   /** Everything Cheap Agent sent, for assertions. */
   const recorded = {
     requests: [] as { method: string; path: string; directory?: string; body?: any }[],
-    sessions: [] as { id: string; directory: string; agent?: string; model?: SessionModel; permission?: unknown }[],
+    sessions: [] as {
+      id: string;
+      directory: string;
+      agent?: string;
+      model?: SessionModel;
+      permission?: unknown;
+    }[],
     prompts: [] as { sessionID: string; agent?: string; model?: Model; parts: unknown[] }[],
     questionReplies: [] as { requestID: string; answers?: string[][]; rejected: boolean }[],
     permissionReplies: [] as { requestID: string; reply: string; message?: string }[],
@@ -137,10 +221,23 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
 
   function assistantMessage({ session, model, userMessageID, assistantID, usage }: Run) {
     return {
-      id: assistantID, sessionID: session.id, role: "assistant", time: { created: Date.now() }, parentID: userMessageID,
-      modelID: model.modelID, providerID: model.providerID, mode: session.agent ?? "build", agent: session.agent ?? "build",
-      path: { cwd: session.directory, root: session.directory }, cost: usage.cost,
-      tokens: { input: usage.input, output: usage.output, reasoning: usage.reasoning, cache: { read: 0, write: 0 } },
+      id: assistantID,
+      sessionID: session.id,
+      role: "assistant",
+      time: { created: Date.now() },
+      parentID: userMessageID,
+      modelID: model.modelID,
+      providerID: model.providerID,
+      mode: session.agent ?? "build",
+      agent: session.agent ?? "build",
+      path: { cwd: session.directory, root: session.directory },
+      cost: usage.cost,
+      tokens: {
+        input: usage.input,
+        output: usage.output,
+        reasoning: usage.reasoning,
+        cache: { read: 0, write: 0 },
+      },
     };
   }
 
@@ -148,22 +245,49 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
   function nextStep(run: Run) {
     run.assistantID = id("msg");
     run.usage = { cost: 0, input: 0, output: 0, reasoning: 0 };
-    emit(run.session.directory, "message.updated", { sessionID: run.session.id, info: assistantMessage(run) });
+    emit(run.session.directory, "message.updated", {
+      sessionID: run.session.id,
+      info: assistantMessage(run),
+    });
   }
 
-  function toolPart(run: Run, tool: string, input: Record<string, unknown>, output?: string, error?: string) {
+  function toolPart(
+    run: Run,
+    tool: string,
+    input: Record<string, unknown>,
+    output?: string,
+    error?: string,
+  ) {
     const time = { start: Date.now(), end: Date.now() };
-    const state = error === undefined
-      ? { status: "completed", input, output: output ?? "", title: tool, metadata: {}, time }
-      : { status: "error", input, error, time };
-    return { id: id("prt"), sessionID: run.session.id, messageID: run.assistantID, type: "tool", callID: id("call"), tool, state };
+    const state =
+      error === undefined
+        ? { status: "completed", input, output: output ?? "", title: tool, metadata: {}, time }
+        : { status: "error", input, error, time };
+    return {
+      id: id("prt"),
+      sessionID: run.session.id,
+      messageID: run.assistantID,
+      type: "tool",
+      callID: id("call"),
+      tool,
+      state,
+    };
   }
 
   /** Emits a question/permission request and pauses the run until it is answered (or aborted). */
-  function ask(run: Run, type: "question.asked" | "permission.asked", properties: Record<string, unknown>) {
+  function ask(
+    run: Run,
+    type: "question.asked" | "permission.asked",
+    properties: Record<string, unknown>,
+  ) {
     const requestID = id(type === "question.asked" ? "que" : "per");
     pending.set(requestID, run);
-    emit(run.session.directory, type, { id: requestID, sessionID: run.session.id, tool: { messageID: run.assistantID, callID: id("call") }, ...properties });
+    emit(run.session.directory, type, {
+      id: requestID,
+      sessionID: run.session.id,
+      tool: { messageID: run.assistantID, callID: id("call") },
+      ...properties,
+    });
     return new Promise<void>((resolve) => (run.resume = resolve));
   }
 
@@ -180,7 +304,8 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
   async function execute(run: Run, actions: Action[]) {
     const { session } = run;
     const dir = session.directory;
-    const part = (p: unknown) => emit(dir, "message.part.updated", { sessionID: session.id, part: p, time: Date.now() });
+    const part = (p: unknown) =>
+      emit(dir, "message.part.updated", { sessionID: session.id, part: p, time: Date.now() });
     emit(dir, "message.updated", { sessionID: session.id, info: assistantMessage(run) });
     for (const action of actions) {
       await new Promise((r) => setImmediate(r)); // let the client observe each event in order, as a real worker would
@@ -204,28 +329,67 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
         for (const t of action.tools) part(toolPart(run, t.tool, t.input ?? {}, t.output, t.error));
         nextStep(run);
       } else if ("usage" in action) {
-        for (const key of ["cost", "input", "output", "reasoning"] as const) run.usage[key] += action.usage[key] ?? 0;
+        for (const key of ["cost", "input", "output", "reasoning"] as const)
+          run.usage[key] += action.usage[key] ?? 0;
         emit(dir, "message.updated", { sessionID: session.id, info: assistantMessage(run) });
       } else if ("text" in action) {
-        part({ id: id("prt"), sessionID: session.id, messageID: run.assistantID, type: "text", text: action.text, time: { start: Date.now(), end: Date.now() } });
+        part({
+          id: id("prt"),
+          sessionID: session.id,
+          messageID: run.assistantID,
+          type: "text",
+          text: action.text,
+          time: { start: Date.now(), end: Date.now() },
+        });
       } else if ("reasoning" in action) {
-        part({ id: id("prt"), sessionID: session.id, messageID: run.assistantID, type: "reasoning", text: action.reasoning, time: { start: Date.now(), end: Date.now() } });
+        part({
+          id: id("prt"),
+          sessionID: session.id,
+          messageID: run.assistantID,
+          type: "reasoning",
+          text: action.reasoning,
+          time: { start: Date.now(), end: Date.now() },
+        });
       } else if ("questions" in action) {
         await ask(run, "question.asked", {
-          questions: action.questions.map((q) => ({ question: q.question, header: "Question", options: q.options.map((label) => ({ label, description: label })) })),
+          questions: action.questions.map((q) => ({
+            question: q.question,
+            header: "Question",
+            options: q.options.map((label) => ({ label, description: label })),
+          })),
         });
       } else if ("question" in action) {
         await ask(run, "question.asked", {
-          questions: [{ question: action.question, header: action.header ?? "Question", options: action.options.map((label) => ({ label, description: label })) }],
+          questions: [
+            {
+              question: action.question,
+              header: action.header ?? "Question",
+              options: action.options.map((label) => ({ label, description: label })),
+            },
+          ],
         });
       } else if ("permission" in action) {
-        await ask(run, "permission.asked", { permission: action.permission, patterns: action.patterns ?? ["*"], metadata: { command: action.command, description: action.description }, always: [] });
+        await ask(run, "permission.asked", {
+          permission: action.permission,
+          patterns: action.patterns ?? ["*"],
+          metadata: { command: action.command, description: action.description },
+          always: [],
+        });
       } else if ("retry" in action) {
         const { reason, message, next, recoverAfter } = action.retry;
         setStatus(session, {
-          type: "retry", attempt: 1, message, next: next ?? Date.now() + 3_600_000,
+          type: "retry",
+          attempt: 1,
+          message,
+          next: next ?? Date.now() + 3_600_000,
           ...(reason && {
-            action: { reason, provider: run.model.providerID, title: reason === "account_rate_limit" ? "Go limit reached" : "Free limit reached", message, label: "open settings" },
+            action: {
+              reason,
+              provider: run.model.providerID,
+              title: reason === "account_rate_limit" ? "Go limit reached" : "Free limit reached",
+              message,
+              label: "open settings",
+            },
           }),
         });
         if (recoverAfter !== undefined) {
@@ -241,8 +405,15 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
         nextStep(run);
       } else if ("error" in action) {
         const { name, message, statusCode } = action.error;
-        const error = { name, data: { message, ...(statusCode && { statusCode, isRetryable: false }) } };
-        if (action.on === "message") emit(dir, "message.updated", { sessionID: session.id, info: { ...assistantMessage(run), error } });
+        const error = {
+          name,
+          data: { message, ...(statusCode && { statusCode, isRetryable: false }) },
+        };
+        if (action.on === "message")
+          emit(dir, "message.updated", {
+            sessionID: session.id,
+            info: { ...assistantMessage(run), error },
+          });
         else emit(dir, "session.error", { sessionID: session.id, error });
         break;
       }
@@ -261,13 +432,16 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
   const json = (res: ServerResponse, value: unknown, status = 200) => {
     res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
   };
-  const notFound = (res: ServerResponse, message: string) => json(res, { name: "NotFoundError", data: { message } }, 404);
+  const notFound = (res: ServerResponse, message: string) =>
+    json(res, { name: "NotFoundError", data: { message } }, 404);
 
   const http = createServer(async (req, res) => {
     const url = new URL(req.url!, "http://fake");
     const header = req.headers["x-opencode-directory"];
     // like the real server, a request without a directory addresses the server's own (default) instance
-    const directory = url.searchParams.get("directory") ?? (typeof header === "string" ? decodeURIComponent(header) : process.cwd());
+    const directory =
+      url.searchParams.get("directory") ??
+      (typeof header === "string" ? decodeURIComponent(header) : process.cwd());
     let body: any;
     try {
       body = req.method === "POST" ? await readBody(req) : undefined;
@@ -281,11 +455,18 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
 
     if (route === "GET /global/health") return json(res, { healthy: true, version });
 
-    if (route === "GET /config/providers") return json(res, catalogOf(opts.providers ?? DEFAULT_PROVIDERS));
+    if (route === "GET /config/providers")
+      return json(res, catalogOf(opts.providers ?? DEFAULT_PROVIDERS));
 
     if (route === "GET /event") {
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      res.write(`data: ${JSON.stringify({ id: id("evt"), type: "server.connected", properties: {} })}\n\n`);
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      res.write(
+        `data: ${JSON.stringify({ id: id("evt"), type: "server.connected", properties: {} })}\n\n`,
+      );
       const sub = { directory, res };
       subscribers.add(sub);
       res.on("close", () => subscribers.delete(sub));
@@ -293,10 +474,31 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
     }
 
     if (route === "POST /session") {
-      const session: Session = { id: id("ses"), directory, agent: body?.agent, model: body?.model, permission: body?.permission, status: { type: "idle" } };
+      const session: Session = {
+        id: id("ses"),
+        directory,
+        agent: body?.agent,
+        model: body?.model,
+        permission: body?.permission,
+        status: { type: "idle" },
+      };
       sessions.set(session.id, session);
-      recorded.sessions.push({ id: session.id, directory, agent: session.agent, model: session.model, permission: session.permission });
-      return json(res, { id: session.id, slug: session.id, projectID: "fake", directory, title: "fake session", version, time: { created: Date.now(), updated: Date.now() } });
+      recorded.sessions.push({
+        id: session.id,
+        directory,
+        agent: session.agent,
+        model: session.model,
+        permission: session.permission,
+      });
+      return json(res, {
+        id: session.id,
+        slug: session.id,
+        projectID: "fake",
+        directory,
+        title: "fake session",
+        version,
+        time: { created: Date.now(), updated: Date.now() },
+      });
     }
 
     if ((m = route.match(/^POST \/session\/([^/]+)\/fork$/))) {
@@ -305,23 +507,49 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
       const copy: Session = { ...from, id: id("ses"), status: { type: "idle" } };
       sessions.set(copy.id, copy);
       recorded.forks.push({ from: from.id, to: copy.id });
-      return json(res, { id: copy.id, slug: copy.id, projectID: "fake", directory: copy.directory, title: "fake session", version, permission: copy.permission, time: { created: Date.now(), updated: Date.now() } });
+      return json(res, {
+        id: copy.id,
+        slug: copy.id,
+        projectID: "fake",
+        directory: copy.directory,
+        title: "fake session",
+        version,
+        permission: copy.permission,
+        time: { created: Date.now(), updated: Date.now() },
+      });
     }
 
     if (route === "GET /session/status") {
-      const busy = [...sessions.values()].filter((s) => s.directory === directory && s.status.type !== "idle");
+      const busy = [...sessions.values()].filter(
+        (s) => s.directory === directory && s.status.type !== "idle",
+      );
       return json(res, Object.fromEntries(busy.map((s) => [s.id, s.status])));
     }
 
     if ((m = route.match(/^POST \/session\/([^/]+)\/prompt_async$/))) {
       const session = sessions.get(m[1]);
       if (!session) return notFound(res, `session ${m[1]} not found`);
-      recorded.prompts.push({ sessionID: session.id, agent: body?.agent, model: body?.model, parts: body?.parts ?? [] });
+      recorded.prompts.push({
+        sessionID: session.id,
+        agent: body?.agent,
+        model: body?.model,
+        parts: body?.parts ?? [],
+      });
       const previous = runs.get(session.id);
       if (previous) stop(previous); // one run per session: a new prompt supersedes a hanging one
       // a continued prompt may switch model (fallback/escalation); it applies to this run only
-      const model = body?.model ?? (session.model && { providerID: session.model.providerID, modelID: session.model.id }) ?? DEFAULT_MODEL;
-      const run: Run = { session, model, userMessageID: id("msg"), assistantID: id("msg"), usage: { cost: 0, input: 0, output: 0, reasoning: 0 }, aborted: false };
+      const model =
+        body?.model ??
+        (session.model && { providerID: session.model.providerID, modelID: session.model.id }) ??
+        DEFAULT_MODEL;
+      const run: Run = {
+        session,
+        model,
+        userMessageID: id("msg"),
+        assistantID: id("msg"),
+        usage: { cost: 0, input: 0, output: 0, reasoning: 0 },
+        aborted: false,
+      };
       runs.set(session.id, run);
       res.writeHead(204).end();
       setStatus(session, { type: "busy" });
@@ -343,7 +571,11 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
         stop(run);
         // observed live on 1.19.0: abort emits no session.error; the open assistant message is updated, then the session idles
         emit(run.session.directory, "message.updated", {
-          sessionID: m[1], info: { ...assistantMessage(run), error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } } },
+          sessionID: m[1],
+          info: {
+            ...assistantMessage(run),
+            error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } },
+          },
         });
         setStatus(run.session, { type: "idle" });
       }
@@ -353,12 +585,20 @@ export async function startFakeOpencode(opts: { version?: string; providers?: Fa
     if ((m = route.match(/^POST \/question\/([^/]+)\/(reply|reject)$/))) {
       const rejected = m[2] === "reject";
       recorded.questionReplies.push({ requestID: m[1], answers: body?.answers, rejected });
-      const ok = answer(m[1], rejected ? "question.rejected" : "question.replied", rejected ? {} : { answers: body?.answers });
+      const ok = answer(
+        m[1],
+        rejected ? "question.rejected" : "question.replied",
+        rejected ? {} : { answers: body?.answers },
+      );
       return ok ? json(res, true) : notFound(res, `question ${m[1]} not pending`);
     }
 
     if ((m = route.match(/^POST \/permission\/([^/]+)\/reply$/))) {
-      recorded.permissionReplies.push({ requestID: m[1], reply: body?.reply, message: body?.message });
+      recorded.permissionReplies.push({
+        requestID: m[1],
+        reply: body?.reply,
+        message: body?.message,
+      });
       const ok = answer(m[1], "permission.replied", { reply: body?.reply });
       return ok ? json(res, true) : notFound(res, `permission ${m[1]} not pending`);
     }

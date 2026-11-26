@@ -1,5 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -35,8 +45,12 @@ export function hermeticHome(logins: Logins = {}) {
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-home-")));
   if (Object.keys(logins).length) {
     mkdirSync(join(home, "data", "opencode"), { recursive: true });
-    const auth = Object.fromEntries(Object.entries(logins).map(([id, key]) => [id, { type: "api", key }]));
-    writeFileSync(join(home, "data", "opencode", "auth.json"), JSON.stringify(auth), { mode: 0o600 });
+    const auth = Object.fromEntries(
+      Object.entries(logins).map(([id, key]) => [id, { type: "api", key }]),
+    );
+    writeFileSync(join(home, "data", "opencode", "auth.json"), JSON.stringify(auth), {
+      mode: 0o600,
+    });
   }
   return { home, env: homeEnv(home) };
 }
@@ -44,7 +58,14 @@ export function hermeticHome(logins: Logins = {}) {
 /** The CLI env for a hermetic home, e.g. a running server's, to run `allow` or `login` beside it. */
 export function homeEnv(home: string) {
   // OLLAMA_API_KEY alone is an implicit Ollama Cloud opt-in, so a developer's key would change every detection test
-  const { OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, OLLAMA_API_KEY, CHEAPAG_OPENCODE_URL, ...inherited } = process.env as Record<string, string>;
+  const {
+    OPENCODE_GO_API_KEY,
+    OPENROUTER_API_KEY,
+    DEEPSEEK_API_KEY,
+    OLLAMA_API_KEY,
+    CHEAPAG_OPENCODE_URL,
+    ...inherited
+  } = process.env as Record<string, string>;
   return {
     ...inherited,
     XDG_DATA_HOME: join(home, "data"),
@@ -56,7 +77,11 @@ export function homeEnv(home: string) {
 
 /** Runs the real `cheapag allow <args>` in `cwd`, the way the developer opts a repo in; returns its output. */
 export function allowRepo(cwd: string, env: Record<string, string>, args: string[] = []) {
-  return execFileSync(process.execPath, [serverEntry, "allow", ...args], { cwd, env, stdio: "pipe" }).toString();
+  return execFileSync(process.execPath, [serverEntry, "allow", ...args], {
+    cwd,
+    env,
+    stdio: "pipe",
+  }).toString();
 }
 
 /**
@@ -64,7 +89,16 @@ export function allowRepo(cwd: string, env: Record<string, string>, args: string
  * Hermetic (see `hermeticHome`); `cwd` defaults to that home, so `.cheapag/` never lands in this repo.
  * `allow` first opts the cwd's repo in through the real CLI (`[]` = all models), as the developer would.
  */
-export async function startServer(opts: { cwd?: string; env?: Record<string, string>; logins?: Logins; nodeArgs?: string[]; args?: string[]; allow?: string[] } = {}) {
+export async function startServer(
+  opts: {
+    cwd?: string;
+    env?: Record<string, string>;
+    logins?: Logins;
+    nodeArgs?: string[];
+    args?: string[];
+    allow?: string[];
+  } = {},
+) {
   const { home, env } = hermeticHome(opts.logins);
   if (opts.allow) allowRepo(opts.cwd ?? home, { ...env, ...opts.env }, opts.allow);
   const transport = new StdioClientTransport({
@@ -104,7 +138,19 @@ export function tempRepo(state: RepoState = "clean") {
   // realpathSync.native: macOS tmpdir is a /var -> /private/var symlink, and git reports the resolved path; expands 8.3 names on Windows
   const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-test-")));
   const git = (...args: string[]) =>
-    execFileSync("git", ["-c", "user.name=cheapag-test", "-c", "user.email=test@cheapag.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: dir, stdio: "pipe" }).toString();
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=cheapag-test",
+        "-c",
+        "user.email=test@cheapag.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
+      { cwd: dir, stdio: "pipe" },
+    ).toString();
 
   git("init", "-q", "-b", "main");
   // as a set-up repo would be, so results carry no gitignore hint (test/cleanup.test.ts clears this to see it)
@@ -121,11 +167,17 @@ export function tempRepo(state: RepoState = "clean") {
 
 /** Every file in a checkout (but .git and .cheapag) with its bytes, plus git's view: index entries and status. Equal snapshots = an untouched tree. */
 export function snapshot(dir: string) {
-  const files = Object.fromEntries((readdirSync(dir, { recursive: true }) as string[])
-    .map((p) => [p, p.split(sep).join("/")] as const)
-    .filter(([raw, p]) => !/^\.(git|cheapag)(\/|$)/.test(p) && lstatSync(join(dir, raw)).isFile())
-    .sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([raw, p]) => [p, readFileSync(join(dir, raw)).toString("base64")]));
+  const files = Object.fromEntries(
+    (readdirSync(dir, { recursive: true }) as string[])
+      .map((p) => [p, p.split(sep).join("/")] as const)
+      .filter(([raw, p]) => !/^\.(git|cheapag)(\/|$)/.test(p) && lstatSync(join(dir, raw)).isFile())
+      .sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([raw, p]) => [p, readFileSync(join(dir, raw)).toString("base64")]),
+  );
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir }).toString();
-  return { files, index: git("ls-files", "-s"), status: git("status", "--porcelain", "--untracked-files=all") };
+  return {
+    files,
+    index: git("ls-files", "-s"),
+    status: git("status", "--porcelain", "--untracked-files=all"),
+  };
 }

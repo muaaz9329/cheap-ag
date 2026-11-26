@@ -1,13 +1,24 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { follow, scan, toolTarget, watchState } from "../src/watch.js";
+import { serverEntry, slow, tempRepo } from "./harness.js";
 
 test("toolTarget: the file a tool touched, a bash command's first line, nothing for other tools", () => {
   const base = join(tmpdir(), "cheapag-watch-base");
-  expect(toolTarget("edit", { filePath: join(base, "src", "foo.ts") }, base)).toBe(join("src", "foo.ts"));
+  expect(toolTarget("edit", { filePath: join(base, "src", "foo.ts") }, base)).toBe(
+    join("src", "foo.ts"),
+  );
   expect(toolTarget("write", { filePath: "src/foo.ts" }, base)).toBe("src/foo.ts"); // already relative
   expect(toolTarget("read", { filePath: join(base, "README.md") }, base)).toBe("README.md");
   const command = "x".repeat(60) + "\nignored second line";
@@ -26,32 +37,94 @@ test("scan: a job finished before watch is skipped; new events and the verdict p
   writeFileSync(join(jobs, "jdone", "result.txt"), "OK jdone step=1\n");
   const dir = join(jobs, "j1");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "request.json"), JSON.stringify({ steps: "1", model: "openrouter/deepseek/deepseek-v4.1-flash" }));
+  writeFileSync(
+    join(dir, "request.json"),
+    JSON.stringify({ steps: "1", model: "openrouter/deepseek/deepseek-v4.1-flash" }),
+  );
   // a freshly created job already has a result.txt, still RUNNING: it must not count as finished
   writeFileSync(join(dir, "result.txt"), "RUNNING j1 step=1 turns=0 cost=$0.000\n");
 
   const edit = {
-    id: "evt_1", type: "message.part.updated",
-    properties: { sessionID: "ses_1", time: 1, part: { id: "prt_1", sessionID: "ses_1", messageID: "msg_1", type: "tool", callID: "call_1", tool: "edit", state: { status: "completed", input: { filePath: "src/foo.ts" }, output: "", title: "edit", metadata: {}, time: { start: 1, end: 2 } } } },
+    id: "evt_1",
+    type: "message.part.updated",
+    properties: {
+      sessionID: "ses_1",
+      time: 1,
+      part: {
+        id: "prt_1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool",
+        callID: "call_1",
+        tool: "edit",
+        state: {
+          status: "completed",
+          input: { filePath: "src/foo.ts" },
+          output: "",
+          title: "edit",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      },
+    },
   };
   const assistant = {
-    id: "evt_2", type: "message.updated",
-    properties: { sessionID: "ses_1", time: 2, info: { id: "msg_1", role: "assistant", cost: 0.001, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    id: "evt_2",
+    type: "message.updated",
+    properties: {
+      sessionID: "ses_1",
+      time: 2,
+      info: {
+        id: "msg_1",
+        role: "assistant",
+        cost: 0.001,
+        tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+    },
   };
   const bash = {
-    id: "evt_3", type: "message.part.updated",
-    properties: { sessionID: "ses_1", time: 3, part: { id: "prt_2", sessionID: "ses_1", messageID: "msg_1", type: "tool", callID: "call_2", tool: "bash", state: { status: "completed", input: { command: "npm test -- cart", description: "run the tests" }, output: "", title: "bash", metadata: {}, time: { start: 3, end: 4 } } } },
+    id: "evt_3",
+    type: "message.part.updated",
+    properties: {
+      sessionID: "ses_1",
+      time: 3,
+      part: {
+        id: "prt_2",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool",
+        callID: "call_2",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "npm test -- cart", description: "run the tests" },
+          output: "",
+          title: "bash",
+          metadata: {},
+          time: { start: 3, end: 4 },
+        },
+      },
+    },
   };
   const bashLine = JSON.stringify(bash);
   const cut = 30;
-  writeFileSync(join(dir, "events.jsonl"), [JSON.stringify(edit), JSON.stringify(assistant), bashLine.slice(0, cut)].join("\n"));
+  writeFileSync(
+    join(dir, "events.jsonl"),
+    [JSON.stringify(edit), JSON.stringify(assistant), bashLine.slice(0, cut)].join("\n"),
+  );
 
   const state = watchState(root);
   expect(scan(state)).toEqual(["▶ j1 · steps 1 · deepseek-v4.1-flash", "  j1  edit src/foo.ts"]);
 
   appendFileSync(join(dir, "events.jsonl"), bashLine.slice(cut) + "\n");
-  writeFileSync(join(dir, "result.txt"), "OK j1 step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000\nsummary: done\n");
-  expect(scan(state)).toEqual(["  j1  bash npm test -- cart", "■ j1 OK j1 step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000"]);
+  writeFileSync(
+    join(dir, "result.txt"),
+    "OK j1 step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000\nsummary: done\n",
+  );
+  expect(scan(state)).toEqual([
+    "  j1  bash npm test -- cart",
+    "■ j1 OK j1 step=1 files=1 +1/-0 tests=none turns=1 cost=$0.000",
+  ]);
 
   expect(scan(state)).toEqual([]);
 });
@@ -69,7 +142,12 @@ test("follow: prints each progress change once, then the result blocks, and reso
   writeFileSync(join(j2, "result.txt"), "OK j2 step=2 …\nsummary: x\n");
 
   let text = "";
-  const sink = new Writable({ write(chunk, _encoding, callback) { text += chunk.toString(); callback(); } });
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      text += chunk.toString();
+      callback();
+    },
+  });
   const done = follow(root, ["j1", "j2"], sink, 10);
   await vi.waitFor(() => expect(text).toContain("turn 1"));
   writeFileSync(join(j1, "progress.txt"), "step 1 · turn 2 · edit a.ts · 2s\n");
@@ -100,7 +178,99 @@ test("follow: a missing job folder prints once and counts as final", async () =>
   const root = mkdtempSync(join(tmpdir(), "cheapag-follow-"));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   let text = "";
-  const sink = new Writable({ write(chunk, _encoding, callback) { text += chunk.toString(); callback(); } });
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      text += chunk.toString();
+      callback();
+    },
+  });
   expect(await follow(root, ["jzzzz"], sink, 10)).toBe(0);
   expect(text).toBe("✗ no job jzzzz\n");
 });
+
+test("scan: odd job folders never throw: a dangling link, no request.json, an unreadable result, a damaged event line", () => {
+  const root = mkdtempSync(join(tmpdir(), "cheapag-watch-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const jobs = join(root, ".cheapag", "jobs");
+  const dir = join(jobs, "j1");
+  mkdirSync(dir, { recursive: true });
+  symlinkSync(join(jobs, "nowhere"), join(jobs, "jlink")); // dangling: cannot be examined
+  mkdirSync(join(dir, "result.txt")); // a folder where the result file belongs: unreadable
+  writeFileSync(
+    join(dir, "events.jsonl"),
+    "{ damaged\n" +
+      JSON.stringify({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            type: "tool",
+            tool: "bash",
+            state: { status: "completed", input: { command: "ls" } },
+          },
+        },
+      }) +
+      "\n",
+  );
+  const state = watchState(root);
+  expect(scan(state)).toEqual(["▶ j1", "  j1  bash ls"]); // no request.json: the id alone; no verdict
+  expect(scan(state)).toEqual([]);
+});
+
+test("follow: an unreadable progress file prints nothing and the job still ends on its result", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cheapag-follow-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, ".cheapag", "jobs", "j1");
+  mkdirSync(join(dir, "progress.txt"), { recursive: true }); // a folder: unreadable as a file
+  writeFileSync(join(dir, "result.txt"), "OK j1 step=1\n");
+  let text = "";
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      text += chunk.toString();
+      callback();
+    },
+  });
+  expect(await follow(root, ["j1"], sink, 10)).toBe(0);
+  expect(text).toBe("\nOK j1 step=1\n");
+});
+
+test(
+  "cheapag watch: tails the repo's jobs until stopped; with job ids it follows them and exits 0; outside a repo it exits 1",
+  async () => {
+    const repo = tempRepo();
+    onTestFinished(repo.cleanup);
+    const child = spawn(process.execPath, [serverEntry, "watch"], { cwd: repo.dir });
+    onTestFinished(() => void child.kill());
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    await vi.waitFor(
+      () => expect(out).toBe(`watching ${join(repo.dir, ".cheapag", "jobs")} (Ctrl-C to stop)\n`),
+      slow(10_000),
+    );
+    const dir = join(repo.dir, ".cheapag", "jobs", "jab12");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "result.txt"), "RUNNING jab12\n");
+    await vi.waitFor(() => expect(out).toContain("▶ jab12\n"), slow(10_000));
+    writeFileSync(join(dir, "result.txt"), "OK jab12 step=1\n");
+    await vi.waitFor(
+      () => expect(out).toContain("▶ jab12\n■ jab12 OK jab12 step=1\n"),
+      slow(10_000),
+    );
+    expect(child.exitCode).toBeNull(); // still watching
+
+    const followed = spawnSync(
+      process.execPath,
+      [serverEntry, "watch", "jab12", "jnone", "--ignored-flag"],
+      { cwd: repo.dir, encoding: "utf8" },
+    );
+    expect(followed.status).toBe(0);
+    expect(followed.stdout).toBe("\nOK jab12 step=1\n✗ no job jnone\n");
+
+    const outside = spawnSync(process.execPath, [serverEntry, "watch"], {
+      cwd: tmpdir(),
+      encoding: "utf8",
+    });
+    expect(outside.status).toBe(1);
+    expect(outside.stdout).toMatch(/^✗ .+\n$/);
+  },
+  slow(30_000),
+);

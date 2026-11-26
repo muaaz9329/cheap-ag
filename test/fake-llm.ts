@@ -7,7 +7,11 @@ import { createServer, type IncomingMessage } from "node:http";
  */
 
 /** A model step: a tool call, several tool calls in one assistant message, plain text, or an HTTP error response (e.g. a 429 rate limit or a 402 out of credits). */
-export type Reply = { tool: string; args: Record<string, unknown> } | { tools: { tool: string; args: Record<string, unknown> }[] } | { text: string } | { status: number; body: unknown; headers?: Record<string, string> };
+export type Reply =
+  | { tool: string; args: Record<string, unknown> }
+  | { tools: { tool: string; args: Record<string, unknown> }[] }
+  | { text: string }
+  | { status: number; body: unknown; headers?: Record<string, string> };
 
 export async function startFakeLlm() {
   const replies: Reply[] = [];
@@ -28,24 +32,60 @@ export async function startFakeLlm() {
     requests.push(body);
     headers.push(req.headers);
     // title generation and other tool-less side requests get a plain answer and do not consume the script
-    const reply: Reply = body.tools?.length ? (replies.shift() ?? { text: "Done." }) : { text: "Fake title" };
+    const reply: Reply = body.tools?.length
+      ? (replies.shift() ?? { text: "Done." })
+      : { text: "Fake title" };
     const id = `chatcmpl-${++seq}`;
     const chunk = (delta: unknown, finish: string | null = null, extra = {}) =>
       `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 0, model: body.model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`;
     if ("status" in reply) {
-      res.writeHead(reply.status, { "content-type": "application/json", ...reply.headers }).end(JSON.stringify(reply.body));
+      res
+        .writeHead(reply.status, { "content-type": "application/json", ...reply.headers })
+        .end(JSON.stringify(reply.body));
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
     if ("tool" in reply) {
-      res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${seq}`, type: "function", function: { name: reply.tool, arguments: JSON.stringify(reply.args) } }] }));
-      res.write(chunk({}, "tool_calls", { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+      res.write(
+        chunk({
+          role: "assistant",
+          tool_calls: [
+            {
+              index: 0,
+              id: `call_${seq}`,
+              type: "function",
+              function: { name: reply.tool, arguments: JSON.stringify(reply.args) },
+            },
+          ],
+        }),
+      );
+      res.write(
+        chunk({}, "tool_calls", {
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      );
     } else if ("tools" in reply) {
-      res.write(chunk({ role: "assistant", tool_calls: reply.tools.map((t, i) => ({ index: i, id: `call_${seq}_${i}`, type: "function", function: { name: t.tool, arguments: JSON.stringify(t.args) } })) }));
-      res.write(chunk({}, "tool_calls", { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+      res.write(
+        chunk({
+          role: "assistant",
+          tool_calls: reply.tools.map((t, i) => ({
+            index: i,
+            id: `call_${seq}_${i}`,
+            type: "function",
+            function: { name: t.tool, arguments: JSON.stringify(t.args) },
+          })),
+        }),
+      );
+      res.write(
+        chunk({}, "tool_calls", {
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      );
     } else {
       res.write(chunk({ role: "assistant", content: reply.text }));
-      res.write(chunk({}, "stop", { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+      res.write(
+        chunk({}, "stop", { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }),
+      );
     }
     res.end("data: [DONE]\n\n");
   });
@@ -58,6 +98,10 @@ export async function startFakeLlm() {
     headers,
     /** Queues the model's next steps; a step with no reply left answers "Done." and ends the run. */
     script: (...steps: Reply[]) => void replies.push(...steps),
-    close: () => new Promise<void>((resolve) => { http.closeAllConnections(); http.close(() => resolve()); }),
+    close: () =>
+      new Promise<void>((resolve) => {
+        http.closeAllConnections();
+        http.close(() => resolve());
+      }),
   };
 }

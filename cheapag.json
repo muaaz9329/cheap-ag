@@ -1,0 +1,4 @@
+{
+  "link_dirs": ["node_modules", ".venv", "venv", "vendor", "docs/launch/video/node_modules", "docs/launch/video/public/takes"],
+  "allow_commands": ["npx tsc --noEmit", "npx remotion still"]
+}

@@ -1,7 +1,13 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
-import { runningOpencode, type Opencode } from "./opencode.js";
+import { authHeaders, runningOpencode, type Opencode } from "./opencode.js";
 import { NO_SUMMARY } from "./report.js";
-import { canAlwaysAllow, commandPrefix, isHardDenied, rejectionMessage, type Rule } from "./permissions.js";
+import {
+  canAlwaysAllow,
+  commandPrefix,
+  isHardDenied,
+  rejectionMessage,
+  type Rule,
+} from "./permissions.js";
 import { modelName, type Limit, type WorkerModel } from "./routing.js";
 
 /** Worker: one OpenCode session for one job, reduced to what the job layer needs. */
@@ -18,19 +24,54 @@ const MAX_PERMISSION_ASKS = 3;
  * `repro`: the command that runs the worker's reproduction test, `none: <why>` when it could not reproduce, `n/a` when the step is not a fix.
  * `disagree`: where the step's spec and the source it was given disagree, or `none` (ticket 28: a wrong spec is only visible to whoever has the source).
  */
-export type FinishReport = { summary: string; risks: string[]; review: string[]; missing: string[]; repro?: string; disagree?: string };
-export type Usage = { inputTokens: number; outputTokens: number; reasoningTokens: number; cacheRead: number; cacheWrite: number; costUsd: number };
+export type FinishReport = {
+  summary: string;
+  risks: string[];
+  review: string[];
+  missing: string[];
+  repro?: string;
+  disagree?: string;
+};
+export type Usage = {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number;
+};
 /** What one prompt of a session produced; `limit` when it was aborted on a provider limit, `httpStatus` of a provider error. */
-export type RunResult = { finish?: FinishReport; text: string; error?: string; limit?: Limit; httpStatus?: number; interrupted?: boolean };
+export type RunResult = {
+  finish?: FinishReport;
+  text: string;
+  error?: string;
+  limit?: Limit;
+  httpStatus?: number;
+  interrupted?: boolean;
+};
 /** Session totals so far: `turns` are model rounds (assistant messages with tool calls), `calls` the tool calls; usage accumulates across every prompt; `spend` is cost per model name. */
-export type SessionTotals = { sessionID: string; turns: number; calls: number; usage: Usage; rejections: Rejection[]; spend: Record<string, number> };
+export type SessionTotals = {
+  sessionID: string;
+  turns: number;
+  calls: number;
+  usage: Usage;
+  rejections: Rejection[];
+  spend: Record<string, number>;
+};
 /** A tool call the ruleset denied outright, or a permission request auto-rejected. */
 export type Rejection = { kind: "denied" | "asked"; permission: string; what: string };
 export type SessionResult = SessionTotals & RunResult;
 /** A question the worker asked with OpenCode's question tool: its text and option labels, in order. */
 export type Question = { question: string; options: string[] };
 /** A bash command the worker asked permission for, put to the user as a BLOCKED block (ticket 69). */
-export type PermissionAsk = { permission: string; command: string; title: string; why: string; prefix: string; always: boolean };
+export type PermissionAsk = {
+  permission: string;
+  command: string;
+  title: string;
+  why: string;
+  prefix: string;
+  always: boolean;
+};
 /** The user's answer: allow once, always allow the prefix this job (and save it), or refuse. */
 export type PermissionAnswer = "once" | "always" | "reject";
 
@@ -61,12 +102,16 @@ export async function openSession(opts: {
   const client = createOpencodeClient({
     baseUrl: opencode.url,
     directory,
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${opencode.password}`).toString("base64")}` },
+    headers: authHeaders(opencode.password),
   });
   const created = await client.session.create({
-    directory, agent: opts.agent ?? WORKER_AGENT, model: { providerID: opts.model.providerID, id: opts.model.id }, ...(opts.permission && { permission: opts.permission }),
+    directory,
+    agent: opts.agent ?? WORKER_AGENT,
+    model: { providerID: opts.model.providerID, id: opts.model.id },
+    ...(opts.permission && { permission: opts.permission }),
   });
-  if (!created.data) throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
+  if (!created.data)
+    throw new Error(`could not create a worker session: ${JSON.stringify(created.error)}`);
   let sessionID = created.data.id;
   const calls = new Set<string>();
   const rounds = new Set<string>(); // assistant message ids that carried at least one tool call
@@ -81,7 +126,12 @@ export async function openSession(opts: {
    * `interrupt` ends this prompt only (the session stays usable, e.g. to hand it to another model); `opts.signal` ends the
    * session. `afterStop` runs one more prompt on a stopped session (the findings note), bounded by `interrupt` alone.
    */
-  async function run(prompt: string, model?: WorkerModel, interrupt?: AbortSignal, afterStop = false): Promise<RunResult> {
+  async function run(
+    prompt: string,
+    model?: WorkerModel,
+    interrupt?: AbortSignal,
+    afterStop = false,
+  ): Promise<RunResult> {
     const signal = afterStop ? undefined : opts.signal;
     if (signal?.aborted) return { text: "", error: "aborted" };
     const abort = new AbortController();
@@ -106,11 +156,14 @@ export async function openSession(opts: {
       const variant = (model ?? opts.model).variant;
       const prompted = await client.session.promptAsync({
         // OpenCode ignores the agent given at session.create, so every bench before 1.3.3 ran OpenCode's built-in build agent; passing ours on each prompt made the worker slower on bug fixes (ticket 63), so prompts carry no agent
-        sessionID, directory, parts: [{ type: "text", text: prompt }],
+        sessionID,
+        directory,
+        parts: [{ type: "text", text: prompt }],
         ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
         ...(variant && { variant }),
       });
-      if (prompted.error) throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+      if (prompted.error)
+        throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
       // after the prompt, so an abort can never race ahead of it
       signal?.addEventListener("abort", stop, { once: true });
       if (signal?.aborted) stop();
@@ -124,18 +177,33 @@ export async function openSession(opts: {
 
         if (event.type === "message.part.updated") {
           const part = event.properties.part;
-          if (part.type === "tool" && part.state.input && typeof part.state.input === "object") toolInputs.set(part.callID, part.state.input as Record<string, unknown>);
-          if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
+          if (part.type === "tool" && part.state.input && typeof part.state.input === "object")
+            toolInputs.set(part.callID, part.state.input as Record<string, unknown>);
+          if (
+            part.type === "tool" &&
+            (part.state.status === "completed" || part.state.status === "error")
+          ) {
             // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
-            if (!calls.has(part.callID) && part.state.status === "error" && part.state.error.startsWith("The user has specified a rule which prevents")) {
-              rejections.push({ kind: "denied", permission: part.tool, what: describeCall(part.state.input) });
+            if (
+              !calls.has(part.callID) &&
+              part.state.status === "error" &&
+              part.state.error.startsWith("The user has specified a rule which prevents")
+            ) {
+              rejections.push({
+                kind: "denied",
+                permission: part.tool,
+                what: describeCall(part.state.input),
+              });
             }
             calls.add(part.callID);
             rounds.add(part.messageID);
-            if (part.tool === "finish" && part.state.status === "completed") finish = asReport(part.state.input);
+            if (part.tool === "finish" && part.state.status === "completed")
+              finish = asReport(part.state.input);
           }
-          if (part.type === "text") texts.set(part.id, { messageID: part.messageID, text: part.text });
-          if (part.type === "reasoning") reasonings.set(part.id, { messageID: part.messageID, text: part.text });
+          if (part.type === "text")
+            texts.set(part.id, { messageID: part.messageID, text: part.text });
+          if (part.type === "reasoning")
+            reasonings.set(part.id, { messageID: part.messageID, text: part.text });
         } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
           const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
           // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
@@ -145,18 +213,27 @@ export async function openSession(opts: {
           }
           messages.set(id, {
             model: `${providerID}/${modelID}`,
-            inputTokens: tokens.input, outputTokens: tokens.output, reasoningTokens: tokens.reasoning,
-            cacheRead: tokens.cache.read, cacheWrite: tokens.cache.write, costUsd: cost,
+            inputTokens: tokens.input,
+            outputTokens: tokens.output,
+            reasoningTokens: tokens.reasoning,
+            cacheRead: tokens.cache.read,
+            cacheWrite: tokens.cache.write,
+            costUsd: cost,
           });
         } else if (event.type === "permission.asked") {
           const props = event.properties;
           const what = props.patterns.join(" ") || props.permission;
           const metadata = props.metadata as Record<string, unknown> | undefined;
-          const command = typeof metadata?.command === "string" && metadata.command.trim() ? metadata.command.trim() : what;
+          const command =
+            typeof metadata?.command === "string" && metadata.command.trim()
+              ? metadata.command.trim()
+              : what;
           const prefix = commandPrefix(command);
           const reject = async (message: string, record = true): Promise<boolean> => {
             if (record) rejections.push({ kind: "asked", permission: props.permission, what });
-            const replied = await client.permission.reply({ requestID: props.id, directory, reply: "reject", message }).catch((err: Error) => ({ error: err.message }));
+            const replied = await client.permission
+              .reply({ requestID: props.id, directory, reply: "reject", message })
+              .catch((err: Error) => ({ error: err.message }));
             if (replied.error) {
               error ??= `could not reject a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
               return false;
@@ -164,7 +241,9 @@ export async function openSession(opts: {
             return true;
           };
           const allowOnce = async (): Promise<boolean> => {
-            const replied = await client.permission.reply({ requestID: props.id, directory, reply: "once" }).catch((err: Error) => ({ error: err.message }));
+            const replied = await client.permission
+              .reply({ requestID: props.id, directory, reply: "once" })
+              .catch((err: Error) => ({ error: err.message }));
             if (replied.error) {
               error ??= `could not answer a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
               return false;
@@ -187,15 +266,50 @@ export async function openSession(opts: {
               permissionAsks++;
               opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
               const call = props.tool?.callID ? toolInputs.get(props.tool.callID) : undefined;
-              const description = typeof call?.description === "string" && call.description.trim() ? call.description : typeof metadata?.description === "string" && metadata.description.trim() ? metadata.description : undefined;
+              const description =
+                typeof call?.description === "string" && call.description.trim()
+                  ? call.description
+                  : typeof metadata?.description === "string" && metadata.description.trim()
+                    ? metadata.description
+                    : undefined;
               const stepTitle = opts.step?.title.trim().slice(0, 60);
-              const title = description ?? (opts.step ? `${prefix} for step ${opts.step.label}: ${stepTitle}` : command.split(/\s+/)[0] ?? command);
+              const title =
+                description ??
+                (opts.step
+                  ? `${prefix} for step ${opts.step.label}: ${stepTitle}`
+                  : (command.split(/\s+/)[0] ?? command));
               const messageID = props.tool?.messageID;
-              const whyText = [...texts.values()].filter((t) => t.messageID === messageID).map((t) => t.text).join(" ").replace(/\s+/g, " ").trim();
-              const reasoningText = whyText ? "" : [...reasonings.values()].filter((t) => t.messageID === messageID).map((t) => t.text).join(" ").replace(/\s+/g, " ").trim();
+              const whyText = [...texts.values()]
+                .filter((t) => t.messageID === messageID)
+                .map((t) => t.text)
+                .join(" ")
+                .replace(/\s+/g, " ")
+                .trim();
+              const reasoningText = whyText
+                ? ""
+                : [...reasonings.values()]
+                    .filter((t) => t.messageID === messageID)
+                    .map((t) => t.text)
+                    .join(" ")
+                    .replace(/\s+/g, " ")
+                    .trim();
               const why = (whyText || reasoningText).slice(0, 200) || "the worker gave no reason";
-              const stopped = new Promise<undefined>((resolve) => (signal?.aborted ? resolve(undefined) : signal?.addEventListener("abort", () => resolve(undefined), { once: true })));
-              const answer = await Promise.race([opts.onPermission({ permission: props.permission, command, title, why, prefix, always: canAlwaysAllow(prefix) }), stopped]);
+              const stopped = new Promise<undefined>((resolve) =>
+                signal?.aborted
+                  ? resolve(undefined)
+                  : signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
+              );
+              const answer = await Promise.race([
+                opts.onPermission({
+                  permission: props.permission,
+                  command,
+                  title,
+                  why,
+                  prefix,
+                  always: canAlwaysAllow(prefix),
+                }),
+                stopped,
+              ]);
               if (answer === undefined) {
                 if (!(await reject(rejectionMessage(what), false))) break;
               } else if (answer === "once") {
@@ -212,17 +326,33 @@ export async function openSession(opts: {
           }
         } else if (event.type === "question.asked") {
           opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
-          const questions = event.properties.questions.map((q) => ({ question: q.question, options: q.options.map((o) => o.label) }));
+          const questions = event.properties.questions.map((q) => ({
+            question: q.question,
+            options: q.options.map((o) => o.label),
+          }));
           const requestID = event.properties.id;
           // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
-          const stopped = new Promise<undefined>((resolve) => (signal?.aborted ? resolve(undefined) : signal?.addEventListener("abort", () => resolve(undefined), { once: true })));
+          const stopped = new Promise<undefined>((resolve) =>
+            signal?.aborted
+              ? resolve(undefined)
+              : signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
+          );
           // a question asked after a stop is never put to Claude: the job is ending, not blocked
-          const answers = opts.onQuestion && questions.length && !signal?.aborted ? await Promise.race([opts.onQuestion(questions), stopped]) : undefined;
+          const answers =
+            opts.onQuestion && questions.length && !signal?.aborted
+              ? await Promise.race([opts.onQuestion(questions), stopped])
+              : undefined;
           // nowhere to put the question (a parallel group until early return exists, or the login check): it is rejected, and said so
-          if (!opts.onQuestion && questions.length) rejections.push({ kind: "asked", permission: "question", what: questions.map((q) => q.question).join(" / ") });
-          const replied = await (answers === undefined
-            ? client.question.reject({ requestID, directory })
-            : client.question.reply({ requestID, directory, answers: answers.map((a) => [a]) })
+          if (!opts.onQuestion && questions.length)
+            rejections.push({
+              kind: "asked",
+              permission: "question",
+              what: questions.map((q) => q.question).join(" / "),
+            });
+          const replied = await (
+            answers === undefined
+              ? client.question.reject({ requestID, directory })
+              : client.question.reply({ requestID, directory, answers: answers.map((a) => [a]) })
           ).catch((err: Error) => ({ error: err.message }));
           // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
           if (replied.error) {
@@ -233,11 +363,21 @@ export async function openSession(opts: {
         } else if (event.type === "session.error") {
           error = describe(event.properties.error);
           httpStatus = statusOf(event.properties.error);
-        } else if (event.type === "session.status" && event.properties.status.type === "retry" && !limit && isLimit(event.properties.status, (model ?? opts.model).providerID)) {
+        } else if (
+          event.type === "session.status" &&
+          event.properties.status.type === "retry" &&
+          !limit &&
+          isLimit(event.properties.status, (model ?? opts.model).providerID)
+        ) {
           // a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours. Stop now, so the
           // job can fall back; this aborts the session directly, not through the job's stop signal (which means a cap)
           const { action, message, next } = event.properties.status;
-          limit = { model: modelName(model ?? opts.model), reason: action?.reason, message: action?.message ?? message, next };
+          limit = {
+            model: modelName(model ?? opts.model),
+            reason: action?.reason,
+            message: action?.message ?? message,
+            next,
+          };
           stop();
         }
         opts.onEvent(event, rounds.size);
@@ -249,7 +389,10 @@ export async function openSession(opts: {
       if (!idle) error ??= "worker event stream ended before the session went idle";
       // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
       const last = [...texts.values()].at(-1)?.messageID;
-      const text = [...texts.values()].filter((t) => t.messageID === last).map((t) => t.text).join("\n");
+      const text = [...texts.values()]
+        .filter((t) => t.messageID === last)
+        .map((t) => t.text)
+        .join("\n");
       // an interrupted prompt ends on OpenCode's abort error; that is the hand-over, not a worker failure
       if (interrupt?.aborted && !signal?.aborted) return { finish, text, interrupted: true };
       return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
@@ -262,13 +405,27 @@ export async function openSession(opts: {
   }
 
   function totals(): SessionTotals {
-    const usage: Usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+    const usage: Usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      costUsd: 0,
+    };
     const spend: Record<string, number> = {};
     for (const m of messages.values()) {
       for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
       spend[m.model] = (spend[m.model] ?? 0) + m.costUsd;
     }
-    return { sessionID, turns: rounds.size, calls: calls.size, usage, rejections: [...rejections], spend };
+    return {
+      sessionID,
+      turns: rounds.size,
+      calls: calls.size,
+      usage,
+      rejections: [...rejections],
+      spend,
+    };
   }
 
   /**
@@ -280,14 +437,23 @@ export async function openSession(opts: {
     const forked = await client.session.fork({ sessionID, directory }).catch(() => undefined);
     if (!forked?.data) return false;
     if (opts.permission && !forked.data.permission) {
-      const updated = await client.session.update({ sessionID: forked.data.id, directory, permission: opts.permission }).catch(() => undefined);
+      const updated = await client.session
+        .update({ sessionID: forked.data.id, directory, permission: opts.permission })
+        .catch(() => undefined);
       if (!updated?.data) return false;
     }
     sessionID = forked.data.id;
     return true;
   }
 
-  return { get sessionID() { return sessionID; }, run, rotate, totals };
+  return {
+    get sessionID() {
+      return sessionID;
+    },
+    run,
+    rotate,
+    totals,
+  };
 }
 
 export type Session = Awaited<ReturnType<typeof openSession>>;
@@ -304,7 +470,7 @@ export async function releaseDirectory(directory: string) {
     const client = createOpencodeClient({
       baseUrl: opencode.url,
       directory,
-      headers: { authorization: `Basic ${Buffer.from(`opencode:${opencode.password}`).toString("base64")}` },
+      headers: authHeaders(opencode.password),
     });
     await client.instance.dispose({ directory }, { signal: AbortSignal.timeout(10_000) });
   } catch {
@@ -313,7 +479,9 @@ export async function releaseDirectory(directory: string) {
 }
 
 /** One prompt in a fresh session (the login live check). */
-export async function runSession(opts: Parameters<typeof openSession>[0] & { prompt: string }): Promise<SessionResult> {
+export async function runSession(
+  opts: Parameters<typeof openSession>[0] & { prompt: string },
+): Promise<SessionResult> {
   const session = await openSession(opts);
   const result = await session.run(opts.prompt);
   return { ...session.totals(), ...result };
@@ -321,8 +489,17 @@ export async function runSession(opts: Parameters<typeof openSession>[0] & { pro
 
 /** OpenCode validates the tool's args, but the record must not trust a malformed one either. */
 function asReport(input: Record<string, unknown>): FinishReport {
-  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : []);
-  return { summary: String(input.summary ?? ""), risks: list(input.risks), review: list(input.review), missing: list(input.missing), ...(typeof input.repro === "string" && input.repro.trim() && { repro: input.repro.trim() }), ...(typeof input.disagree === "string" && input.disagree.trim() && { disagree: input.disagree.trim() }) };
+  const list = (v: unknown) =>
+    Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : [];
+  return {
+    summary: String(input.summary ?? ""),
+    risks: list(input.risks),
+    review: list(input.review),
+    missing: list(input.missing),
+    ...(typeof input.repro === "string" && input.repro.trim() && { repro: input.repro.trim() }),
+    ...(typeof input.disagree === "string" &&
+      input.disagree.trim() && { disagree: input.disagree.trim() }),
+  };
 }
 
 /**
@@ -330,12 +507,18 @@ function asReport(input: Record<string, unknown>): FinishReport {
  * scheduled more than a minute out. A transient 5xx retry on Go or DeepSeek is left to OpenCode's own quick retries.
  */
 function isLimit(status: { action?: { reason?: string }; next: number }, providerID: string) {
-  return ["account_rate_limit", "free_tier_limit"].includes(status.action?.reason ?? "") || providerID === "openrouter" || status.next - Date.now() > 60_000;
+  return (
+    ["account_rate_limit", "free_tier_limit"].includes(status.action?.reason ?? "") ||
+    providerID === "openrouter" ||
+    status.next - Date.now() > 60_000
+  );
 }
 
 /** The command or path a tool call targeted, for rejection records. */
 function describeCall(input: Record<string, unknown>) {
-  return String(input.command ?? input.filePath ?? input.url ?? input.pattern ?? JSON.stringify(input)).slice(0, 200);
+  return String(
+    input.command ?? input.filePath ?? input.url ?? input.pattern ?? JSON.stringify(input),
+  ).slice(0, 200);
 }
 
 function describe(err: unknown) {
@@ -344,9 +527,15 @@ function describe(err: unknown) {
 }
 
 /** The HTTP status of a provider error (APIError), e.g. OpenRouter's 402 for insufficient credits. */
-const statusOf = (err: unknown) => (err as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
+const statusOf = (err: unknown) =>
+  (err as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
 
-const NO_REPORT: FinishReport = { summary: NO_SUMMARY, risks: ["worker did not report; review diff"], review: [], missing: [] };
+const NO_REPORT: FinishReport = {
+  summary: NO_SUMMARY,
+  risks: ["worker did not report; review diff"],
+  review: [],
+  missing: [],
+};
 
 /** The finish tool's report; else the last fenced `cheapag-result` block, parsed leniently; else a placeholder. */
 export function finishReport(result: Pick<SessionResult, "finish" | "text">): FinishReport {
@@ -365,7 +554,13 @@ export function finishReport(result: Pick<SessionResult, "finish" | "text">): Fi
       } else {
         list = key as typeof list;
         // inline values: "review: a.ts:1-2, b.ts:3-4"
-        if (value.trim()) report[list!].push(...value.split(",").map((v) => v.trim()).filter(Boolean));
+        if (value.trim())
+          report[list!].push(
+            ...value
+              .split(",")
+              .map((v) => v.trim())
+              .filter(Boolean),
+          );
       }
     } else if (list && /^\s*-\s+/.test(line)) {
       report[list].push(line.replace(/^\s*-\s+/, "").trim());

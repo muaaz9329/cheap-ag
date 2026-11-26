@@ -1,4 +1,10 @@
-import { spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithBufferEncoding, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
+import {
+  spawnSync,
+  type SpawnSyncOptions,
+  type SpawnSyncOptionsWithBufferEncoding,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+} from "node:child_process";
 import { existsSync, lstatSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { delimiter, dirname, join, sep } from "node:path";
 
@@ -45,7 +51,10 @@ export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals
   if (!pid) return;
   if (process.platform === "win32") {
     // no process groups on Windows; taskkill walks the tree instead and ignores the signal
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
     return;
   }
   try {
@@ -56,11 +65,22 @@ export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals
 }
 
 /** The first executable named `name` on `env`'s PATH, or undefined. On Windows it tries PATHEXT extensions, bare name last. */
-export function which(name: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function which(
+  name: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   const dirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
-  const candidates = platform === "win32"
-    ? [...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((ext) => name + ext), name]
-    : [name];
+  const candidates =
+    platform === "win32"
+      ? [
+          ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+            .split(";")
+            .filter(Boolean)
+            .map((ext) => name + ext),
+          name,
+        ]
+      : [name];
   for (const dir of dirs) {
     for (const candidate of candidates) {
       if (platform !== "win32") {
@@ -86,7 +106,10 @@ export function which(name: string, platform: NodeJS.Platform = process.platform
  * Git for Windows' bash, for running bash-syntax commands on Windows. Never a bare `bash` from PATH: on Windows that
  * can be WSL's System32\bash.exe, which resolves Windows paths differently.
  */
-export function gitBash(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function gitBash(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   if (platform !== "win32") return undefined;
   // Claude Code's own variable; trust it when it points at a real file
   const override = env.CLAUDE_CODE_GIT_BASH_PATH;
@@ -98,6 +121,10 @@ export function gitBash(platform: NodeJS.Platform = process.platform, env: NodeJ
   return existsSync(bash) ? bash : undefined;
 }
 
+/** The first line a CLI run printed, stderr before stdout: what a failed `claude` command gets quoted as. */
+export const firstLine = (run: SpawnSyncReturns<string> | undefined) =>
+  ((run?.stderr || run?.stdout) ?? "").trim().split("\n")[0];
+
 /** Double-quotes an argument Node will re-split under `shell: true` on Windows. */
 const quoteWinArg = (arg: string) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg);
 
@@ -105,9 +132,21 @@ const quoteWinArg = (arg: string) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, 
  * Runs a CLI found on the PATH. `.cmd`/`.bat` shims (claude.cmd, npx.cmd) cannot be spawned without a shell, so
  * they go through one with their args pre-quoted; everything else spawns directly. Undefined if not on the PATH.
  */
-export function runCli(name: string, args: string[], opts: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string> | undefined;
-export function runCli(name: string, args: string[], opts?: SpawnSyncOptionsWithBufferEncoding): SpawnSyncReturns<Buffer> | undefined;
-export function runCli(name: string, args: string[], opts?: SpawnSyncOptions): SpawnSyncReturns<string | Buffer> | undefined {
+export function runCli(
+  name: string,
+  args: string[],
+  opts: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string> | undefined;
+export function runCli(
+  name: string,
+  args: string[],
+  opts?: SpawnSyncOptionsWithBufferEncoding,
+): SpawnSyncReturns<Buffer> | undefined;
+export function runCli(
+  name: string,
+  args: string[],
+  opts?: SpawnSyncOptions,
+): SpawnSyncReturns<string | Buffer> | undefined {
   const file = which(name);
   if (!file) return undefined;
   if (/\.(cmd|bat)$/i.test(file)) {

@@ -10,7 +10,12 @@ const WINDOW = 12;
  * Redraws in place and always gives the terminal back (raw mode off, cursor shown) on Enter, Ctrl-C and errors.
  * `io` is for tests, which drive it with a fake stdin.
  */
-export function select(question: string, options: Option[], initial = 0, io: { input?: In; output?: NodeJS.WriteStream } = {}): Promise<number> {
+export function select(
+  question: string,
+  options: Option[],
+  initial = 0,
+  io: { input?: In; output?: NodeJS.WriteStream } = {},
+): Promise<number> {
   const input = io.input ?? (process.stdin as In);
   const output = io.output ?? process.stdout;
   return new Promise((resolve, reject) => {
@@ -21,7 +26,13 @@ export function select(question: string, options: Option[], initial = 0, io: { i
     const fit = (line: string) => line.slice(0, (output.columns || 100) - 1);
     const draw = () => {
       const top = Math.min(Math.max(index - Math.floor(size / 2), 0), options.length - size);
-      const rows = options.slice(top, top + size).map((o, i) => fit(`${top + i === index ? "❯" : " "} ${top + i + 1}) ${o.label}${o.hint ? `  ${o.hint}` : ""}`));
+      const rows = options
+        .slice(top, top + size)
+        .map((o, i) =>
+          fit(
+            `${top + i === index ? "❯" : " "} ${top + i + 1}) ${o.label}${o.hint ? `  ${o.hint}` : ""}`,
+          ),
+        );
       if (drawn) output.write(`\x1b[${drawn}A\x1b[J`);
       output.write([question, ...rows].join("\n") + "\n");
       drawn = rows.length + 1;

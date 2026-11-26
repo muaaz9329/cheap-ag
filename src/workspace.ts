@@ -1,6 +1,18 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isAlive, link, normalisePath, removeLink } from "./platform.js";
 
@@ -12,7 +24,12 @@ export type Changed = { status: string; path: string; add: number; del: number }
 const GIT_ARGS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
 
 export function git(cwd: string, args: string[], env?: Record<string, string>) {
-  return execFileSync("git", [...GIT_ARGS, ...args], { cwd, stdio: "pipe", env: env && { ...process.env, ...env }, maxBuffer: 256 * 1024 * 1024 }).toString();
+  return execFileSync("git", [...GIT_ARGS, ...args], {
+    cwd,
+    stdio: "pipe",
+    env: env && { ...process.env, ...env },
+    maxBuffer: 256 * 1024 * 1024,
+  }).toString();
 }
 
 /** The repository root containing `cwd`; throws when it is not a git repository. */
@@ -38,11 +55,23 @@ export function callRoot(root?: string) {
 
 /** Whether the repository has at least one commit: a fresh `git init` has none, so HEAD cannot be resolved. */
 export function hasCommits(root: string) {
-  return spawnSync("git", [...GIT_ARGS, "rev-parse", "--verify", "--quiet", "HEAD"], { cwd: root, stdio: "pipe" }).status === 0;
+  return (
+    spawnSync("git", [...GIT_ARGS, "rev-parse", "--verify", "--quiet", "HEAD"], {
+      cwd: root,
+      stdio: "pipe",
+    }).status === 0
+  );
 }
 
 /** What a job's worktree was started from; `base` is the tree its diff (and so its landing) is measured against. */
-export type Worktree = { path: string; head: string; stash: string | null; base: string; links: string[]; linked: string[] };
+export type Worktree = {
+  path: string;
+  head: string;
+  stash: string | null;
+  base: string;
+  links: string[];
+  linked: string[];
+};
 
 /**
  * A detached worktree under `.cheapag/worktrees/<job>` holding the developer's current state (ADR-0003):
@@ -60,7 +89,17 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
     if (stash) git(path, ["stash", "apply", "--quiet", stash]);
 
     // untracked dependency dirs are linked below, never copied
-    const untracked = git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...outside(linkDirs)]).split("\0").filter(Boolean);
+    const untracked = git(root, [
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "-z",
+      "--",
+      ".",
+      ...outside(linkDirs),
+    ])
+      .split("\0")
+      .filter(Boolean);
     // an entry ending in "/" is an untracked nested repository: not part of this repo, so not carried over
     // (git would refuse to index it, or record it as a gitlink that would then land)
     for (const file of untracked.filter((f) => !f.endsWith("/"))) {
@@ -107,7 +146,11 @@ const outside = (dirs: string[]) => [".cheapag", ...dirs].map((d) => `:(exclude,
 
 // git 2.55 rejects a pathspec naming an ignored path, even as an exclusion; an already-ignored dir needs no exclusion
 const notIgnored = (dir: string, paths: string[]) =>
-  paths.filter((p) => spawnSync("git", [...GIT_ARGS, "check-ignore", "-q", "--", p], { cwd: dir, stdio: "pipe" }).status !== 0);
+  paths.filter(
+    (p) =>
+      spawnSync("git", [...GIT_ARGS, "check-ignore", "-q", "--", p], { cwd: dir, stdio: "pipe" })
+        .status !== 0,
+  );
 
 const isDirectory = (path: string) => {
   try {
@@ -124,23 +167,39 @@ export function worktreeDiff(worktree: Worktree) {
   // ignore rule does not match, so the linked ones (only those: a tracked vendor/ stays in) are excluded.
   git(path, ["add", "-A", "--", ".", ...outside(notIgnored(path, worktree.linked))]);
   const patch = git(path, ["diff", "--cached", "--binary", base]);
-  const stats = git(path, ["diff", "--cached", "--numstat", "-z", "--no-renames", base]).split("\0").filter(Boolean);
+  const stats = git(path, ["diff", "--cached", "--numstat", "-z", "--no-renames", base])
+    .split("\0")
+    .filter(Boolean);
   const statuses = new Map<string, string>();
-  const names = git(path, ["diff", "--cached", "--name-status", "-z", "--no-renames", base]).split("\0").filter(Boolean);
+  const names = git(path, ["diff", "--cached", "--name-status", "-z", "--no-renames", base])
+    .split("\0")
+    .filter(Boolean);
   for (let i = 0; i < names.length; i += 2) statuses.set(names[i + 1], names[i]);
   const changed: Changed[] = stats.map((line) => {
     const [add, del, file] = line.split("\t");
     // binary files report "-" for both counts
-    return { status: statuses.get(file) ?? "M", path: file, add: Number(add) || 0, del: Number(del) || 0 };
+    return {
+      status: statuses.get(file) ?? "M",
+      path: file,
+      add: Number(add) || 0,
+      del: Number(del) || 0,
+    };
   });
   return { patch, changed };
 }
 
 /** Why the checkout cannot be a job's starting point right now (a merge, rebase… or unresolved conflicts), if it cannot. */
 export function operationInProgress(root: string) {
-  const markers = { MERGE_HEAD: "a merge", "rebase-merge": "a rebase", "rebase-apply": "a rebase", CHERRY_PICK_HEAD: "a cherry-pick", REVERT_HEAD: "a revert" };
+  const markers = {
+    MERGE_HEAD: "a merge",
+    "rebase-merge": "a rebase",
+    "rebase-apply": "a rebase",
+    CHERRY_PICK_HEAD: "a cherry-pick",
+    REVERT_HEAD: "a revert",
+  };
   for (const [marker, name] of Object.entries(markers)) {
-    if (existsSync(git(root, ["rev-parse", "--path-format=absolute", "--git-path", marker]).trim())) return `${name} is in progress`;
+    if (existsSync(git(root, ["rev-parse", "--path-format=absolute", "--git-path", marker]).trim()))
+      return `${name} is in progress`;
   }
   // e.g. after a conflicted `git stash pop`: no marker file, but `git stash create` would fail
   if (git(root, ["ls-files", "--unmerged"]).trim()) return "there are unresolved conflicts";
@@ -164,7 +223,10 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
   const mine = `${lock}.${process.pid}.${token}`;
   mkdirSync(join(root, ".cheapag"), { recursive: true });
   // written whole, then hard-linked into place: the lock never exists without its contents
-  writeFileSync(mine, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token } satisfies Holder));
+  writeFileSync(
+    mine,
+    JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token } satisfies Holder),
+  );
   const timeout = lockTimeoutMs();
   const deadline = Date.now() + timeout;
   try {
@@ -179,8 +241,11 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
       if (!holder) continue;
       if (!(holder.pid > 0 && isAlive(holder.pid))) breakStale(lock, holder);
       else if (Date.now() > deadline) {
-        const waited = timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
-        throw new Error(`timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`);
+        const waited =
+          timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
+        throw new Error(
+          `timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`,
+        );
       } else await new Promise((r) => setTimeout(r, 200));
     }
   } finally {
@@ -237,21 +302,32 @@ const literal = (path: string) => `:(literal)${path}`;
  * Runs against a throwaway index synced to the working tree, so their unstaged edits are the merge base side.
  * Returns undefined on success, or the conflict text with the tree untouched.
  */
-export function land(root: string, job: string, patch: string, paths: string[]): Promise<string | undefined> {
+export function land(
+  root: string,
+  job: string,
+  patch: string,
+  paths: string[],
+): Promise<string | undefined> {
   return withLock(root, () => {
     if (!patch.trim()) return undefined;
     const index = join(root, ".cheapag", "jobs", job, "land.index");
-    copyFileSync(git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim(), index);
+    copyFileSync(
+      git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim(),
+      index,
+    );
     const env = { GIT_INDEX_FILE: index };
     try {
       // bring exactly the patch's paths into the throwaway index as they are on disk now, untracked files included:
       // the job's baseline had them (carry-over), so the patch expects them
-      const tracked = new Set(git(root, ["ls-files", "-z", "--", ...paths.map(literal)], env).split("\0"));
+      const tracked = new Set(
+        git(root, ["ls-files", "-z", "--", ...paths.map(literal)], env).split("\0"),
+      );
       const present = paths.filter((p) => tracked.has(p) || existsSync(join(root, p)));
       if (present.length) git(root, ["add", "-A", "--", ...present.map(literal)], env);
       const check = applyOutput(root, ["apply", "--3way", "--check", "-"], env, patch);
       // shortcut: `apply --3way --check` exits 0 even when it would leave conflict markers, so read its message; upgrade if git changes the wording
-      if (check.failed || /with conflicts/.test(check.output)) return check.output.trim() || "patch does not apply";
+      if (check.failed || /with conflicts/.test(check.output))
+        return check.output.trim() || "patch does not apply";
       // shortcut: the lock does not stop the developer's editor; an edit to these files in the milliseconds since the check
       // could still leave markers here. Upgrade by applying with --cached to the throwaway index and checking out its paths.
       const applied = applyOutput(root, ["apply", "--3way", "-"], env, patch);
@@ -264,13 +340,23 @@ export function land(root: string, job: string, patch: string, paths: string[]):
 
 /** git apply's verdict lives in stderr even when it exits 0. */
 function applyOutput(root: string, args: string[], env: Record<string, string>, patch: string) {
-  const r = spawnSync("git", [...GIT_ARGS, ...args], { cwd: root, env: { ...process.env, ...env }, input: patch, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", [...GIT_ARGS, ...args], {
+    cwd: root,
+    env: { ...process.env, ...env },
+    input: patch,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  });
   return { failed: r.status !== 0, output: `${r.stdout}${r.stderr}` };
 }
 
 /** The paths a failed landing names as conflicting, from git apply's messages. */
 export function conflictPaths(text: string) {
-  const named = [...text.matchAll(/^Applied patch to '(.+)' with conflicts\.$|^error: (.+?): (?:does not exist in index|does not match index|already exists in (?:index|working directory)|patch does not apply)$/gm)];
+  const named = [
+    ...text.matchAll(
+      /^Applied patch to '(.+)' with conflicts\.$|^error: (.+?): (?:does not exist in index|does not match index|already exists in (?:index|working directory)|patch does not apply)$/gm,
+    ),
+  ];
   return [...new Set(named.map((m) => m[1] ?? m[2]))];
 }
 
@@ -280,24 +366,44 @@ export function conflictPaths(text: string) {
  */
 export function reapply(worktree: Worktree, patch: string) {
   applyOutput(worktree.path, ["apply", "--3way", "-"], {}, patch); // a patch that cannot apply at all leaves the worktree as it was
-  return git(worktree.path, ["diff", "--name-only", "-z", "--diff-filter=U"]).split("\0").filter(Boolean);
+  return git(worktree.path, ["diff", "--name-only", "-z", "--diff-filter=U"])
+    .split("\0")
+    .filter(Boolean);
 }
 
 /** Paths whose changes still add conflict marker lines; run after `worktreeDiff`, which stages the worktree. */
 export function leftoverMarkers(worktree: Worktree) {
-  const r = spawnSync("git", [...GIT_ARGS, "diff", "--cached", "--check", worktree.base], { cwd: worktree.path, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  return [...new Set([...r.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm)].map((m) => m[1]))];
+  const r = spawnSync("git", [...GIT_ARGS, "diff", "--cached", "--check", worktree.base], {
+    cwd: worktree.path,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  return [
+    ...new Set([...r.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm)].map((m) => m[1])),
+  ];
 }
 
 /**
  * The worktree a finished job left behind, for `land`: always `.cheapag/worktrees/<job>` (never a path read from a
  * record), and only a real directory. The `linkDirs` entries that are links in it are its dependency links.
  */
-export function jobWorktree(root: string, job: string, base: string, linkDirs: string[]): Worktree | undefined {
+export function jobWorktree(
+  root: string,
+  job: string,
+  base: string,
+  linkDirs: string[],
+): Worktree | undefined {
   const path = join(root, ".cheapag", "worktrees", job);
   if (!lstatOf(path)?.isDirectory()) return undefined;
   const links = linkDirs.map((d) => join(path, d)).filter((l) => lstatOf(l)?.isSymbolicLink());
-  return { path, head: "", stash: null, base, links, linked: links.map((l) => normalisePath(relative(path, l))) };
+  return {
+    path,
+    head: "",
+    stash: null,
+    base,
+    links,
+    linked: links.map((l) => normalisePath(relative(path, l))),
+  };
 }
 
 const lstatOf = (path: string) => {

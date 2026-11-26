@@ -13,15 +13,22 @@ function skill(name: string) {
   const text = readFileSync(join(plugin, "skills", name, "SKILL.md"), "utf8");
   const m = text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   expect(m, `${name}: frontmatter`).toBeTruthy();
-  const front = Object.fromEntries(m![1].split("\n").map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]));
+  const front = Object.fromEntries(
+    m![1].split("\n").map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 1).trim()]),
+  );
   return { front, body: m![2] };
 }
 
 test("marketplace lists the plugin from this repo, and the manifests agree on name and version", () => {
   const market = json(join(repo, ".claude-plugin", "marketplace.json"));
   expect(market).toMatchObject({ name: "cheap-agent", owner: { name: expect.any(String) } });
-  expect(market.plugins).toEqual([expect.objectContaining({ name: "cheapag", source: "./plugin" })]);
-  expect(json(join(plugin, ".claude-plugin", "plugin.json"))).toMatchObject({ name: "cheapag", version });
+  expect(market.plugins).toEqual([
+    expect.objectContaining({ name: "cheapag", source: "./plugin" }),
+  ]);
+  expect(json(join(plugin, ".claude-plugin", "plugin.json"))).toMatchObject({
+    name: "cheapag",
+    version,
+  });
   expect(json(join(plugin, ".codex-plugin", "plugin.json"))).toMatchObject({
     name: "cheapag",
     version,
@@ -32,22 +39,54 @@ test("marketplace lists the plugin from this repo, and the manifests agree on na
 });
 
 test("the MCP entry and every command run exactly this package version, so the pin cannot drift", () => {
-  expect(json(join(plugin, ".mcp.json"))).toEqual({ mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`] } } });
-  expect(json(join(plugin, "codex.mcp.json"))).toEqual({
-    mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`, "codex"], omit_tools_from: ["code_mode", "deferred"] } },
+  expect(json(join(plugin, ".mcp.json"))).toEqual({
+    mcpServers: { cheapag: { command: "npx", args: ["-y", `cheap-agent@${version}`] } },
   });
-  const files = readdirSync(plugin, { recursive: true, withFileTypes: true }).filter((f) => f.isFile());
-  const pins = files.flatMap((f) => readFileSync(join(f.parentPath, f.name), "utf8").match(/cheap-agent@[^\s`"')]+/g) ?? []);
+  expect(json(join(plugin, "codex.mcp.json"))).toEqual({
+    mcpServers: {
+      cheapag: {
+        command: "npx",
+        args: ["-y", `cheap-agent@${version}`, "codex"],
+        omit_tools_from: ["code_mode", "deferred"],
+      },
+    },
+  });
+  const files = readdirSync(plugin, { recursive: true, withFileTypes: true }).filter((f) =>
+    f.isFile(),
+  );
+  const pins = files.flatMap(
+    (f) => readFileSync(join(f.parentPath, f.name), "utf8").match(/cheap-agent@[^\s`"')]+/g) ?? [],
+  );
   expect(pins.length).toBeGreaterThan(3);
   expect(new Set(pins)).toEqual(new Set([`cheap-agent@${version}`]));
 });
 
 test("skills: plan-writing for Claude; status, and user-only allow, clean and hook wrapping the CLI", () => {
-  expect(readdirSync(join(plugin, "skills")).sort()).toEqual(["allow", "clean", "hook", "model", "plan-writing", "provider", "status"]);
+  expect(readdirSync(join(plugin, "skills")).sort()).toEqual([
+    "allow",
+    "clean",
+    "hook",
+    "model",
+    "plan-writing",
+    "provider",
+    "status",
+  ]);
   const plan = skill("plan-writing");
   expect(plan.front["disable-model-invocation"]).toBeUndefined(); // Claude loads it when planning
   expect(plan.front.description).toMatch(/plan/i);
-  for (const rule of ["files:", "done-when:", "dont:", "needs:", "deps:", "## 1 ", "Size", "Grouping", "Packages", "never the whole suite"]) expect(plan.body).toContain(rule);
+  for (const rule of [
+    "files:",
+    "done-when:",
+    "dont:",
+    "needs:",
+    "deps:",
+    "## 1 ",
+    "Size",
+    "Grouping",
+    "Packages",
+    "never the whole suite",
+  ])
+    expect(plan.body).toContain(rule);
   for (const rule of ["Trust OK", "After a FAIL"]) expect(plan.body).not.toContain(rule); // the rules live in the server instructions only
 
   const pin = `npx -y cheap-agent@${version}`;
@@ -61,7 +100,12 @@ test("skills: plan-writing for Claude; status, and user-only allow, clean and ho
   expect(status.body).toContain(`!\`${pin} status\``);
   expect(status.front["allowed-tools"]).toBe(`Bash(${pin} status)`);
   // Claude must never approve consent, delete worktrees, switch off its own edit guard or switch provider: only the developer can invoke these
-  for (const [name, cmd] of [["allow", "allow"], ["clean", "clean"], ["hook", "hook"], ["provider", "provider"]]) {
+  for (const [name, cmd] of [
+    ["allow", "allow"],
+    ["clean", "clean"],
+    ["hook", "hook"],
+    ["provider", "provider"],
+  ]) {
     const s = skill(name);
     expect(s.front["disable-model-invocation"]).toBe("true");
     expect(s.body).toContain(`!\`${pin} ${cmd} $ARGUMENTS\``);
@@ -73,7 +117,9 @@ test("skills: plan-writing for Claude; status, and user-only allow, clean and ho
 test("skills work in Codex: user-only skills stay implicit-off, and every npx line has a manual fallback", () => {
   // Codex's equivalent of disable-model-invocation: true, so its model never starts these on its own
   for (const name of ["allow", "clean", "hook", "model", "provider"]) {
-    expect(readFileSync(join(plugin, "skills", name, "agents", "openai.yaml"), "utf8")).toContain("allow_implicit_invocation: false");
+    expect(readFileSync(join(plugin, "skills", name, "agents", "openai.yaml"), "utf8")).toContain(
+      "allow_implicit_invocation: false",
+    );
   }
   // Codex does not run the !`...` line, so the body must tell its model to run the command once
   for (const name of readdirSync(join(plugin, "skills"))) {
@@ -86,17 +132,55 @@ test("the guard hooks: PreToolUse on every tool behind a shell test that skips n
   const hooks = json(join(plugin, "hooks", "hooks.json"));
   expect(Object.keys(hooks.hooks).sort()).toEqual(["PostToolUse", "PreToolUse", "SessionStart"]);
   // SessionStart puts the delegation rule into the session's context (benchmark run 2: MCP instructions alone were not enough)
-  expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook context`, timeout: expect.any(Number) }] }]);
+  expect(hooks.hooks.SessionStart).toEqual([
+    {
+      hooks: [
+        {
+          type: "command",
+          command: `npx -y cheap-agent@${version} hook context`,
+          timeout: expect.any(Number),
+        },
+      ],
+    },
+  ]);
   // ticket 29: every tool, since the take-over budget counts Reads and Bash too
-  expect(hooks.hooks.PreToolUse).toEqual([{ matcher: "*", hooks: [{ type: "command", command: expect.any(String), timeout: expect.any(Number) }] }]);
+  expect(hooks.hooks.PreToolUse).toEqual([
+    {
+      matcher: "*",
+      hooks: [{ type: "command", command: expect.any(String), timeout: expect.any(Number) }],
+    },
+  ]);
   const { command } = hooks.hooks.PreToolUse[0].hooks[0];
-  expect(command).toBe(`r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f "$r/.cheapag/hook.json" ] || [ -f "$r/.cheapag/hook/takeover" ]; } && npx -y cheap-agent@${version} hook guard; exit 0`);
-  expect(hooks.hooks.PostToolUse).toEqual([{ matcher: "mcp__.*cheapag__(delegate|jobs|reply|land)", hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook result; exit 0`, timeout: expect.any(Number) }] }]);
+  expect(command).toBe(
+    `r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f "$r/.cheapag/hook.json" ] || [ -f "$r/.cheapag/hook/takeover" ]; } && npx -y cheap-agent@${version} hook guard; exit 0`,
+  );
+  expect(hooks.hooks.PostToolUse).toEqual([
+    {
+      matcher: "mcp__.*cheapag__(delegate|jobs|reply|land)",
+      hooks: [
+        {
+          type: "command",
+          command: `npx -y cheap-agent@${version} hook result; exit 0`,
+          timeout: expect.any(Number),
+        },
+      ],
+    },
+  ]);
 });
 
 test("the Codex plugin loads the shared hooks file, since Codex ignores any other hooks path", () => {
   expect(json(join(plugin, ".codex-plugin", "plugin.json")).hooks).toBe("./hooks/hooks.json");
-  expect(json(join(plugin, "hooks", "hooks.json")).hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: `npx -y cheap-agent@${version} hook context`, timeout: expect.any(Number) }] }]);
+  expect(json(join(plugin, "hooks", "hooks.json")).hooks.SessionStart).toEqual([
+    {
+      hooks: [
+        {
+          type: "command",
+          command: `npx -y cheap-agent@${version} hook context`,
+          timeout: expect.any(Number),
+        },
+      ],
+    },
+  ]);
 });
 
 test("the progress mod is Claude-only: named by the Claude manifest, never in the hooks file Codex reads", () => {

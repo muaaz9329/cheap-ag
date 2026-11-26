@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
-import { gitBash, runCli, which } from "../src/platform.js";
+import { afterEach, expect, onTestFinished, test, vi } from "vitest";
+import { gitBash, isAlive, killProcessGroup, runCli, which } from "../src/platform.js";
 
 let dir: string | undefined;
 afterEach(() => {
@@ -70,9 +71,13 @@ test("gitBash derives Git for Windows' bash.exe from git on the PATH", () => {
 test("gitBash prefers CLAUDE_CODE_GIT_BASH_PATH when it exists", () => {
   const { dir, bin, path } = gitInstall();
   writeFileSync(join(dir, "custom-bash.exe"), "");
-  expect(gitBash("win32", { PATH: path, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "custom-bash.exe") })).toBe(join(dir, "custom-bash.exe"));
+  expect(
+    gitBash("win32", { PATH: path, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "custom-bash.exe") }),
+  ).toBe(join(dir, "custom-bash.exe"));
   // a stale override that is not there falls back to the derived path
-  expect(gitBash("win32", { PATH: path, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "gone.exe") })).toBe(join(bin, "bash.exe"));
+  expect(gitBash("win32", { PATH: path, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "gone.exe") })).toBe(
+    join(bin, "bash.exe"),
+  );
 });
 
 test("gitBash is undefined when git or its bash.exe is missing", () => {
@@ -80,3 +85,41 @@ test("gitBash is undefined when git or its bash.exe is missing", () => {
   expect(gitBash("win32", { PATH: path })).toBeUndefined();
   expect(gitBash("win32", { PATH: join(tempDir(), "Git", "cmd") })).toBeUndefined();
 });
+
+test.skipIf(process.platform === "win32")(
+  "runCli runs a .cmd shim through a shell, with arguments that hold spaces or quotes kept whole",
+  () => {
+    const d = tempDir();
+    writeFileSync(join(d, "shim.cmd"), '#!/bin/sh\nprintf "%s|%s|%s" "$1" "$2" "$3"\n');
+    chmodSync(join(d, "shim.cmd"), 0o755);
+    vi.stubEnv("PATH", `${d}:${process.env.PATH}`);
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const r = runCli("shim.cmd", ["plain", "two words", 'say "hi"'], { encoding: "utf8" });
+    expect(r?.status).toBe(0);
+    expect(r?.stdout).toBe('plain|two words|say "hi"');
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "killProcessGroup: signals the group; on win32 it hands over to taskkill and never signals; no pid is a no-op",
+  async () => {
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    onTestFinished(() => void child.kill("SIGKILL"));
+    const exited = new Promise((resolve) => child.on("exit", (_code, signal) => resolve(signal)));
+    expect(killProcessGroup(undefined)).toBeUndefined();
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      killProcessGroup(child.pid); // taskkill does not exist here: nothing happens, and nothing throws
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+    expect(isAlive(child.pid!)).toBe(true);
+    killProcessGroup(child.pid);
+    expect(await exited).toBe("SIGTERM");
+    killProcessGroup(child.pid); // already gone: ignored
+  },
+);

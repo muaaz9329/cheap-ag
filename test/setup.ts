@@ -6,6 +6,6 @@ if (process.platform === "win32") {
   vi.waitFor = (callback, options) =>
     waitFor(callback, {
       ...(typeof options === "object" ? options : {}),
-      timeout: (typeof options === "number" ? options : options?.timeout ?? 1000) * 3,
+      timeout: (typeof options === "number" ? options : (options?.timeout ?? 1000)) * 3,
     });
 }

@@ -1,9 +1,18 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { callText, hermeticHome, serverEntry, startServer, tempRepo } from "./harness.js";
-import { startPeriodicCleanup } from "../src/cleanup.js";
+import { cleanup, startPeriodicCleanup } from "../src/cleanup.js";
 import { loadConfig } from "../src/config.js";
 import { createWorktree } from "../src/workspace.js";
 
@@ -23,31 +32,65 @@ function repoWithState() {
   const { home, env } = hermeticHome();
   onTestFinished(() => rmSync(home, { recursive: true, force: true }));
   /** A job record `days` old (by its end time, or start time while in flight), optionally with a real worktree. */
-  const job = (id: string, status: string, days: number, opts: { pid?: number; worktree?: boolean } = {}) => {
+  const job = (
+    id: string,
+    status: string,
+    days: number,
+    opts: { pid?: number; worktree?: boolean } = {},
+  ) => {
     if (opts.worktree) createWorktree(repo.dir, id, ["node_modules"]);
     const at = new Date(Date.now() - days * DAY).toISOString();
     const dir = join(repo.dir, ".cheapag", "jobs", id);
     mkdirSync(dir, { recursive: true });
     const inFlight = status === "RUNNING" || status === "BLOCKED";
-    writeFileSync(join(dir, "result.json"), JSON.stringify({
-      format: "cheapag/1", job: id, status, landed: status === "OK", steps: "1", summary: "", changed: [], risks: [], review: [], missing: [],
-      worktree: opts.worktree ? `.cheapag/worktrees/${id}` : null, usage: { turns: 0, costUsd: 0 }, selfFix: 0,
-      models: { requested: "m", final: "m", escalated: false }, pid: opts.pid ?? deadPid, timing: { startedAt: at, endedAt: inFlight ? null : at },
-    }));
+    writeFileSync(
+      join(dir, "result.json"),
+      JSON.stringify({
+        format: "cheapag/1",
+        job: id,
+        status,
+        landed: status === "OK",
+        steps: "1",
+        summary: "",
+        changed: [],
+        risks: [],
+        review: [],
+        missing: [],
+        worktree: opts.worktree ? `.cheapag/worktrees/${id}` : null,
+        usage: { turns: 0, costUsd: 0 },
+        selfFix: 0,
+        models: { requested: "m", final: "m", escalated: false },
+        pid: opts.pid ?? deadPid,
+        timing: { startedAt: at, endedAt: inFlight ? null : at },
+      }),
+    );
     writeFileSync(join(dir, "result.txt"), `${status} ${id}\n`);
   };
-  const clean = (...args: string[]) => execFileSync(process.execPath, [serverEntry, "clean", ...args], { cwd: repo.dir, env, stdio: "pipe" }).toString();
+  const clean = (...args: string[]) =>
+    execFileSync(process.execPath, [serverEntry, "clean", ...args], {
+      cwd: repo.dir,
+      env,
+      stdio: "pipe",
+    }).toString();
   /** Output of a run expected to exit 1. */
   const failed = (...args: string[]) => {
-    const r = spawnSync(process.execPath, [serverEntry, "clean", ...args], { cwd: repo.dir, env, encoding: "utf8" });
+    const r = spawnSync(process.execPath, [serverEntry, "clean", ...args], {
+      cwd: repo.dir,
+      env,
+      encoding: "utf8",
+    });
     expect(r.status).toBe(1);
     return r.stdout;
   };
   const exists = (path: string) => existsSync(join(repo.dir, ".cheapag", path));
-  const status = (id: string) => JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", id, "result.json"), "utf8")).status;
+  const status = (id: string) =>
+    JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", id, "result.json"), "utf8")).status;
   const untouched = () => {
-    expect(readFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 42;\n"); // the real dependency dir
-    for (const f of ["consent.json", "opencode/opencode.json", "land.lock"]) expect(exists(f)).toBe(true);
+    expect(readFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "utf8")).toBe(
+      "module.exports = 42;\n",
+    ); // the real dependency dir
+    for (const f of ["consent.json", "opencode/opencode.json", "land.lock"])
+      expect(exists(f)).toBe(true);
   };
   return { repo, home, env, job, clean, failed, exists, status, untouched };
 }
@@ -73,7 +116,8 @@ test("cheapag clean: age rules, live jobs kept, links unlinked first, worktree m
   expect(exists("worktrees/jnew1/node_modules")).toBe(true);
   expect(exists("worktrees/jrun1/node_modules")).toBe(true);
   expect(exists("jobs/jlog1") || exists("jobs/jold1")).toBe(false);
-  for (const id of ["jnew1", "jlog2", "jrun1", "jblk1", "jdead"]) expect(exists(`jobs/${id}`)).toBe(true);
+  for (const id of ["jnew1", "jlog2", "jrun1", "jblk1", "jdead"])
+    expect(exists(`jobs/${id}`)).toBe(true);
   expect(status("jdead")).toBe("CANCELLED");
   expect(status("jrun1")).toBe("RUNNING");
   const worktrees = repo.git("worktree", "list", "--porcelain");
@@ -134,7 +178,15 @@ test("research logs (r… folders) age out like job logs", () => {
     const dir = join(repo.dir, ".cheapag", "jobs", id);
     mkdirSync(dir, { recursive: true });
     const at = new Date(Date.now() - days * DAY).toISOString();
-    writeFileSync(join(dir, "research.json"), JSON.stringify({ job: id, kind: "research", status: "ANSWER", timing: { startedAt: at, endedAt: at } }));
+    writeFileSync(
+      join(dir, "research.json"),
+      JSON.stringify({
+        job: id,
+        kind: "research",
+        status: "ANSWER",
+        timing: { startedAt: at, endedAt: at },
+      }),
+    );
   };
   research("rold1", 31);
   research("rnew1", 2);
@@ -148,12 +200,18 @@ test("retention is configurable in cheapag.json, and a bad value is an error", (
   const { repo, job, clean, failed, exists } = repoWithState();
   job("jnew1", "FAIL", 2, { worktree: true });
   job("jlog2", "OK", 3);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ retention: { unlanded_worktree_days: 1, job_log_days: 2.5 } }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ retention: { unlanded_worktree_days: 1, job_log_days: 2.5 } }),
+  );
   expect(clean().split("\n")[0]).toBe("✓ removed 2, kept 1");
   expect(exists("worktrees/jnew1")).toBe(false);
   expect(exists("jobs/jlog2")).toBe(false);
   expect(exists("jobs/jnew1")).toBe(true); // 2 days < 2.5
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ retention: { job_log_days: -1 } }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ retention: { job_log_days: -1 } }),
+  );
   expect(failed()).toMatch(/^✗ .*cheapag\.json: retention\.job_log_days must be a number of days/);
   expect(failed("--force")).toMatch(/^✗ usage: cheapag clean \[--all\]/);
 });
@@ -171,15 +229,21 @@ test("cleanup runs at server start, after crash recovery", async () => {
 
 test("retention defaults are 2 unlanded-worktree days and 7 job-log days", () => {
   const { repo, env } = repoWithState();
-  for (const [key, value] of Object.entries(env)) if (key.startsWith("XDG_")) vi.stubEnv(key, value);
-  onTestFinished(() => { vi.unstubAllEnvs(); });
+  for (const [key, value] of Object.entries(env))
+    if (key.startsWith("XDG_")) vi.stubEnv(key, value);
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
   expect(loadConfig(repo.dir).retention).toEqual({ unlanded_worktree_days: 2, job_log_days: 7 });
 });
 
 test("periodic cleanup removes an old job folder while the server runs, and leaves live jobs alone", async () => {
   const { repo, env, job, exists } = repoWithState();
-  for (const [key, value] of Object.entries(env)) if (key.startsWith("XDG_")) vi.stubEnv(key, value);
-  onTestFinished(() => { vi.unstubAllEnvs(); });
+  for (const [key, value] of Object.entries(env))
+    if (key.startsWith("XDG_")) vi.stubEnv(key, value);
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
   job("jold1", "OK", 8);
   job("jnew1", "OK", 1);
   job("jrun1", "RUNNING", 60, { pid: process.pid });
@@ -198,7 +262,11 @@ test("gitignore hint: once per server process on the first result, and never whe
   // the first result is a CONSENT block here; the hint follows it on its own line
   const first = await callText(server.client, "delegate", { plan: "p.md", steps: "1" });
   expect(first).toMatch(/^CONSENT /);
-  expect(first.endsWith("\n\nhint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed")).toBe(true);
+  expect(
+    first.endsWith(
+      "\n\nhint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed",
+    ),
+  ).toBe(true);
   expect(await callText(server.client, "jobs", { action: "list" })).toBe("no jobs yet");
 
   const ignored = tempRepo(); // ignored through .git/info/exclude
@@ -206,4 +274,45 @@ test("gitignore hint: once per server process on the first result, and never whe
   const other = await startServer({ cwd: ignored.dir, logins: { "opencode-go": "k" } });
   onTestFinished(other.close);
   expect(await callText(other.client, "jobs", { action: "list" })).toBe("no jobs yet");
+});
+
+test("a worktree folder git no longer knows (and with no job folder) is removed directly", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const tree = join(repo.dir, ".cheapag", "worktrees", "jgone");
+  mkdirSync(tree, { recursive: true });
+  writeFileSync(join(tree, "left.txt"), "x");
+  const result = cleanup(
+    repo.dir,
+    { unlanded_worktree_days: 2, job_log_days: 7 },
+    ["node_modules"],
+    { all: true },
+  );
+  expect(result).toEqual({ removed: ["worktree jgone: --all"], kept: [] });
+  expect(existsSync(tree)).toBe(false);
+});
+
+test("periodic cleanup: a failing run is logged to stderr in one line and the timer keeps going", async () => {
+  // not a git repository: removing the stale worktree works, pruning then fails
+  const root = mkdtempSync(join(tmpdir(), "cheapag-notrepo-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const tree = join(root, ".cheapag", "worktrees", "jold1");
+  const stale = () => {
+    mkdirSync(tree, { recursive: true });
+    utimesSync(tree, new Date(0), new Date(0));
+  };
+  stale();
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  onTestFinished(() => void stderr.mockRestore());
+  const timer = startPeriodicCleanup(
+    root,
+    { retention: { unlanded_worktree_days: 0, job_log_days: 0 }, link_dirs: [] } as never,
+    10,
+  );
+  onTestFinished(() => clearInterval(timer));
+  await vi.waitFor(() => expect(stderr).toHaveBeenCalled());
+  expect(stderr.mock.calls[0][0]).toMatch(/^cheapag: periodic cleanup failed: [^\n]+\n$/);
+  stderr.mockClear();
+  stale();
+  await vi.waitFor(() => expect(stderr).toHaveBeenCalled()); // the next tick still runs
 });

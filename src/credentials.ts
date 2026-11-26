@@ -26,7 +26,11 @@ export const NO_PROVIDER = `FAIL reason: no worker provider; run ${LOGIN_COMMAND
 
 /** OpenCode keeps logins for every installed copy in one shared file. */
 function authFile() {
-  return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "auth.json");
+  return join(
+    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
+    "opencode",
+    "auth.json",
+  );
 }
 
 /** Supported providers with a saved login, in detection order. Only the provider ids are used; keys are never kept or passed on. */
@@ -37,7 +41,9 @@ export function savedProviders(): Provider["provider"][] {
   } catch {
     return []; // an unreadable auth file is the same as no login
   }
-  return PROVIDERS.map((p) => p.id).filter((id) => id in saved && id !== "local" && id !== "ollama");
+  return PROVIDERS.map((p) => p.id).filter(
+    (id) => id in saved && id !== "local" && id !== "ollama",
+  );
 }
 
 /** Whether the user config names a usable local server; a damaged one counts as none here, loadConfig reports it. */
@@ -58,12 +64,15 @@ export function ollamaConfigured() {
   }
 }
 
-export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
+export const providerLabel = (id: Provider["provider"]) =>
+  PROVIDERS.find((p) => p.id === id)!.label;
 
 /** Supported providers ready to use: saved logins, plus the config-based endpoints when the user set them up; in detection order. */
 export function usableProviders(): Provider["provider"][] {
   const saved = savedProviders();
-  return PROVIDERS.map((p) => p.id).filter((id) => (id === "local" ? localConfigured() : id === "ollama" ? ollamaConfigured() : saved.includes(id)));
+  return PROVIDERS.map((p) => p.id).filter((id) =>
+    id === "local" ? localConfigured() : id === "ollama" ? ollamaConfigured() : saved.includes(id),
+  );
 }
 
 /**
@@ -73,7 +82,8 @@ export function usableProviders(): Provider["provider"][] {
 export function detectProvider(): Provider | undefined {
   const chosen = PROVIDERS.find((p) => p.id === chosenProvider())?.id;
   const configBased = (id: Provider["provider"]) => id === "local" || id === "ollama";
-  if (chosen && usableProviders().includes(chosen)) return { provider: chosen, via: configBased(chosen) ? "config" : "login" };
+  if (chosen && usableProviders().includes(chosen))
+    return { provider: chosen, via: configBased(chosen) ? "config" : "login" };
   if (ollamaConfigured()) return { provider: "ollama", via: "config" };
   if (localConfigured()) return { provider: "local", via: "config" };
   const [first] = savedProviders();

@@ -13,7 +13,7 @@ const REVERTS_FIX = [
   'import { readFileSync, writeFileSync } from "node:fs";',
   'const fixed = readFileSync("src/hello.ts", "utf8").includes("= 2");',
   'writeFileSync("src/hello.ts", "export const hello = 0;\\n");',
-  'process.exit(fixed ? 0 : 1);',
+  "process.exit(fixed ? 0 : 1);",
   "",
 ].join("\n");
 /** Fails on the base unless the added file is gone, so it proves the added file is set aside for the reproduction. */
@@ -44,7 +44,13 @@ function stashInMain(repo: ReturnType<typeof tempRepo>) {
   repo.git("stash", "push", "-u", "-m", "user stash");
 }
 
-type DelegateOptions = { reproTest?: string | ((repo: ReturnType<typeof tempRepo>) => string); beforeJob?: (repo: ReturnType<typeof tempRepo>) => void; files?: Record<string, string>; task?: string; doneWhen?: string };
+type DelegateOptions = {
+  reproTest?: string | ((repo: ReturnType<typeof tempRepo>) => string);
+  beforeJob?: (repo: ReturnType<typeof tempRepo>) => void;
+  files?: Record<string, string>;
+  task?: string;
+  doneWhen?: string;
+};
 
 async function delegate(repro: string, opts: DelegateOptions = {}) {
   const repo = tempRepo();
@@ -59,7 +65,8 @@ async function delegate(repro: string, opts: DelegateOptions = {}) {
   opts.beforeJob?.(repo);
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
-  const reproTest = typeof opts.reproTest === "function" ? opts.reproTest(repo) : opts.reproTest ?? REPRO;
+  const reproTest =
+    typeof opts.reproTest === "function" ? opts.reproTest(repo) : (opts.reproTest ?? REPRO);
   const script: Action[] = [
     { edit: "test/hello.test.mjs", content: reproTest },
     { edit: "src/hello.ts", content: "export const hello = 2;\n" },
@@ -68,12 +75,26 @@ async function delegate(repro: string, opts: DelegateOptions = {}) {
     { finish: { summary: "fixed hello", risks: [], review: [], missing: [], repro } as never },
   ];
   fake.script(...script);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: [] });
+  const server = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url },
+    logins: { "opencode-go": "k" },
+    allow: [],
+  });
   onTestFinished(server.close);
-  const result = await server.client.callTool({ name: "delegate", arguments: { task: opts.task ?? "fix hello: make hello 2", files: "src/hello.ts, test/", done_when: opts.doneWhen ?? "`node check.mjs`" } });
+  const result = await server.client.callTool({
+    name: "delegate",
+    arguments: {
+      task: opts.task ?? "fix hello: make hello 2",
+      files: "src/hello.ts, test/",
+      done_when: opts.doneWhen ?? "`node check.mjs`",
+    },
+  });
   const text = (result.content as { text: string }[])[0].text;
   const job = text.match(/^\w+ (j[0-9a-z]{4}) /)![1];
-  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"));
+  const record = JSON.parse(
+    readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"),
+  );
   return { repo, text, record };
 }
 
@@ -90,8 +111,12 @@ test("a reproduction that fails without the fix and passes with it: OK repro=fai
 test("a reproduction that also passes on the original code: repro=unverified with a risk", async () => {
   const { text, record } = await delegate("node test/hello.test.mjs", { reproTest: PASSES_ANYWAY });
   expect(record.repro).toBe("unverified");
-  expect(record.risks[0]).toBe("nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
-  expect(text).toContain("nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix");
+  expect(record.risks[0]).toBe(
+    "nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix",
+  );
+  expect(text).toContain(
+    "nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` also passes without the fix",
+  );
 });
 
 test("no reproduction: repro=none with the worker's reason as a risk", async () => {
@@ -144,13 +169,48 @@ test("a user stash in the main checkout survives a repro check", async () => {
 });
 
 test("a repro check that sets aside nothing leaves the user's stash untouched", async () => {
-  const { repo, record } = await delegate("node test/hello.test.mjs", { reproTest: REVERTS_FIX, beforeJob: stashInMain });
+  const { repo, record } = await delegate("node test/hello.test.mjs", {
+    reproTest: REVERTS_FIX,
+    beforeJob: stashInMain,
+  });
   expect(record.repro).toBe("fail→pass");
   expect(repo.git("stash", "list")).toContain("user stash");
 });
 
 test("a file the fix added is removed for the reproduction and restored afterwards", async () => {
-  const { repo, record } = await delegate("node test/hello.test.mjs", { reproTest: NEEDS_ADDED_FILE, files: { "src/extra.ts": "export const extra = true;\n" } });
+  const { repo, record } = await delegate("node test/hello.test.mjs", {
+    reproTest: NEEDS_ADDED_FILE,
+    files: { "src/extra.ts": "export const extra = true;\n" },
+  });
   expect(record.repro).toBe("fail→pass");
-  expect(readFileSync(join(repo.dir, "src", "extra.ts"), "utf8")).toBe("export const extra = true;\n");
+  expect(readFileSync(join(repo.dir, "src", "extra.ts"), "utf8")).toBe(
+    "export const extra = true;\n",
+  );
 });
+
+/** Passes on the fix, and leaves the fix file read-only: it can then neither be set aside nor restored. */
+const LOCKS_FIX = [
+  'import { chmodSync, readFileSync } from "node:fs";',
+  'const fixed = readFileSync("src/hello.ts", "utf8").includes("= 2");',
+  'chmodSync("src/hello.ts", 0o444);',
+  "process.exit(fixed ? 0 : 1);",
+  "",
+].join("\n");
+
+// permission bits mean nothing to root or on Windows
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "a fix that cannot be set aside for the reproduction: repro=unverified, and the fix still lands as it was",
+  async () => {
+    const { repo, text, record } = await delegate("node test/hello.test.mjs", {
+      reproTest: LOCKS_FIX,
+    });
+    expect(text.split("\n")[0]).toMatch(/^OK j\w+ /);
+    expect(record.repro).toBe("unverified");
+    expect(record.risks[0]).toBe(
+      "nothing to do (the checks passed), reproduction not verified: could not set the fix aside to rerun the reproduction",
+    );
+    expect(readFileSync(join(repo.dir, "src", "hello.ts"), "utf8")).toBe(
+      "export const hello = 2;\n",
+    );
+  },
+);

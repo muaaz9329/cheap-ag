@@ -30,7 +30,10 @@ beforeAll(async () => {
   mkdirSync(join(deps, "dep"), { recursive: true });
   writeFileSync(join(deps, "dep", "index.js"), "module.exports = 1;\n");
   link(deps, join(repo.dir, "node_modules")); // as createWorktree links it
-  writeFileSync(join(repo.dir, "package.json"), JSON.stringify({ scripts: { lint: "echo linted > lint.out", "*": "echo wildcard name" } }));
+  writeFileSync(
+    join(repo.dir, "package.json"),
+    JSON.stringify({ scripts: { lint: "echo linted > lint.out", "*": "echo wildcard name" } }),
+  );
   writeFileSync(join(repo.dir, "Makefile"), "check:\n\techo made > make.out\n");
   mkdirSync(join(repo.dir, "src"), { recursive: true });
   writeFileSync(join(repo.dir, "src", "a.ts"), "export const a = 1;\n");
@@ -40,25 +43,50 @@ beforeAll(async () => {
   const { home, env } = hermeticHome({ openrouter: "sk-or-v1-fakefakefakefakefakefake" });
   const config = join(home, "oc");
   mkdirSync(join(config, "agents"), { recursive: true });
-  writeFileSync(join(config, "opencode.json"), JSON.stringify({ small_model: "openrouter/m", provider: { openrouter: { options: { baseURL: llm.url }, models: { m: {} } } } }));
+  writeFileSync(
+    join(config, "opencode.json"),
+    JSON.stringify({
+      small_model: "openrouter/m",
+      provider: { openrouter: { options: { baseURL: llm.url }, models: { m: {} } } },
+    }),
+  );
   mkdirSync(join(config, "plugins"));
   writeFileSync(join(config, "plugins", "cheapag-secrets.js"), SECRETS_PLUGIN);
-  writeFileSync(join(config, "agents", "cheapag-worker.md"), "---\ndescription: worker\nmode: primary\n---\nYou implement plan steps.\n");
+  writeFileSync(
+    join(config, "agents", "cheapag-worker.md"),
+    "---\ndescription: worker\nmode: primary\n---\nYou implement plan steps.\n",
+  );
   const oc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     detached: true,
-    env: { ...env, ...(gitBash() && { SHELL: gitBash() }), OPENCODE_SERVER_PASSWORD: "t", OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_PERMISSION: JSON.stringify(baselinePermission()) },
+    env: {
+      ...env,
+      ...(gitBash() && { SHELL: gitBash() }),
+      OPENCODE_SERVER_PASSWORD: "t",
+      OPENCODE_CONFIG_DIR: config,
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
+    },
   });
   oc.stderr.resume(); // never let a full pipe stall the server
   stop = () => killProcessGroup(oc.pid, "SIGKILL");
   process.once("exit", stop); // an interrupted run must not orphan the server's process group
   const url = await new Promise<string>((resolve, reject) => {
-    oc.stdout.on("data", (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]));
+    oc.stdout.on(
+      "data",
+      (d) => String(d).match(/(http:\/\/\S+)/) && resolve(String(d).match(/(http:\/\/\S+)/)![1]),
+    );
     oc.on("exit", (code) => reject(new Error(`opencode exited ${code}`)));
   });
-  client = createOpencodeClient({ baseUrl: url, directory: repo.dir, headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` } });
+  client = createOpencodeClient({
+    baseUrl: url,
+    directory: repo.dir,
+    headers: { authorization: `Basic ${Buffer.from("opencode:t").toString("base64")}` },
+  });
   const t = Date.now();
   await bash("git status");
-  console.error(`cheapag-test: first worker bash call took ${Date.now() - t} ms (${process.platform})`);
+  console.error(
+    `cheapag-test: first worker bash call took ${Date.now() - t} ms (${process.platform})`,
+  );
 }, slow(180_000));
 
 afterAll(async () => {
@@ -69,20 +97,46 @@ afterAll(async () => {
 });
 
 /** One model step calling `tool` under Cheap Agent's ruleset for this repo; resolves to the tool's outcome. */
-async function call(tool: string, args: Record<string, unknown>, extraExact: string[] = [], onBlockedCommand: "ask" | "deny" = "deny") {
+async function call(
+  tool: string,
+  args: Record<string, unknown>,
+  extraExact: string[] = [],
+  onBlockedCommand: "ask" | "deny" = "deny",
+) {
   llm.script({ tool, args } as Reply);
   const { scripts, exact } = projectScripts(repo.dir);
-  const permission = workerRuleset({ scripts, exact: [...exact, "node check.mjs", ...extraExact], allowCommands: ["echo allowed-by-config"], linked: ["node_modules"], onBlockedCommand });
-  const session = (await client.session.create({ directory: repo.dir, agent: "cheapag-worker", model: { providerID: "openrouter", id: "m" }, permission })).data!;
+  const permission = workerRuleset({
+    scripts,
+    exact: [...exact, "node check.mjs", ...extraExact],
+    allowCommands: ["echo allowed-by-config"],
+    linked: ["node_modules"],
+    onBlockedCommand,
+  });
+  const session = (
+    await client.session.create({
+      directory: repo.dir,
+      agent: "cheapag-worker",
+      model: { providerID: "openrouter", id: "m" },
+      permission,
+    })
+  ).data!;
   const { stream } = await client.event.subscribe({ directory: repo.dir });
   await stream.next();
-  await client.session.promptAsync({ sessionID: session.id, directory: repo.dir, parts: [{ type: "text", text: "go" }] });
+  await client.session.promptAsync({
+    sessionID: session.id,
+    directory: repo.dir,
+    parts: [{ type: "text", text: "go" }],
+  });
   let outcome = "no tool call";
   for await (const raw of stream) {
     const e = raw as Event;
     if ((e.properties as { sessionID?: string }).sessionID !== session.id) continue;
     if (e.type === "permission.asked") {
-      await client.permission.reply({ requestID: e.properties.id, reply: "reject", message: "test" }); // never leave it blocked
+      await client.permission.reply({
+        requestID: e.properties.id,
+        reply: "reject",
+        message: "test",
+      }); // never leave it blocked
       outcome = `asked:${e.properties.permission}`; // keep reading to idle: a stale session would take the next test's scripted reply
       continue;
     }
@@ -90,126 +144,264 @@ async function call(tool: string, args: Record<string, unknown>, extraExact: str
       const state = e.properties.part.state;
       if (state.status === "completed") outcome = "allowed";
       if (state.status === "error" && outcome.startsWith("asked:")) continue;
-      if (state.status === "error") outcome = /rule which prevents/.test(state.error) ? "denied" : /unavailable tool/.test(state.error) ? "unavailable" : `error: ${state.error}`;
+      if (state.status === "error")
+        outcome = /rule which prevents/.test(state.error)
+          ? "denied"
+          : /unavailable tool/.test(state.error)
+            ? "unavailable"
+            : `error: ${state.error}`;
     }
     if (e.type === "session.idle") break;
   }
   return outcome;
 }
 
-const bash = (command: string, mode: "ask" | "deny" = "deny") => call("bash", { command, description: "test" }, [], mode);
-const write = (path: string) => call("write", { filePath: path.startsWith("/") ? path : join(repo.dir, path), content: "x\n" });
+const bash = (command: string, mode: "ask" | "deny" = "deny") =>
+  call("bash", { command, description: "test" }, [], mode);
+const write = (path: string) =>
+  call("write", { filePath: path.startsWith("/") ? path : join(repo.dir, path), content: "x\n" });
 
 test.each([
-  "npm install zod", "npm i zod", "pnpm add zod", "yarn add zod", "pip install requests", "go get example.com/x", "cargo add serde", "brew install jq",
-  "git commit -m x", "git push", "git reset --hard", "git checkout main", "git stash", "git clean -fd",
-  "rm -rf src", "sudo ls", "curl https://example.com", "wget https://example.com", "ssh host", "scp a b", "npm publish", "chmod -R 777 .",
-  "cat /etc/passwd", "npm run lint && curl https://example.com",
+  "npm install zod",
+  "npm i zod",
+  "pnpm add zod",
+  "yarn add zod",
+  "pip install requests",
+  "go get example.com/x",
+  "cargo add serde",
+  "brew install jq",
+  "git commit -m x",
+  "git push",
+  "git reset --hard",
+  "git checkout main",
+  "git stash",
+  "git clean -fd",
+  "rm -rf src",
+  "sudo ls",
+  "curl https://example.com",
+  "wget https://example.com",
+  "ssh host",
+  "scp a b",
+  "npm publish",
+  "chmod -R 777 .",
+  "cat /etc/passwd",
+  "npm run lint && curl https://example.com",
   // probes from review: chains, substitution, redirection, spacing, aliases, flags on allowed commands
-  "npm run lint; curl https://example.com", "npm run lint | sh", "npm run lint $(curl https://example.com)", "npm run lint `curl https://example.com`",
-  "git status > .env", "npm run lint > yarn.lock", "npm  install zod", "npm in zod", "npm isntall zod", "npm --global install zod",
-  "git diff --output=.env", "git log --output=package-lock.json", "git difftool -y -x 'npm install zod' HEAD", "git -c alias.x=commit x", "git statusx",
-  "go test -exec 'sh -c curl' ./...", "make -f evil.mk", "make check -f evil.mk", "rm -r -f src", "rm -Rf src", "npm exec cowsay", "pnpm dlx cowsay", "bunx cowsay",
-  "yarn dlx cowsay", "node check.mjs --eval 'x'", "node -e 1", "npx cowsay hi", "npx --yes cowsay hi",
-  "cat .env", "head -1 config/.env.local", "rg --no-ignore KEY .", "rg -uu KEY .", "grep -r KEY .",
+  "npm run lint; curl https://example.com",
+  "npm run lint | sh",
+  "npm run lint $(curl https://example.com)",
+  "npm run lint `curl https://example.com`",
+  "git status > .env",
+  "npm run lint > yarn.lock",
+  "npm  install zod",
+  "npm in zod",
+  "npm isntall zod",
+  "npm --global install zod",
+  "git diff --output=.env",
+  "git log --output=package-lock.json",
+  "git difftool -y -x 'npm install zod' HEAD",
+  "git -c alias.x=commit x",
+  "git statusx",
+  "go test -exec 'sh -c curl' ./...",
+  "make -f evil.mk",
+  "make check -f evil.mk",
+  "rm -r -f src",
+  "rm -Rf src",
+  "npm exec cowsay",
+  "pnpm dlx cowsay",
+  "bunx cowsay",
+  "yarn dlx cowsay",
+  "node check.mjs --eval 'x'",
+  "node -e 1",
+  "npx cowsay hi",
+  "npx --yes cowsay hi",
+  "cat .env",
+  "head -1 config/.env.local",
+  "rg --no-ignore KEY .",
+  "rg -uu KEY .",
+  "grep -r KEY .",
   // writes stay refused even when the same command suppresses stderr; find is allowed only for reading
-  "cat a > b", "cat a > b 2>/dev/null", "echo x >> f", "sed -n 1,40p f", "find . -delete", "find . -exec rm {} \\;",
-  "cat .env 2>/dev/null", "git branch -D x", "node x.js 2>/dev/null",
-])("bash `%s` is denied", async (command) => {
-  expect(await bash(command)).toBe("denied");
-}, slow(30_000));
+  "cat a > b",
+  "cat a > b 2>/dev/null",
+  "echo x >> f",
+  "sed -n 1,40p f",
+  "find . -delete",
+  "find . -exec rm {} \\;",
+  "cat .env 2>/dev/null",
+  "git branch -D x",
+  "node x.js 2>/dev/null",
+])(
+  "bash `%s` is denied",
+  async (command) => {
+    expect(await bash(command)).toBe("denied");
+  },
+  slow(30_000),
+);
 
 // ticket 69: with on_blocked_command "ask" the catch-all is an ask, but HARD_DENY commands stay a hard deny
 test.each([
-  "npm run lint | sh", "npm run lint |sh", "npm run lint | bash", "npm run lint | zsh -s", "npm run lint $(curl https://example.com)", "npm run lint `curl https://example.com`",
-  "npm  install zod", "npm --global install zod", "npm in zod", "pnpm  add zod", "bash -c 'npm run lint'", "curl x", "cat a > b", "rm -Rf src", "git push", "npm install zod",
-  "sed -i 's/a/b/' src/a.ts", "sed --in-place 's/a/b/' src/a.ts",
-])("on_blocked_command ask: bash `%s` is still denied, never asked", async (command) => {
-  expect(await bash(command, "ask")).toBe("denied");
-}, slow(30_000));
+  "npm run lint | sh",
+  "npm run lint |sh",
+  "npm run lint | bash",
+  "npm run lint | zsh -s",
+  "npm run lint $(curl https://example.com)",
+  "npm run lint `curl https://example.com`",
+  "npm  install zod",
+  "npm --global install zod",
+  "npm in zod",
+  "pnpm  add zod",
+  "bash -c 'npm run lint'",
+  "curl x",
+  "cat a > b",
+  "rm -Rf src",
+  "git push",
+  "npm install zod",
+  "sed -i 's/a/b/' src/a.ts",
+  "sed --in-place 's/a/b/' src/a.ts",
+])(
+  "on_blocked_command ask: bash `%s` is still denied, never asked",
+  async (command) => {
+    expect(await bash(command, "ask")).toBe("denied");
+  },
+  slow(30_000),
+);
 
-test("on_blocked_command ask: a command off the list is asked; deny refuses it as before", async () => {
-  expect(await bash("sed -n 1,2p f", "ask")).toBe("asked:bash");
-  expect(await bash("sed -n 1,2p f")).toBe("denied");
-  expect(await bash("sed -n 1,3p README.md", "ask")).toBe("asked:bash"); // the in-place deny does not catch ordinary reads
-  expect(await bash("sed -n 5,9p src/a.ts", "ask")).toBe("asked:bash");
-  expect(await bash("npm run lint", "ask")).toBe("allowed"); // allowed commands never ask
-}, slow(30_000));
+test(
+  "on_blocked_command ask: a command off the list is asked; deny refuses it as before",
+  async () => {
+    expect(await bash("sed -n 1,2p f", "ask")).toBe("asked:bash");
+    expect(await bash("sed -n 1,2p f")).toBe("denied");
+    expect(await bash("sed -n 1,3p README.md", "ask")).toBe("asked:bash"); // the in-place deny does not catch ordinary reads
+    expect(await bash("sed -n 5,9p src/a.ts", "ask")).toBe("asked:bash");
+    expect(await bash("npm run lint", "ask")).toBe("allowed"); // allowed commands never ask
+  },
+  slow(30_000),
+);
 
-test("the project's own scripts, configured allow_commands and read-only git are allowed", async () => {
-  expect(await bash("npm run lint")).toBe("allowed");
-  expect(existsSync(join(repo.dir, "lint.out"))).toBe(true);
-  expect(await bash("npm run lint -- --fix")).toBe("allowed");
-  expect(await bash("echo allowed-by-config")).toBe("allowed");
-  expect(await bash("git status")).toBe("allowed");
-  expect(await bash("git status --short")).toBe("allowed");
-  expect(await bash("git diff --stat")).toBe("allowed");
-  expect(await bash("rg TODO src")).toBe("allowed");
-  expect(await bash("ls -la")).toBe("allowed");
-  expect(await bash("ls a; echo ---; ls b")).toBe("allowed");
-  expect(await bash("cat a 2>/dev/null")).toBe("allowed");
-  expect(await bash("rg x 2>&1 | head")).toBe("allowed");
-  expect(await bash("find src -name '*.ts'")).toBe("allowed");
-  expect(await bash("git branch --show-current")).toBe("allowed");
-  expect(await bash("rg x src | head -5")).toBe("allowed");
-  expect(await bash("cat src/a.ts")).toBe("allowed");
-  expect(await bash("wc -l src/a.ts")).toBe("allowed");
-  expect(await bash("node --version")).toBe("allowed");
-  expect(await bash(`git -C ${repo.dir} diff --stat`)).toBe("allowed");
-  expect(await bash("npx eslint src/a.ts")).toBe("allowed");
-  expect(await bash("npx tsc --noEmit")).toBe("allowed");
-  expect(await bash("npx prettier --check src/a.ts")).toBe("allowed");
-  expect(await bash("make check")).toBe("allowed"); // a make target, exactly
-  expect(existsSync(join(repo.dir, "make.out"))).toBe(true);
-}, slow(60_000));
+test(
+  "the project's own scripts, configured allow_commands and read-only git are allowed",
+  async () => {
+    expect(await bash("npm run lint")).toBe("allowed");
+    expect(existsSync(join(repo.dir, "lint.out"))).toBe(true);
+    expect(await bash("npm run lint -- --fix")).toBe("allowed");
+    expect(await bash("echo allowed-by-config")).toBe("allowed");
+    expect(await bash("git status")).toBe("allowed");
+    expect(await bash("git status --short")).toBe("allowed");
+    expect(await bash("git diff --stat")).toBe("allowed");
+    expect(await bash("rg TODO src")).toBe("allowed");
+    expect(await bash("ls -la")).toBe("allowed");
+    expect(await bash("ls a; echo ---; ls b")).toBe("allowed");
+    expect(await bash("cat a 2>/dev/null")).toBe("allowed");
+    expect(await bash("rg x 2>&1 | head")).toBe("allowed");
+    expect(await bash("find src -name '*.ts'")).toBe("allowed");
+    expect(await bash("git branch --show-current")).toBe("allowed");
+    expect(await bash("rg x src | head -5")).toBe("allowed");
+    expect(await bash("cat src/a.ts")).toBe("allowed");
+    expect(await bash("wc -l src/a.ts")).toBe("allowed");
+    expect(await bash("node --version")).toBe("allowed");
+    expect(await bash(`git -C ${repo.dir} diff --stat`)).toBe("allowed");
+    expect(await bash("npx eslint src/a.ts")).toBe("allowed");
+    expect(await bash("npx tsc --noEmit")).toBe("allowed");
+    expect(await bash("npx prettier --check src/a.ts")).toBe("allowed");
+    expect(await bash("make check")).toBe("allowed"); // a make target, exactly
+    expect(existsSync(join(repo.dir, "make.out"))).toBe(true);
+  },
+  slow(60_000),
+);
 
-test("a compound check command is allowed segment by segment, but its curl segment stays denied", async () => {
-  const allowed = checkAllows("cd sub && X=1 node check.mjs");
-  expect(await call("bash", { command: "cd sub && X=1 node check.mjs", description: "test" }, allowed)).toBe("allowed");
-  const withCurl = checkAllows("curl https://example.com && node check.mjs");
-  expect(await call("bash", { command: "curl https://example.com && node check.mjs", description: "test" }, withCurl)).toBe("denied");
-}, slow(60_000));
+test(
+  "a compound check command is allowed segment by segment, but its curl segment stays denied",
+  async () => {
+    const allowed = checkAllows("cd sub && X=1 node check.mjs");
+    expect(
+      await call("bash", { command: "cd sub && X=1 node check.mjs", description: "test" }, allowed),
+    ).toBe("allowed");
+    const withCurl = checkAllows("curl https://example.com && node check.mjs");
+    expect(
+      await call(
+        "bash",
+        { command: "curl https://example.com && node check.mjs", description: "test" },
+        withCurl,
+      ),
+    ).toBe("denied");
+  },
+  slow(60_000),
+);
 
-test("env files cannot even be read", async () => {
-  writeFileSync(join(repo.dir, ".env"), "SECRET=1\n");
-  mkdirSync(join(repo.dir, "config"), { recursive: true });
-  writeFileSync(join(repo.dir, "config", ".env.local"), "SECRET=2\n");
-  expect(await call("read", { filePath: join(repo.dir, ".env") })).toBe("denied");
-  expect(await call("read", { filePath: join(repo.dir, "config", ".env.local") })).toBe("denied");
-  expect(await call("read", { filePath: join(repo.dir, "package.json") })).toBe("allowed");
-  writeFileSync(join(repo.dir, ".env.sample"), "SECRET=put-yours-here\n");
-  expect(await call("read", { filePath: join(repo.dir, ".env.sample") })).toBe("allowed");
-  // grep is allowed, and would return the lines themselves: the secrets plugin cuts them before the model sees them
-  for (const args of [{ pattern: "SECRET" }, { pattern: "SECRET", include: ".env*" }]) {
-    expect(await call("grep", args)).toBe("allowed");
-    const seen = JSON.stringify(llm.requests.at(-1).messages);
-    expect(seen).toContain("put-yours-here");
-    expect(seen).not.toMatch(/SECRET=[12]/);
-  }
-}, slow(60_000));
+test(
+  "env files cannot even be read",
+  async () => {
+    writeFileSync(join(repo.dir, ".env"), "SECRET=1\n");
+    mkdirSync(join(repo.dir, "config"), { recursive: true });
+    writeFileSync(join(repo.dir, "config", ".env.local"), "SECRET=2\n");
+    expect(await call("read", { filePath: join(repo.dir, ".env") })).toBe("denied");
+    expect(await call("read", { filePath: join(repo.dir, "config", ".env.local") })).toBe("denied");
+    expect(await call("read", { filePath: join(repo.dir, "package.json") })).toBe("allowed");
+    writeFileSync(join(repo.dir, ".env.sample"), "SECRET=put-yours-here\n");
+    expect(await call("read", { filePath: join(repo.dir, ".env.sample") })).toBe("allowed");
+    // grep is allowed, and would return the lines themselves: the secrets plugin cuts them before the model sees them
+    for (const args of [{ pattern: "SECRET" }, { pattern: "SECRET", include: ".env*" }]) {
+      expect(await call("grep", args)).toBe("allowed");
+      const seen = JSON.stringify(llm.requests.at(-1).messages);
+      expect(seen).toContain("put-yours-here");
+      expect(seen).not.toMatch(/SECRET=[12]/);
+    }
+  },
+  slow(60_000),
+);
 
-test("protected paths cannot be edited; ordinary files can", async () => {
-  for (const path of [".env", "config/.env.local", ".git/hooks/x", "sub/.git/config", ".cheapag/state", "cheapag.json", "package-lock.json", "web/yarn.lock"]) {
-    expect(await write(path), path).toBe("denied");
-  }
-  expect(await write("src/ok.ts")).toBe("allowed");
-}, slow(60_000));
+test(
+  "protected paths cannot be edited; ordinary files can",
+  async () => {
+    for (const path of [
+      ".env",
+      "config/.env.local",
+      ".git/hooks/x",
+      "sub/.git/config",
+      ".cheapag/state",
+      "cheapag.json",
+      "package-lock.json",
+      "web/yarn.lock",
+    ]) {
+      expect(await write(path), path).toBe("denied");
+    }
+    expect(await write("src/ok.ts")).toBe("allowed");
+  },
+  slow(60_000),
+);
 
-test("linked dependency dirs are readable through the worktree link but never writable; outside paths are denied", async () => {
-  // Windows (CI 2026-10-29): OpenCode denies reads through the junction; the worker can't read linked deps there
-  expect(await call("read", { filePath: join(repo.dir, "node_modules", "dep", "index.js") })).toBe(process.platform === "win32" ? "denied" : "allowed");
-  expect(await write("node_modules/dep/evil.js")).toBe("denied");
-  expect(await write(join(deps, "dep", "evil.js"))).toBe("denied");
-  expect(await call("read", { filePath: "/etc/hosts" })).toBe("denied");
-  expect(existsSync(join(deps, "dep", "evil.js"))).toBe(false);
-  expect(lstatSync(join(repo.dir, "node_modules")).isSymbolicLink()).toBe(true);
-}, slow(60_000));
+test(
+  "linked dependency dirs are readable through the worktree link but never writable; outside paths are denied",
+  async () => {
+    // Windows (CI 2026-10-29): OpenCode denies reads through the junction; the worker can't read linked deps there
+    expect(
+      await call("read", { filePath: join(repo.dir, "node_modules", "dep", "index.js") }),
+    ).toBe(process.platform === "win32" ? "denied" : "allowed");
+    expect(await write("node_modules/dep/evil.js")).toBe("denied");
+    expect(await write(join(deps, "dep", "evil.js"))).toBe("denied");
+    expect(await call("read", { filePath: "/etc/hosts" })).toBe("denied");
+    expect(existsSync(join(deps, "dep", "evil.js"))).toBe(false);
+    expect(lstatSync(join(repo.dir, "node_modules")).isSymbolicLink()).toBe(true);
+  },
+  slow(60_000),
+);
 
-test("web, subtasks and skills are not even offered to the worker", async () => {
-  expect(await call("webfetch", { url: "https://example.com", format: "text" })).toBe("unavailable");
-  expect(await call("task", { description: "x", prompt: "y", subagent_type: "general" })).toBe("unavailable");
-  const offered = llm.requests.filter((r) => r.tools).at(-1).tools.map((t: { function: { name: string } }) => t.function.name);
-  expect(offered).not.toEqual(expect.arrayContaining(["webfetch"]));
-  expect(offered).not.toContain("task");
-  expect(offered).not.toContain("skill");
-}, slow(60_000));
+test(
+  "web, subtasks and skills are not even offered to the worker",
+  async () => {
+    expect(await call("webfetch", { url: "https://example.com", format: "text" })).toBe(
+      "unavailable",
+    );
+    expect(await call("task", { description: "x", prompt: "y", subagent_type: "general" })).toBe(
+      "unavailable",
+    );
+    const offered = llm.requests
+      .filter((r) => r.tools)
+      .at(-1)
+      .tools.map((t: { function: { name: string } }) => t.function.name);
+    expect(offered).not.toEqual(expect.arrayContaining(["webfetch"]));
+    expect(offered).not.toContain("task");
+    expect(offered).not.toContain("skill");
+  },
+  slow(60_000),
+);

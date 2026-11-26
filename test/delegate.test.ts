@@ -15,10 +15,19 @@ do: export a hello constant
 done-when: hello is exported
 `;
 
-const REPORT = { summary: "added hello constant and README note", risks: ["none known"], review: ["src/hello.ts:1-1", "../outside.ts:1-2"], missing: [] };
+const REPORT = {
+  summary: "added hello constant and README note",
+  risks: ["none known"],
+  review: ["src/hello.ts:1-1", "../outside.ts:1-2"],
+  missing: [],
+};
 
 /** A repo with the plan written (uncommitted), a fake worker scripted with `actions`, and a server on both. */
-async function scenario(actions: Action[] | null, plan = PLAN, logins: Logins = { "opencode-go": "go-key" }) {
+async function scenario(
+  actions: Action[] | null,
+  plan = PLAN,
+  logins: Logins = { "opencode-go": "go-key" },
+) {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
   mkdirSync(join(repo.dir, ".plan"));
@@ -26,13 +35,22 @@ async function scenario(actions: Action[] | null, plan = PLAN, logins: Logins = 
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   if (actions) fake.script(...actions);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins, allow: [] });
+  const server = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url },
+    logins,
+    allow: [],
+  });
   onTestFinished(server.close);
   const progress: string[] = [];
   const delegate = async (steps: string, note?: string, planPath = ".plan/hello.md") => {
-    const result = await server.client.callTool({ name: "delegate", arguments: { plan: planPath, steps, ...(note && { note }) } }, undefined, {
-      onprogress: (p) => void progress.push(p.message ?? ""),
-    });
+    const result = await server.client.callTool(
+      { name: "delegate", arguments: { plan: planPath, steps, ...(note && { note }) } },
+      undefined,
+      {
+        onprogress: (p) => void progress.push(p.message ?? ""),
+      },
+    );
     return (result.content as { text: string }[])[0].text;
   };
   return { repo, fake, delegate, progress };
@@ -41,21 +59,42 @@ async function scenario(actions: Action[] | null, plan = PLAN, logins: Logins = 
 const jobOf = (text: string) => text.match(/^\w+ (j[0-9a-z]{4}) /)![1];
 
 test("an inline task runs as a one-step job without a plan file, and lands OK", async () => {
-  const { repo, fake, server } = await scenarioWithServer([{ edit: "src/inline.ts", content: "export const inline = 1;\n" }, { finish: { summary: "added inline", risks: [], review: [], missing: [] } }]);
-  const call = async (args: Record<string, unknown>) => ((await server.client.callTool({ name: "delegate", arguments: args })).content as { text: string }[])[0].text;
-  const text = await call({ task: "Add src/inline.ts exporting inline = 1", files: "src/inline.ts" });
+  const { repo, fake, server } = await scenarioWithServer([
+    { edit: "src/inline.ts", content: "export const inline = 1;\n" },
+    { finish: { summary: "added inline", risks: [], review: [], missing: [] } },
+  ]);
+  const call = async (args: Record<string, unknown>) =>
+    (
+      (await server.client.callTool({ name: "delegate", arguments: args })).content as {
+        text: string;
+      }[]
+    )[0].text;
+  const text = await call({
+    task: "Add src/inline.ts exporting inline = 1",
+    files: "src/inline.ts",
+  });
   expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 /);
-  expect(readFileSync(join(repo.dir, "src", "inline.ts"), "utf8")).toBe("export const inline = 1;\n");
+  expect(readFileSync(join(repo.dir, "src", "inline.ts"), "utf8")).toBe(
+    "export const inline = 1;\n",
+  );
   const plans = readdirSync(join(repo.dir, ".cheapag", "plans"));
   expect(plans).toHaveLength(1);
   const plan = readFileSync(join(repo.dir, ".cheapag", "plans", plans[0]), "utf8");
   expect(plan).toContain("files: src/inline.ts");
   expect(plan).toContain("do: Add src/inline.ts exporting inline = 1");
-  expect(JSON.stringify(fake.recorded.prompts[0].parts)).toContain("Add src/inline.ts exporting inline = 1");
+  expect(JSON.stringify(fake.recorded.prompts[0].parts)).toContain(
+    "Add src/inline.ts exporting inline = 1",
+  );
   // neither form, both forms, or an empty task fail before any job
-  expect(await call({})).toBe("FAIL reason: give task (what to change, files, how to check), or plan and steps");
-  expect(await call({ task: "x", plan: ".plan/hello.md", steps: "1" })).toBe("FAIL reason: give either task, or plan and steps, not both");
-  expect(await call({ task: "  " })).toBe("FAIL reason: task is empty: say what to change, in which files, and how to check it");
+  expect(await call({})).toBe(
+    "FAIL reason: give task (what to change, files, how to check), or plan and steps",
+  );
+  expect(await call({ task: "x", plan: ".plan/hello.md", steps: "1" })).toBe(
+    "FAIL reason: give either task, or plan and steps, not both",
+  );
+  expect(await call({ task: "  " })).toBe(
+    "FAIL reason: task is empty: say what to change, in which files, and how to check it",
+  );
 });
 
 test("jobs wait with seconds returns the running worker's latest step, then a plain wait returns the final block", async () => {
@@ -65,7 +104,11 @@ test("jobs wait with seconds returns the running worker's latest step, then a pl
     { wait: 2_000 },
     { finish: REPORT },
   ]);
-  const running = await callText(server.client, "delegate", { plan: ".plan/hello.md", steps: "1", wait: false });
+  const running = await callText(server.client, "delegate", {
+    plan: ".plan/hello.md",
+    steps: "1",
+    wait: false,
+  });
   const job = jobOf(running);
   expect(running).toMatch(new RegExp(`^RUNNING ${job} `));
   const checkin = await callText(server.client, "jobs", { action: "wait", job, seconds: 1 });
@@ -79,25 +122,43 @@ test("a plan under .cheapag/ FAILs clearly before any job", async () => {
   mkdirSync(join(repo.dir, ".cheapag", "plans"), { recursive: true });
   writeFileSync(join(repo.dir, ".cheapag", "plans", "p.md"), PLAN);
   expect(await delegate("1", undefined, ".cheapag/plans/p.md")).toBe(
-    "FAIL reason: plan .cheapag/plans/p.md is under .cheapag/, Cheap Agent's state folder, which workers cannot see; save plans under .plan/");
+    "FAIL reason: plan .cheapag/plans/p.md is under .cheapag/, Cheap Agent's state folder, which workers cannot see; save plans under .plan/",
+  );
   expect(existsSync(join(repo.dir, ".cheapag", "jobs"))).toBe(false);
 });
 
 test("brief: a research id or text reaches the worker's prompt; an unknown id FAILs before any job", async () => {
-  const done: Action[] = [{ edit: "src/inline.ts", content: "export const inline = 1;\n" }, { finish: { summary: "added", risks: [], review: [], missing: [] } }];
+  const done: Action[] = [
+    { edit: "src/inline.ts", content: "export const inline = 1;\n" },
+    { finish: { summary: "added", risks: [], review: [], missing: [] } },
+  ];
   const { repo, fake, server } = await scenarioWithServer(done);
   fake.script(...done);
-  const call = async (args: Record<string, unknown>) => ((await server.client.callTool({ name: "delegate", arguments: args })).content as { text: string }[])[0].text;
+  const call = async (args: Record<string, unknown>) =>
+    (
+      (await server.client.callTool({ name: "delegate", arguments: args })).content as {
+        text: string;
+      }[]
+    )[0].text;
   // a research log, as research leaves it
   mkdirSync(join(repo.dir, ".cheapag", "jobs", "r5k2q"), { recursive: true });
-  writeFileSync(join(repo.dir, ".cheapag", "jobs", "r5k2q", "result.txt"), "ANSWER r5k2q files_read=2 turns=3 cost=$0.001\nfiles: src/auth.ts:18-22\nrepro: `pytest -k expiry` → 1 failed\n");
+  writeFileSync(
+    join(repo.dir, ".cheapag", "jobs", "r5k2q", "result.txt"),
+    "ANSWER r5k2q files_read=2 turns=3 cost=$0.001\nfiles: src/auth.ts:18-22\nrepro: `pytest -k expiry` → 1 failed\n",
+  );
   expect(await call({ task: "Fix expiry", brief: "r5k2q" })).toMatch(/^OK /);
   const prompt = JSON.stringify(fake.recorded.prompts[0].parts);
-  expect(prompt).toContain("Scout brief (from research; start here, and check anything marked unverified):");
+  expect(prompt).toContain(
+    "Scout brief (from research; start here, and check anything marked unverified):",
+  );
   expect(prompt).toContain("files: src/auth.ts:18-22");
-  expect(await call({ task: "Fix expiry again", plan: undefined, brief: "auth lives in src/auth.ts" })).toMatch(/^OK /);
+  expect(
+    await call({ task: "Fix expiry again", plan: undefined, brief: "auth lives in src/auth.ts" }),
+  ).toMatch(/^OK /);
   expect(JSON.stringify(fake.recorded.prompts[1].parts)).toContain("auth lives in src/auth.ts");
-  expect(await call({ task: "x", brief: "rzzzz" })).toBe("FAIL reason: brief rzzzz: no research with that id (cleaned up?); pass the brief's text instead");
+  expect(await call({ task: "x", brief: "rzzzz" })).toBe(
+    "FAIL reason: brief rzzzz: no research with that id (cleaned up?); pass the brief's text instead",
+  );
 });
 
 /** scenario() plus the raw server, for calls with arbitrary arguments. */
@@ -109,7 +170,12 @@ async function scenarioWithServer(actions: Action[]) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
   fake.script(...actions);
-  const server = await startServer({ cwd: repo.dir, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "go-key" }, allow: [] });
+  const server = await startServer({
+    cwd: repo.dir,
+    env: { CHEAPAG_OPENCODE_URL: fake.url },
+    logins: { "opencode-go": "go-key" },
+    allow: [],
+  });
   onTestFinished(server.close);
   return { repo, fake, server };
 }
@@ -130,27 +196,42 @@ test("a single step runs in a worktree and lands OK, uncommitted, with the resul
 
   const text = await delegate("1", "keep it short");
   const job = jobOf(text);
-  expect(text).toBe([
-    `OK ${job} step=1 files=2 +3/-0 tests=none turns=3 cost=$0.002`,
-    "summary: added hello constant and README note",
-    "changed:",
-    "  M README.md +2",
-    "  A src/hello.ts +1",
-    "risks:",
-    "  - none known",
-    "review: src/hello.ts:1-1",
-    `log: .cheapag/jobs/${job}/`,
-  ].join("\n"));
+  expect(text).toBe(
+    [
+      `OK ${job} step=1 files=2 +3/-0 tests=none turns=3 cost=$0.002`,
+      "summary: added hello constant and README note",
+      "changed:",
+      "  M README.md +2",
+      "  A src/hello.ts +1",
+      "risks:",
+      "  - none known",
+      "review: src/hello.ts:1-1",
+      `log: .cheapag/jobs/${job}/`,
+    ].join("\n"),
+  );
 
   // landed into the working tree, nothing committed, the user's index untouched
   expect(readFileSync(join(repo.dir, "src/hello.ts"), "utf8")).toBe("export const hello = 1;\n");
   expect(repo.git("log", "--oneline").trim().split("\n")).toHaveLength(1);
-  expect(repo.git("status", "--porcelain", "--untracked-files=all", "--", "README.md", "src", "staged.txt")).toBe(" M README.md\nA  staged.txt\n?? src/hello.ts\n");
+  expect(
+    repo.git(
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+      "--",
+      "README.md",
+      "src",
+      "staged.txt",
+    ),
+  ).toBe(" M README.md\nA  staged.txt\n?? src/hello.ts\n");
 
   // the worker ran in its own detached worktree, which is gone after landing
   const [session] = fake.recorded.sessions;
   expect(session.directory).toBe(join(repo.dir, ".cheapag", "worktrees", job));
-  expect(session).toMatchObject({ agent: "cheapag-worker", model: { providerID: "opencode-go", id: "deepseek-v4.1-flash" } });
+  expect(session).toMatchObject({
+    agent: "cheapag-worker",
+    model: { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
+  });
   expect(fake.recorded.prompts.every((p) => p.agent === undefined)).toBe(true);
   expect(existsSync(session.directory)).toBe(false);
   // the instance for the worktree's directory is disposed before the worktree is removed
@@ -170,30 +251,81 @@ test("a single step runs in a worktree and lands OK, uncommitted, with the resul
 
   const dir = join(repo.dir, ".cheapag", "jobs", job);
   expect(readFileSync(join(dir, "progress.txt"), "utf8")).toBe(progress[2] + "\n"); // the last message, for a live view
-  expect(readdirSync(dir).sort()).toEqual(["diff.patch", "events.jsonl.gz", "finish.json", "progress.txt", "request.json", "result.json", "result.txt"]);
+  expect(readdirSync(dir).sort()).toEqual([
+    "diff.patch",
+    "events.jsonl.gz",
+    "finish.json",
+    "progress.txt",
+    "request.json",
+    "result.json",
+    "result.txt",
+  ]);
   expect(JSON.parse(readFileSync(join(dir, "finish.json"), "utf8"))).toEqual(REPORT);
   expect(readFileSync(join(dir, "result.txt"), "utf8")).toBe(text + "\n");
   expect(readFileSync(join(dir, "diff.patch"), "utf8")).toContain("+export const hello = 1;");
   expect(JSON.parse(readFileSync(join(dir, "result.json"), "utf8"))).toMatchObject({
-    format: "cheapag/1", job, status: "OK", landed: true, plan: ".plan/hello.md", steps: "1",
-    baseline: { head: repo.git("rev-parse", "HEAD").trim() }, sessionID: session.id,
+    format: "cheapag/1",
+    job,
+    status: "OK",
+    landed: true,
+    plan: ".plan/hello.md",
+    steps: "1",
+    baseline: { head: repo.git("rev-parse", "HEAD").trim() },
+    sessionID: session.id,
     usage: { turns: 3, costUsd: 0.002, inputTokens: 1200, outputTokens: 50 },
   });
 });
 
 test.each([
-  ["an unknown step id", PLAN, "9", "FAIL reason: plan .plan/hello.md: step 9 not found (plan steps: 1)"],
-  ["an unknown id in a group list", PLAN, "1,9", "FAIL reason: plan .plan/hello.md: step 9 not found (plan steps: 1)"],
-  ["a malformed steps string", PLAN, "1;2", 'FAIL reason: plan .plan/hello.md: steps "1;2": "1;2" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)'],
-  ["a step in two groups", PLAN, "1,1", 'FAIL reason: plan .plan/hello.md: steps "1,1": step 1 is in more than one group'],
+  [
+    "an unknown step id",
+    PLAN,
+    "9",
+    "FAIL reason: plan .plan/hello.md: step 9 not found (plan steps: 1)",
+  ],
+  [
+    "an unknown id in a group list",
+    PLAN,
+    "1,9",
+    "FAIL reason: plan .plan/hello.md: step 9 not found (plan steps: 1)",
+  ],
+  [
+    "a malformed steps string",
+    PLAN,
+    "1;2",
+    'FAIL reason: plan .plan/hello.md: steps "1;2": "1;2" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)',
+  ],
+  [
+    "a step in two groups",
+    PLAN,
+    "1,1",
+    'FAIL reason: plan .plan/hello.md: steps "1,1": step 1 is in more than one group',
+  ],
   ["a plan path outside the repo", PLAN, "1", null],
-  ["a step missing done-when", "# T\n## 1 a\nfiles: a.ts\n", "1", `FAIL reason: plan .plan/hello.md: step 1 (line 2): missing done-when:\n${PLAN_FORMAT}`],
-  ["a heading without an id", "# T\n## add things\nfiles: a\ndone-when: x\n", "1", `FAIL reason: plan .plan/hello.md: line 2: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")\n${PLAN_FORMAT}`],
-  ["bulleted keys with no H1 (as Claude first wrote it)", "## 1 greet\n\n- files: src/greet.js\n- done-when: exists\n", "1", `FAIL reason: plan .plan/hello.md: line 1: step before the plan's H1 title\n${PLAN_FORMAT}`],
+  [
+    "a step missing done-when",
+    "# T\n## 1 a\nfiles: a.ts\n",
+    "1",
+    `FAIL reason: plan .plan/hello.md: step 1 (line 2): missing done-when:\n${PLAN_FORMAT}`,
+  ],
+  [
+    "a heading without an id",
+    "# T\n## add things\nfiles: a\ndone-when: x\n",
+    "1",
+    `FAIL reason: plan .plan/hello.md: line 2: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")\n${PLAN_FORMAT}`,
+  ],
+  [
+    "bulleted keys with no H1 (as Claude first wrote it)",
+    "## 1 greet\n\n- files: src/greet.js\n- done-when: exists\n",
+    "1",
+    `FAIL reason: plan .plan/hello.md: line 1: step before the plan's H1 title\n${PLAN_FORMAT}`,
+  ],
 ] as const)("%s fails immediately without starting a job", async (_, plan, steps, expected) => {
   const { repo, fake, delegate } = await scenario(null, plan);
   if (expected === null) {
-    expect(await delegate(steps, undefined, "../outside.md")).toBe("FAIL reason: plan ../outside.md must be a path inside the repository, relative to its root");
+    expect(await delegate(steps, undefined, "../outside.md")).toBe(
+      "FAIL reason: plan ../outside.md must be a path inside the repository, relative to its root",
+    );
   } else {
     expect(await delegate(steps)).toBe(expected);
   }
@@ -205,16 +337,23 @@ test("without finish, the fenced cheapag-result block is used", async () => {
   const { delegate } = await scenario([
     { edit: "src/hello.ts", content: "export const hello = 1;\n" },
     { tool: "write" },
-    { text: "Done.\n```cheapag-result\nsummary: wrote hello\nrisks:\n- untested\nreview: src/hello.ts:1-1\nmissing:\ndisagree: the step says reversed MRO, the source walks it forwards\n```" },
+    {
+      text: "Done.\n```cheapag-result\nsummary: wrote hello\nrisks:\n- untested\nreview: src/hello.ts:1-1\nmissing:\ndisagree: the step says reversed MRO, the source walks it forwards\n```",
+    },
   ]);
   const text = await delegate("1");
   expect(text).toContain("\nsummary: wrote hello\n");
   // the server puts a disagreement first, so the risk cap never cuts it (ticket 28)
-  expect(text).toContain("\nrisks:\n  - spec vs source: the step says reversed MRO, the source walks it forwards\n  - untested\nreview: src/hello.ts:1-1\n");
+  expect(text).toContain(
+    "\nrisks:\n  - spec vs source: the step says reversed MRO, the source walks it forwards\n  - untested\nreview: src/hello.ts:1-1\n",
+  );
 });
 
 test("with neither finish nor a result block, a placeholder summary and risk are reported", async () => {
-  const { delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { tool: "write" }]);
+  const { delegate } = await scenario([
+    { edit: "src/hello.ts", content: "x\n" },
+    { tool: "write" },
+  ]);
   const text = await delegate("1");
   expect(text).toMatch(/^OK /);
   expect(text).toContain("\nsummary: (worker gave no summary)\n");
@@ -222,7 +361,10 @@ test("with neither finish nor a result block, a placeholder summary and risk are
 });
 
 test("a worker error is a FAIL: nothing lands and the worktree is kept", async () => {
-  const { repo, delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { error: { name: "APIError", message: "upstream 500" } }]);
+  const { repo, delegate } = await scenario([
+    { edit: "src/hello.ts", content: "x\n" },
+    { error: { name: "APIError", message: "upstream 500" } },
+  ]);
   const text = await delegate("1");
   const job = jobOf(text);
   expect(text.split("\n")[0]).toMatch(new RegExp(`^FAIL ${job} step=1 files=1 `));
@@ -233,7 +375,10 @@ test("a worker error is a FAIL: nothing lands and the worktree is kept", async (
 });
 
 test("an error reported only on the assistant message (no session.error) is still a FAIL", async () => {
-  const { repo, delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { error: { name: "APIError", message: "Insufficient credits" }, on: "message" }]);
+  const { repo, delegate } = await scenario([
+    { edit: "src/hello.ts", content: "x\n" },
+    { error: { name: "APIError", message: "Insufficient credits" }, on: "message" },
+  ]);
   const text = await delegate("1");
   expect(text).toMatch(/^FAIL /);
   expect(text).toContain("\nreason: worker error: Insufficient credits\n");
@@ -242,7 +387,11 @@ test("an error reported only on the assistant message (no session.error) is stil
 
 test("an uncommitted edit the developer made before delegating is the worker's starting point, not a conflict", async () => {
   let dir = "";
-  const { repo, delegate } = await scenario([{ edit: "README.md", content: "# fixture\n\nmine\nworker's line\n" }, { tool: "edit" }, { finish: REPORT }]);
+  const { repo, delegate } = await scenario([
+    { edit: "README.md", content: "# fixture\n\nmine\nworker's line\n" },
+    { tool: "edit" },
+    { finish: REPORT },
+  ]);
   dir = repo.dir;
   writeFileSync(join(dir, "README.md"), "# fixture\n\nmine\n");
   const text = await delegate("1");
@@ -257,7 +406,12 @@ test("a landing conflict the redo cannot reconcile is CONFLICT: the working tree
   const { repo, fake, delegate } = await scenario([
     { edit: "README.md", content: "# worker's title\n" },
     // the developer edits the same line in the main checkout while the job runs
-    { hook: () => (writeFileSync(join(dir, "README.md"), "# user's title\n"), (before = snapshot(dir))) },
+    {
+      hook: () => (
+        writeFileSync(join(dir, "README.md"), "# user's title\n"),
+        (before = snapshot(dir))
+      ),
+    },
     { tool: "edit" },
     { finish: REPORT },
   ]); // the redo prompt gets no script: the worker leaves the conflict markers in place
@@ -265,19 +419,32 @@ test("a landing conflict the redo cannot reconcile is CONFLICT: the working tree
   const text = await delegate("1");
   const job = jobOf(text);
   expect(text).toMatch(new RegExp(`^CONFLICT ${job} step=1 files=1 .* redo=1\n`));
-  expect(text).toContain(`\nconflict:\n  README.md (changed in the working tree meanwhile; redo left conflict markers)\nworktree: .cheapag/worktrees/${job}/\nlog: .cheapag/jobs/${job}/`);
+  expect(text).toContain(
+    `\nconflict:\n  README.md (changed in the working tree meanwhile; redo left conflict markers)\nworktree: .cheapag/worktrees/${job}/\nlog: .cheapag/jobs/${job}/`,
+  );
   expect(snapshot(repo.dir)).toEqual(before);
   expect(fake.recorded.prompts).toHaveLength(2); // exactly one redo
   // the redo's worktree holds the change applied again, with the clash marked
-  expect(readFileSync(join(repo.dir, ".cheapag", "worktrees", job, "README.md"), "utf8")).toMatch(/^<<<<<<< [\s\S]*# user's title\n=======\n# worker's title\n>>>>>>> /);
-  expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"))).toMatchObject({
-    status: "CONFLICT", landed: false, redo: 1, worktree: `.cheapag/worktrees/${job}`,
+  expect(readFileSync(join(repo.dir, ".cheapag", "worktrees", job, "README.md"), "utf8")).toMatch(
+    /^<<<<<<< [\s\S]*# user's title\n=======\n# worker's title\n>>>>>>> /,
+  );
+  expect(
+    JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8")),
+  ).toMatchObject({
+    status: "CONFLICT",
+    landed: false,
+    redo: 1,
+    worktree: `.cheapag/worktrees/${job}`,
   });
 });
 
 test("key-shaped strings in the worker's code land intact; only the log copy is redacted", async () => {
   const code = 'export const example = "sk-docsEXAMPLE0123456789abcdef";\n';
-  const { repo, delegate } = await scenario([{ edit: "src/hello.ts", content: code }, { tool: "write" }, { finish: REPORT }]);
+  const { repo, delegate } = await scenario([
+    { edit: "src/hello.ts", content: code },
+    { tool: "write" },
+    { finish: REPORT },
+  ]);
   const job = jobOf(await delegate("1"));
   expect(readFileSync(join(repo.dir, "src/hello.ts"), "utf8")).toBe(code);
   const log = readFileSync(join(repo.dir, ".cheapag", "jobs", job, "diff.patch"), "utf8");
@@ -286,7 +453,10 @@ test("key-shaped strings in the worker's code land intact; only the log copy is 
 });
 
 test("a worker stream that ends before idle is a FAIL with a full record, not an OK", async () => {
-  const { repo, fake, delegate } = await scenario([{ edit: "src/hello.ts", content: "x\n" }, { wait: 60_000 }]);
+  const { repo, fake, delegate } = await scenario([
+    { edit: "src/hello.ts", content: "x\n" },
+    { wait: 60_000 },
+  ]);
   const pending = delegate("1");
   await vi.waitFor(() => expect(fake.recorded.prompts).toHaveLength(1));
   await new Promise((r) => setTimeout(r, 50));
@@ -294,37 +464,67 @@ test("a worker stream that ends before idle is a FAIL with a full record, not an
   const text = await pending;
   const job = jobOf(text);
   expect(text).toMatch(/^FAIL /);
-  expect(text).toContain("\nreason: worker error: worker event stream ended before the session went idle\n");
+  expect(text).toContain(
+    "\nreason: worker error: worker event stream ended before the session went idle\n",
+  );
   expect(existsSync(join(repo.dir, "src/hello.ts"))).toBe(false);
-  expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8"))).toMatchObject({ status: "FAIL", landed: false, worktree: `.cheapag/worktrees/${job}` });
+  expect(
+    JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", job, "result.json"), "utf8")),
+  ).toMatchObject({ status: "FAIL", landed: false, worktree: `.cheapag/worktrees/${job}` });
 });
 
 test("with only an OpenRouter login, the job runs on an openrouter model and lands OK", async () => {
   const { repo, fake, delegate } = await scenario(
-    [{ edit: "src/hello.ts", content: "export const hello = 1;\n" }, { tool: "write" }, { usage: { cost: 0.0004 } }, { finish: REPORT }],
+    [
+      { edit: "src/hello.ts", content: "export const hello = 1;\n" },
+      { tool: "write" },
+      { usage: { cost: 0.0004 } },
+      { finish: REPORT },
+    ],
     PLAN,
     { openrouter: "sk-or-v1-testkeytestkeytestkey" },
   );
   const text = await delegate("1");
-  expect(text).toMatch(/^OK j[0-9a-z]{4} step=1 files=1 \+1\/-0 tests=none turns=2 cost=\$0\.000\n/);
-  expect(fake.recorded.sessions[0].model).toEqual({ providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" });
+  expect(text).toMatch(
+    /^OK j[0-9a-z]{4} step=1 files=1 \+1\/-0 tests=none turns=2 cost=\$0\.000\n/,
+  );
+  expect(fake.recorded.sessions[0].model).toEqual({
+    providerID: "openrouter",
+    id: "deepseek/deepseek-v4.1-flash",
+  });
   expect(readFileSync(join(repo.dir, "src/hello.ts"), "utf8")).toBe("export const hello = 1;\n");
-  expect(JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", jobOf(text), "result.json"), "utf8"))).toMatchObject({
-    provider: "openrouter", models: { requested: "openrouter/deepseek/deepseek-v4.1-flash" },
+  expect(
+    JSON.parse(
+      readFileSync(join(repo.dir, ".cheapag", "jobs", jobOf(text), "result.json"), "utf8"),
+    ),
+  ).toMatchObject({
+    provider: "openrouter",
+    models: { requested: "openrouter/deepseek/deepseek-v4.1-flash" },
   });
 });
 
 test("every worker session carries the ruleset: catch-all deny first, project scripts allowed, hard denylist last", async () => {
-  const { repo, fake, delegate } = await scenario([{ finish: REPORT }], PLAN.replace("done-when: hello is exported", "done-when: `node check.mjs` passes"));
+  const { repo, fake, delegate } = await scenario(
+    [{ finish: REPORT }],
+    PLAN.replace("done-when: hello is exported", "done-when: `node check.mjs` passes"),
+  );
   writeFileSync(join(repo.dir, "package.json"), JSON.stringify({ scripts: { lint: "eslint ." } }));
   repo.git("add", "package.json");
   repo.git("commit", "-q", "-m", "pkg");
   mkdirSync(join(repo.dir, "node_modules"));
   await delegate("1");
-  const rules = fake.recorded.sessions[0].permission as { permission: string; pattern: string; action: string }[];
+  const rules = fake.recorded.sessions[0].permission as {
+    permission: string;
+    pattern: string;
+    action: string;
+  }[];
   expect(rules[0]).toEqual({ permission: "*", pattern: "*", action: "deny" });
   expect(rules).toContainEqual({ permission: "bash", pattern: "npm run lint", action: "allow" });
-  expect(rules).toContainEqual({ permission: "bash", pattern: "npx tsc --noEmit", action: "allow" }); // allow_commands default
+  expect(rules).toContainEqual({
+    permission: "bash",
+    pattern: "npx tsc --noEmit",
+    action: "allow",
+  }); // allow_commands default
   expect(rules).toContainEqual({ permission: "bash", pattern: "node check.mjs", action: "allow" }); // the step's done-when command
   expect(rules).toContainEqual({ permission: "edit", pattern: "node_modules/**", action: "deny" }); // the linked dir
   expect(rules).toContainEqual({ permission: "external_directory", pattern: "*", action: "deny" });
@@ -346,18 +546,66 @@ test("a permission request is auto-rejected with a reason, so the job never hang
   ]);
   const text = await delegate("1");
   expect(text).toMatch(/^OK /);
-  expect(fake.recorded.permissionReplies).toEqual([{
-    requestID: expect.any(String), reply: "reject",
-    message: "Not allowed in cheapag: `npm install zod`. If you need a dependency, use the question tool. Otherwise finish and list it in risks.",
-  }]);
-  const record = JSON.parse(readFileSync(join(repo.dir, ".cheapag", "jobs", jobOf(text), "result.json"), "utf8"));
-  expect(record.autoRejected).toEqual([{ kind: "asked", permission: "bash", what: "npm install zod" }]);
+  expect(fake.recorded.permissionReplies).toEqual([
+    {
+      requestID: expect.any(String),
+      reply: "reject",
+      message:
+        "Not allowed in cheapag: `npm install zod`. If you need a dependency, use the question tool. Otherwise finish and list it in risks.",
+    },
+  ]);
+  const record = JSON.parse(
+    readFileSync(join(repo.dir, ".cheapag", "jobs", jobOf(text), "result.json"), "utf8"),
+  );
+  expect(record.autoRejected).toEqual([
+    { kind: "asked", permission: "bash", what: "npm install zod" },
+  ]);
   expect(text).not.toContain("rejected; check"); // 5 or fewer: no risk line
 });
 
 test("more than 5 rejections in a job put a risk line first", async () => {
-  const asks: Action[] = Array.from({ length: 6 }, (_, i) => ({ permission: "bash", patterns: [`curl https://x/${i}`] }));
+  const asks: Action[] = Array.from({ length: 6 }, (_, i) => ({
+    permission: "bash",
+    patterns: [`curl https://x/${i}`],
+  }));
   const { delegate } = await scenario([...asks, { finish: REPORT }]);
   const text = await delegate("1");
-  expect(text).toContain("\nrisks:\n  - 6 tool calls or permission requests were rejected; check the worker stayed in scope (see the log)\n  - none known\n");
+  expect(text).toContain(
+    "\nrisks:\n  - 6 tool calls or permission requests were rejected; check the worker stayed in scope (see the log)\n  - none known\n",
+  );
+});
+
+test("a redo that resolves the clash but meets a second change on landing is CONFLICT: redo could not reconcile, the tree untouched", async () => {
+  let dir = "";
+  let before: ReturnType<typeof snapshot> | undefined;
+  const { repo, fake, delegate } = await scenario([
+    { edit: "README.md", content: "# worker's title\n" },
+    { hook: () => writeFileSync(join(dir, "README.md"), "# user's title\n") },
+    { tool: "edit" },
+    { finish: REPORT },
+  ]);
+  // the redo: the worker settles the clash, and the developer edits the line once more before it lands
+  fake.script(
+    { edit: "README.md", content: "# merged title\n" },
+    {
+      hook: () => (
+        writeFileSync(join(dir, "README.md"), "# user's second title\n"),
+        (before = snapshot(dir))
+      ),
+    },
+    { tool: "edit" },
+    { finish: REPORT },
+  );
+  dir = repo.dir;
+  const text = await delegate("1");
+  const job = jobOf(text);
+  expect(text).toMatch(new RegExp(`^CONFLICT ${job} step=1 files=1 .* redo=1\n`));
+  expect(text).toContain(
+    `\nconflict:\n  README.md (changed in the working tree meanwhile; redo could not reconcile)\nworktree: .cheapag/worktrees/${job}/\nlog: .cheapag/jobs/${job}/`,
+  );
+  expect(snapshot(repo.dir)).toEqual(before);
+  expect(fake.recorded.prompts).toHaveLength(2); // one redo, never a second
+  expect(readFileSync(join(repo.dir, ".cheapag", "worktrees", job, "README.md"), "utf8")).toBe(
+    "# merged title\n",
+  );
 });

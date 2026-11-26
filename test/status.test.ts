@@ -1,8 +1,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { closeSync, ftruncateSync, mkdirSync, openSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  ftruncateSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { expect, onTestFinished, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
+import { lastSession } from "../src/status.js";
 import { PRESETS } from "../src/routing.js";
 import { allowRepo, hermeticHome, serverEntry, tempRepo } from "./harness.js";
 
@@ -15,21 +27,50 @@ function setup(logins = {}) {
   onTestFinished(repo.cleanup);
   const { home, env } = hermeticHome(logins);
   onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-  const status = (cwd = repo.dir) => execFileSync(process.execPath, [serverEntry, "status"], { cwd, env, stdio: "pipe" }).toString();
+  const status = (cwd = repo.dir) =>
+    execFileSync(process.execPath, [serverEntry, "status"], { cwd, env, stdio: "pipe" }).toString();
   const job = (id: string, status: string, hoursAgo: number, pid = deadPid, blockedAt?: string) => {
     const dir = join(repo.dir, ".cheapag", "jobs", id);
     mkdirSync(dir, { recursive: true });
     const at = new Date(Date.now() - hoursAgo * HOUR).toISOString();
-    writeFileSync(join(dir, "result.json"), JSON.stringify({
-      format: "cheapag/1", job: id, status, landed: status === "OK", steps: "1", summary: "s", changed: [], risks: [], review: [], missing: [],
-      worktree: null, usage: { turns: 3, costUsd: 0.01 }, tests: "pass", selfFix: 0, models: { requested: "m", final: "m", escalated: false },
-      pid, timing: { startedAt: at, endedAt: at, blockedAt },
-    }));
+    writeFileSync(
+      join(dir, "result.json"),
+      JSON.stringify({
+        format: "cheapag/1",
+        job: id,
+        status,
+        landed: status === "OK",
+        steps: "1",
+        summary: "s",
+        changed: [],
+        risks: [],
+        review: [],
+        missing: [],
+        worktree: null,
+        usage: { turns: 3, costUsd: 0.01 },
+        tests: "pass",
+        selfFix: 0,
+        models: { requested: "m", final: "m", escalated: false },
+        pid,
+        timing: { startedAt: at, endedAt: at, blockedAt },
+      }),
+    );
   };
   const spend = (lines: { hoursAgo: number; model: string; costUsd: number }[]) => {
     mkdirSync(join(home, "state", "cheapag"), { recursive: true });
-    writeFileSync(join(home, "state", "cheapag", "spend.jsonl"), lines.map((l) =>
-      JSON.stringify({ at: new Date(Date.now() - l.hoursAgo * HOUR).toISOString(), model: l.model, costUsd: l.costUsd }) + "\n").join(""));
+    writeFileSync(
+      join(home, "state", "cheapag", "spend.jsonl"),
+      lines
+        .map(
+          (l) =>
+            JSON.stringify({
+              at: new Date(Date.now() - l.hoursAgo * HOUR).toISOString(),
+              model: l.model,
+              costUsd: l.costUsd,
+            }) + "\n",
+        )
+        .join(""),
+    );
   };
   return { repo, env, status, job, spend };
 }
@@ -68,9 +109,15 @@ test("cheapag status names the preset: the user's, a repo's cheapag.json over it
   const { repo, env, status } = setup({ "opencode-go": "k" });
   const user = join(env.XDG_CONFIG_HOME, "cheapag");
   mkdirSync(user, { recursive: true });
-  writeFileSync(join(user, "config.json"), JSON.stringify({ models: { implement: "opencode-go/kimi-k3" } }));
+  writeFileSync(
+    join(user, "config.json"),
+    JSON.stringify({ models: { implement: "opencode-go/kimi-k3" } }),
+  );
   expect(status().split("\n")[0]).toBe(`cheapag ${version} provider=opencode-go preset=custom`);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: PRESETS["opencode-go"].strongest }),
+  );
   expect(status().split("\n")[0]).toBe(`cheapag ${version} provider=opencode-go preset=strongest`);
 });
 
@@ -78,23 +125,39 @@ test("cheapag status says consent no longer covers the models after a preset cha
   const { repo, env, status } = setup({ openrouter: "k" });
   allowRepo(repo.dir, env);
   expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS.openrouter.strongest }));
-  expect(status().split("\n")[1]).toBe("consent: given for other worker models (preset or models changed); run /cheapag:allow");
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: PRESETS.openrouter.strongest }),
+  );
+  expect(status().split("\n")[1]).toBe(
+    "consent: given for other worker models (preset or models changed); run /cheapag:allow",
+  );
 });
 
 test("cheapag status on opencode-go keeps consent valid after a preset change (ticket 45)", () => {
   const { repo, env, status } = setup({ "opencode-go": "k" });
   allowRepo(repo.dir, env);
-  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: PRESETS["opencode-go"].strongest }));
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: PRESETS["opencode-go"].strongest }),
+  );
   expect(status().split("\n")[1]).toMatch(/^consent: all models \(since /);
 });
 
 test("cheapag status with no login, no jobs and no spend; outside a repository; bad arguments", () => {
   const { repo, env, status } = setup();
-  expect(status()).toBe(`cheapag ${version} provider=none (run npx cheap-agent login)\nconsent: not given; run /cheapag:allow\nstorage: 0.0 KB in .cheapag (0 job folders, 0 worktrees)\nrunning: none\nrecent: none\nspend: none tracked in the last 30 days\n`);
+  expect(status()).toBe(
+    `cheapag ${version} provider=none (run npx cheap-agent login)\nconsent: not given; run /cheapag:allow\nstorage: 0.0 KB in .cheapag (0 job folders, 0 worktrees)\nrunning: none\nrecent: none\nspend: none tracked in the last 30 days\n`,
+  );
   const outside = join(repo.dir, ".git"); // inside .git, rev-parse --show-toplevel fails
-  expect(status(outside)).toContain("repo: not a git repository (no jobs or consent here)\nspend: none");
-  const r = spawnSync(process.execPath, [serverEntry, "status", "--x"], { cwd: repo.dir, env, encoding: "utf8" });
+  expect(status(outside)).toContain(
+    "repo: not a git repository (no jobs or consent here)\nspend: none",
+  );
+  const r = spawnSync(process.execPath, [serverEntry, "status", "--x"], {
+    cwd: repo.dir,
+    env,
+    encoding: "utf8",
+  });
   expect([r.status, r.stdout]).toEqual([1, "✗ usage: cheapag status\n"]);
 });
 
@@ -111,8 +174,13 @@ test("cheapag status shows the size of .cheapag and points to clean above 1GB", 
   const fd = openSync(join(trees, "jbig1", "huge.bin"), "w");
   ftruncateSync(fd, 2 * 1024 * 1024 * 1024);
   closeSync(fd);
-  expect(status().split("\n").find((line) => line.startsWith("storage: ")))
-    .toMatch(/^storage: [\d.]+ GB in \.cheapag \(1 job folders, 1 worktrees\) · run: npx cheap-agent clean$/);
+  expect(
+    status()
+      .split("\n")
+      .find((line) => line.startsWith("storage: ")),
+  ).toMatch(
+    /^storage: [\d.]+ GB in \.cheapag \(1 job folders, 1 worktrees\) · run: npx cheap-agent clean$/,
+  );
 });
 
 test("cheapag status shows the prefix of this repo's last Claude Code session, from its transcript", () => {
@@ -121,12 +189,78 @@ test("cheapag status shows the prefix of this repo's last Claude Code session, f
   const projects = join(config, "projects", repo.dir.replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(projects, { recursive: true });
   let id = 0;
-  const turn = (read: number, write: number) => JSON.stringify({ type: "assistant", message: { id: `m${id++}`, usage: { input_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: write, cache_creation: { ephemeral_1h_input_tokens: write, ephemeral_5m_input_tokens: 0 } } } });
+  const turn = (read: number, write: number) =>
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        id: `m${id++}`,
+        usage: {
+          input_tokens: 4,
+          cache_read_input_tokens: read,
+          cache_creation_input_tokens: write,
+          cache_creation: { ephemeral_1h_input_tokens: write, ephemeral_5m_input_tokens: 0 },
+        },
+      },
+    });
   writeFileSync(join(projects, "old.jsonl"), [turn(1, 1)].join("\n"));
   utimesSync(join(projects, "old.jsonl"), new Date(2020, 0, 1), new Date(2020, 0, 1));
   const last = turn(40_000, 900);
-  writeFileSync(join(projects, "new.jsonl"), [JSON.stringify({ type: "user" }), turn(15_000, 3_396), last, last].join("\n")); // a streamed response repeats its line
-  const run = (extra: Record<string, string>) => execFileSync(process.execPath, [serverEntry, "status"], { cwd: repo.dir, env: { ...env, ...extra }, stdio: "pipe" }).toString();
-  expect(run({ CLAUDE_CONFIG_DIR: config })).toMatch(/\nclaude prefix: 18\.4k tokens on the first turn of the last session here \(\d{4}-\d\d-\d\d\);.*\nclaude cache: 2 requests, 93% of input from cache, 1h TTL\n/);
+  writeFileSync(
+    join(projects, "new.jsonl"),
+    [JSON.stringify({ type: "user" }), turn(15_000, 3_396), last, last].join("\n"),
+  ); // a streamed response repeats its line
+  const run = (extra: Record<string, string>) =>
+    execFileSync(process.execPath, [serverEntry, "status"], {
+      cwd: repo.dir,
+      env: { ...env, ...extra },
+      stdio: "pipe",
+    }).toString();
+  expect(run({ CLAUDE_CONFIG_DIR: config })).toMatch(
+    /\nclaude prefix: 18\.4k tokens on the first turn of the last session here \(\d{4}-\d\d-\d\d\);.*\nclaude cache: 2 requests, 93% of input from cache, 1h TTL\n/,
+  );
   expect(run({ CLAUDE_CONFIG_DIR: join(config, "none") })).not.toContain("claude prefix"); // no transcript: nothing printed
+});
+
+// permission bits mean nothing to root or on Windows
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "storage: folders that cannot be read or entered are skipped, never an error",
+  () => {
+    const { repo, status, job } = setup();
+    job("jgood", "OK", 1);
+    const locked = join(repo.dir, ".cheapag", "jobs", "jgood", "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "big.bin"), "x".repeat(50_000));
+    const trees = join(repo.dir, ".cheapag", "worktrees");
+    mkdirSync(join(trees, "jtree"), { recursive: true });
+    chmodSync(locked, 0o000); // cannot be listed
+    chmodSync(trees, 0o444); // can be listed, but its entries cannot be examined
+    onTestFinished(() => {
+      chmodSync(locked, 0o755);
+      chmodSync(trees, 0o755);
+    });
+    // the locked folder's 50 KB are not counted, and the worktree is not seen as a folder
+    expect(status()).toMatch(/\nstorage: 0\.\d KB in \.cheapag \(1 job folders, 0 worktrees\)\n/);
+  },
+);
+
+test("lastSession: undefined for a half-written transcript, and for one with no usage yet", () => {
+  const config = mkdtempSync(join(tmpdir(), "cheapag-claude-"));
+  vi.stubEnv("CLAUDE_CONFIG_DIR", config);
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+    rmSync(config, { recursive: true, force: true });
+  });
+  const root = "/some/repo";
+  const dir = join(config, "projects", "-some-repo");
+  mkdirSync(dir, { recursive: true });
+  const usage = { input_tokens: 10, cache_read_input_tokens: 30, cache_creation_input_tokens: 0 };
+  writeFileSync(join(dir, "a.jsonl"), JSON.stringify({ message: { id: "m1", usage } }) + "\n");
+  expect(lastSession(root)).toMatchObject({ prefix: 40, requests: 1, hitRate: 0.75 });
+  writeFileSync(
+    join(dir, "a.jsonl"),
+    JSON.stringify({ message: { id: "m1", usage } }) + "\n{ half-written",
+  );
+  expect(lastSession(root)).toBeUndefined();
+  writeFileSync(join(dir, "a.jsonl"), JSON.stringify({ message: { id: "m1" } }) + "\n");
+  expect(lastSession(root)).toBeUndefined();
 });

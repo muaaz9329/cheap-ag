@@ -3,7 +3,14 @@ import { gitBash, killProcessGroup, normalisePath } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
 
-export type VerifyRun = { cmd: string; ok: boolean; ms: number; output: string; code: number | null; signal: string | null };
+export type VerifyRun = {
+  cmd: string;
+  ok: boolean;
+  ms: number;
+  output: string;
+  code: number | null;
+  signal: string | null;
+};
 
 // a backstop per command; the job's minute cap (its `signal`) bounds the whole job
 const COMMAND_TIMEOUT_MS = 5 * 60_000;
@@ -11,7 +18,9 @@ const OUTPUT_LIMIT = 1024 * 1024;
 
 /** The backticked fragments of each step's `done-when`, in order; else the configured test_cmd; else none. */
 export function verifyCommands(doneWhen: string[], testCmd?: string) {
-  const backticked = doneWhen.flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim())).filter(Boolean);
+  const backticked = doneWhen
+    .flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))
+    .filter(Boolean);
   return backticked.length ? backticked : testCmd ? [testCmd] : [];
 }
 
@@ -29,7 +38,10 @@ export function checkAllows(cmd: string): string[] {
   add(cmd);
   for (const segment of cmd.split(/&&|\|\||;|\|/)) {
     add(segment);
-    const stripped = segment.trim().replace(/^(?:export\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").trim();
+    const stripped = segment
+      .trim()
+      .replace(/^(?:export\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "")
+      .trim();
     if (stripped) add(stripped);
   }
   return out;
@@ -39,7 +51,12 @@ export function checkAllows(cmd: string): string[] {
  * Runs the commands in order in `cwd`, stopping at the first failure; `onStart` hears each command as it begins.
  * Aborting `signal` kills the running command's process group (cap or cancel) and fails it.
  */
-export async function runVerify(cwd: string, cmds: string[], onStart: (cmd: string) => void, signal?: AbortSignal): Promise<VerifyRun[]> {
+export async function runVerify(
+  cwd: string,
+  cmds: string[],
+  onStart: (cmd: string) => void,
+  signal?: AbortSignal,
+): Promise<VerifyRun[]> {
   const runs: VerifyRun[] = [];
   for (const cmd of cmds) {
     if (signal?.aborted) break;
@@ -59,8 +76,21 @@ function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyR
     const env = { ...process.env, CI: "1", FORCE_COLOR: "0" };
     // its own process group, so everything it spawned can be stopped with it
     const child = bash
-      ? spawn(bash, ["-c", cmd], { cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env })
-      : spawn(cmd, { shell: true, cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
+      ? spawn(bash, ["-c", cmd], {
+          cwd,
+          detached: true,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          env,
+        })
+      : spawn(cmd, {
+          shell: true,
+          cwd,
+          detached: true,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          env,
+        });
     const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;
@@ -87,18 +117,33 @@ function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyR
     child.on("close", () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", halt);
-      resolve({ cmd, ok: code === 0 && !signal?.aborted, ms: Date.now() - started, output, code, signal: exitSignal });
+      resolve({
+        cmd,
+        ok: code === 0 && !signal?.aborted,
+        ms: Date.now() - started,
+        output,
+        code,
+        signal: exitSignal,
+      });
     });
     child.on("error", (err) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", halt);
-      resolve({ cmd, ok: false, ms: Date.now() - started, output: err.message, code: null, signal: null });
+      resolve({
+        cmd,
+        ok: false,
+        ms: Date.now() - started,
+        output: err.message,
+        code: null,
+        signal: null,
+      });
     });
   });
 }
 
 // output only a shell or dynamic loader emits when it cannot run the command at all
-const ENV_OUTPUT = /command not found|dyld|Abort trap|is not recognized as an internal or external command|cannot execute binary|No such file or directory: .*\b(node|npx|python3?|pytest|go|cargo)\b/i;
+const ENV_OUTPUT =
+  /command not found|dyld|Abort trap|is not recognized as an internal or external command|cannot execute binary|No such file or directory: .*\b(node|npx|python3?|pytest|go|cargo)\b/i;
 
 /**
  * Why a failed check looks environmental (a missing tool or a broken Node) rather than a failing test: the exit code,
@@ -118,7 +163,8 @@ const MARKER = /✗|✘|×|\bFAIL\b|Error:|error TS\d+|AssertionError|Traceback|
 const DETAIL = /expected|received|\bgot\b|\bwant\b|^\s*[-+] /i;
 const FRAME = /^\s*(at |File ")|\.(ts|tsx|js|mjs|cjs|py|go|rs):\d+/;
 // pass lines and progress only: a line that also carries a failure marker is never noise
-const NOISE = /^\s*(✓|√|PASS\b|ok\b)|^\s*(Tests?|Test Files|Suites?)\b.*\bpassed\b|^\s*[.·•⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+$/;
+const NOISE =
+  /^\s*(✓|√|PASS\b|ok\b)|^\s*(Tests?|Test Files|Suites?)\b.*\bpassed\b|^\s*[.·•⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+$/;
 const MAX_FAILURES = 3;
 const MAX_LINES = 25;
 
@@ -132,7 +178,9 @@ export function errorTail(run: VerifyRun, root: string): string[] {
   const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
   const lines = run.output
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) => rest.replace(/\\/g, "/"))
+    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
+      rest.replace(/\\/g, "/"),
+    )
     .split(/\r?\n/)
     .map((l) => l.replace(/\t/g, "  ").trimEnd())
     .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
@@ -144,13 +192,23 @@ export function errorTail(run: VerifyRun, root: string): string[] {
     let frame = false;
     let j = i + 1;
     // a runner's headline ("FAIL a > b") and its error ("AssertionError: …") on adjacent lines are one failure
-    if (j < lines.length && MARKER.test(lines[j]) && block[0].length + lines[j].length < 400 && /^\s*(FAIL|✗|×)/.test(lines[i]) && /Error/.test(lines[j])) {
+    if (
+      j < lines.length &&
+      MARKER.test(lines[j]) &&
+      block[0].length + lines[j].length < 400 &&
+      /^\s*(FAIL|✗|×)/.test(lines[i]) &&
+      /Error/.test(lines[j])
+    ) {
       block.push(`  ${lines[j].trim()}`);
       j++;
     }
     for (; j < lines.length && j <= i + 12 && !MARKER.test(lines[j]); j++) {
       if (DETAIL.test(lines[j]) && block.length < 5) block.push(`  ${lines[j].trim()}`);
-      else if (!frame && FRAME.test(lines[j]) && !/node_modules|node:internal|site-packages/.test(lines[j])) {
+      else if (
+        !frame &&
+        FRAME.test(lines[j]) &&
+        !/node_modules|node:internal|site-packages/.test(lines[j])
+      ) {
         block.push(`  ${lines[j].trim()}`);
         frame = true;
       }
@@ -163,16 +221,23 @@ export function errorTail(run: VerifyRun, root: string): string[] {
   }
 
   const body = failures.length
-    ? failures.slice(0, MAX_FAILURES).flatMap((f) => [f.count > 1 ? `${f.lines[0]} (×${f.count})` : f.lines[0], ...f.lines.slice(1)])
+    ? failures
+        .slice(0, MAX_FAILURES)
+        .flatMap((f) => [
+          f.count > 1 ? `${f.lines[0]} (×${f.count})` : f.lines[0],
+          ...f.lines.slice(1),
+        ])
     : lines.slice(-(MAX_LINES - 1));
   return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
 }
 
 /** Whether two tails show the same failure, ignoring numbers (timings, counts, ports). */
-export const sameFailure = (a: string[], b: string[]) => a.join("\n").replace(/\d+/g, "#") === b.join("\n").replace(/\d+/g, "#");
+export const sameFailure = (a: string[], b: string[]) =>
+  a.join("\n").replace(/\d+/g, "#") === b.join("\n").replace(/\d+/g, "#");
 
 /** At most 200 chars, eliding the middle. */
-const clip = (line: string) => (line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`);
+const clip = (line: string) =>
+  line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`;
 
 /** Escapes a string for literal use inside a RegExp. */
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

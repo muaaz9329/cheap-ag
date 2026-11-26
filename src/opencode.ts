@@ -125,7 +125,12 @@ export function writeConfigDir(dir: string, config: string) {
   mkdirSync(join(dir, "node_modules"), { recursive: true });
   writeFileSync(
     join(dir, "package-lock.json"),
-    JSON.stringify({ name: "cheapag-opencode", lockfileVersion: 3, requires: true, packages: { "": { dependencies: { "@opencode-ai/plugin": OPENCODE_PIN } } } }),
+    JSON.stringify({
+      name: "cheapag-opencode",
+      lockfileVersion: 3,
+      requires: true,
+      packages: { "": { dependencies: { "@opencode-ai/plugin": OPENCODE_PIN } } },
+    }),
   );
   writeFileSync(join(dir, "agents", "cheapag-worker.md"), WORKER_PROMPT);
   writeFileSync(join(dir, "agents", "cheapag-research.md"), RESEARCH_PROMPT);
@@ -143,12 +148,51 @@ const COMMAND_CODE = {
 /** The generated opencode.json for the route's models: their options (e.g. OpenRouter routing) and the small model. */
 function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
-  const models = Object.fromEntries(routeModels(route).filter((m) => m.options).map((m) => [m.id, { options: m.options }]));
+  const models = Object.fromEntries(
+    routeModels(route)
+      .filter((m) => m.options)
+      .map((m) => [m.id, { options: m.options }]),
+  );
   const providerConfig: Record<string, unknown> = Object.keys(models).length ? { models } : {};
+  /** An OpenAI-compatible endpoint as OpenCode declares one: its URL, a key reference, and every route model with the endpoint's token limits and prices. */
+  const endpoint = (
+    name: string,
+    at: {
+      base_url: string;
+      context?: number;
+      output?: number;
+      price?: { input: number; output: number };
+    },
+    apiKey: string | undefined,
+  ) => {
+    const limit = at.context
+      ? {
+          limit: {
+            context: at.context,
+            output: at.output ?? Math.min(32_768, Math.floor(at.context / 4)),
+          },
+        }
+      : {};
+    // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
+    const cost = at.price ? { cost: { input: at.price.input, output: at.price.output } } : {};
+    return {
+      npm: "@ai-sdk/openai-compatible",
+      name,
+      options: { baseURL: at.base_url, ...(apiKey && { apiKey }) },
+      models: Object.fromEntries(
+        routeModels(route).map((m) => [
+          m.id,
+          { name: m.id, ...limit, ...cost, ...(models[m.id] ?? {}) },
+        ]),
+      ),
+    };
+  };
   // Command Code is not in OpenCode's catalog: declare it as an OpenAI-compatible provider (the key still comes from the auth store)
   if (provider.provider === "commandcode") {
     Object.assign(providerConfig, COMMAND_CODE, {
-      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }])),
+      models: Object.fromEntries(
+        routeModels(route).map((m) => [m.id, { name: m.id, ...(models[m.id] ?? {}) }]),
+      ),
     });
   }
   // Ollama is declared as an OpenAI-compatible provider at the endpoint the user picked (this machine or ollama.com).
@@ -156,30 +200,31 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "ollama") {
     const ollama = ollamaEndpoint();
     if (!ollama) throw new Error("no Ollama endpoint configured; run cheapag login");
-    const apiKey = ollama.endpoint === "cloud" ? `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}` : undefined;
-    const limit = ollama.context ? { limit: { context: ollama.context, output: ollama.output ?? Math.min(32_768, Math.floor(ollama.context / 4)) } } : {};
-    const cost = ollama.price ? { cost: { input: ollama.price.input, output: ollama.price.output } } : {};
-    Object.assign(providerConfig, {
-      npm: "@ai-sdk/openai-compatible",
-      name: "Ollama",
-      options: { baseURL: ollama.base_url, ...(apiKey && { apiKey }) },
-      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...(models[m.id] ?? {}) }])),
-    });
+    Object.assign(
+      providerConfig,
+      endpoint(
+        "Ollama",
+        ollama,
+        ollama.endpoint === "cloud" ? `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}` : undefined,
+      ),
+    );
   }
   // a custom endpoint is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} or {env:} reference
   // OpenCode resolves itself, so the key is never in this config or in Cheap Agent's memory
   if (provider.provider === "local") {
     const local = localServer()!;
-    const limit = local.context ? { limit: { context: local.context, output: local.output ?? Math.min(32_768, Math.floor(local.context / 4)) } } : {};
-    const apiKey = local.api_key_file ? `{file:${local.api_key_file}}` : local.api_key_env ? `{env:${local.api_key_env}}` : undefined;
-    // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
-    const cost = local.price ? { cost: { input: local.price.input, output: local.price.output } } : {};
-    Object.assign(providerConfig, {
-      npm: "@ai-sdk/openai-compatible",
-      name: "Custom endpoint",
-      options: { baseURL: local.base_url, ...(apiKey && { apiKey }) },
-      models: Object.fromEntries(routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...(models[m.id] ?? {}) }])),
-    });
+    Object.assign(
+      providerConfig,
+      endpoint(
+        "Custom endpoint",
+        local,
+        local.api_key_file
+          ? `{file:${local.api_key_file}}`
+          : local.api_key_env
+            ? `{env:${local.api_key_env}}`
+            : undefined,
+      ),
+    );
   }
   const config = {
     $schema: "https://opencode.ai/config.json",
@@ -219,6 +264,11 @@ export function holdOpencode() {
   };
 }
 
+/** The header every request to the OpenCode server carries: its password as HTTP basic auth. */
+export const authHeaders = (password: string) => ({
+  authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+});
+
 /** The running server, if one is up; never boots one. */
 export async function runningOpencode(): Promise<Opencode | undefined> {
   try {
@@ -228,12 +278,21 @@ export async function runningOpencode(): Promise<Opencode | undefined> {
   }
 }
 
-export function ensureOpencode(provider: Provider, projectDir = process.cwd(), route?: Route): Promise<Opencode> {
+export function ensureOpencode(
+  provider: Provider,
+  projectDir = process.cwd(),
+  route?: Route,
+): Promise<Opencode> {
   const config = opencodeConfig(provider, route ?? fullRoute(provider.provider));
   if (started && route && booted !== config) {
     // a reboot would kill every live session: refuse it while any job or research call holds the server
     // shortcut: one server per config would let both run; worth it only if config changes mid-session become common
-    if (holds > 0) return Promise.reject(new Error("the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish"));
+    if (holds > 0)
+      return Promise.reject(
+        new Error(
+          "the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish",
+        ),
+      );
     stopOpencode();
   }
   if (!started) booted = config;
@@ -249,11 +308,12 @@ async function boot(projectDir: string, config: string): Promise<Opencode> {
   const configDir = join(projectDir, ".cheapag", "opencode");
   writeConfigDir(configDir, config);
   const external = process.env.CHEAPAG_OPENCODE_URL;
-  const password = (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
+  const password =
+    (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
   const url = external || (await spawnServer(configDir, password));
 
   const res = await fetch(new URL("/global/health", url), {
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` },
+    headers: authHeaders(password),
     signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) throw new Error(`opencode health check at ${url} answered ${res.status}`);
@@ -292,7 +352,10 @@ function spawnServer(configDir: string, password: string) {
     child = proc;
     let output = "";
     let listening = false;
-    const timer = setTimeout(() => fail(new Error("opencode serve did not start within 15s")), 15_000);
+    const timer = setTimeout(
+      () => fail(new Error("opencode serve did not start within 15s")),
+      15_000,
+    );
     const fail = (err: Error) => {
       clearTimeout(timer);
       stopOpencode();
@@ -333,7 +396,10 @@ export function stopOpencode(exiting = false) {
   if (proc?.exitCode !== null || !proc.pid) return;
   if (exiting) return killProcessGroup(proc.pid, "SIGKILL");
   killProcessGroup(proc.pid);
-  setTimeout(() => proc.exitCode === null && killProcessGroup(proc.pid, "SIGKILL"), STOP_GRACE_MS).unref();
+  setTimeout(
+    () => proc.exitCode === null && killProcessGroup(proc.pid, "SIGKILL"),
+    STOP_GRACE_MS,
+  ).unref();
 }
 
 const STOP_GRACE_MS = 3_000;

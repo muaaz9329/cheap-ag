@@ -29,7 +29,12 @@ export function watchState(root: string): WatchState {
 }
 
 /** The directory to resolve a tool part's filePath against: the session's, when the event carries it, else the job's worktree. */
-function sessionDirectory(event: Record<string, any>, part: Record<string, any> | undefined, id: string, root: string): string {
+function sessionDirectory(
+  event: Record<string, any>,
+  part: Record<string, any> | undefined,
+  id: string,
+  root: string,
+): string {
   for (const value of [part?.directory, event.properties?.directory, event.directory]) {
     if (typeof value === "string" && value) return value;
   }
@@ -68,7 +73,9 @@ export function scan(state: WatchState): string[] {
       if (request) {
         const model = typeof request.model === "string" ? request.model : undefined;
         const short = model?.split("/").pop();
-        lines.push(`▶ ${id}${request.steps !== undefined ? ` · steps ${request.steps}` : ""}${short ? ` · ${short}` : ""}`);
+        lines.push(
+          `▶ ${id}${request.steps !== undefined ? ` · steps ${request.steps}` : ""}${short ? ` · ${short}` : ""}`,
+        );
       } else {
         lines.push(`▶ ${id}`);
       }
@@ -147,7 +154,12 @@ function readJson(file: string): Record<string, any> | undefined {
  * `cheapag watch <job…>`: follows the given jobs' progress.txt and result.txt, printing a line per change and then
  * each result. Returns 0 once every job is final. Used by Codex, which streams a running command's output live.
  */
-export async function follow(root: string, ids: string[], out: NodeJS.WritableStream = process.stdout, pollMs = 500): Promise<number> {
+export async function follow(
+  root: string,
+  ids: string[],
+  out: NodeJS.WritableStream = process.stdout,
+  pollMs = 500,
+): Promise<number> {
   const base = join(root, ".cheapag", "jobs");
   const printed = new Map<string, string>();
   const final = new Set<string>();
@@ -195,7 +207,11 @@ export async function follow(root: string, ids: string[], out: NodeJS.WritableSt
  * `cheapag watch`: prints each new line of the project's job progress, polling rather than fs.watch (Windows, and
  * worktrees are removed under a watcher). Runs until Ctrl-C.
  */
-export async function watch(root?: string, out: NodeJS.WritableStream = process.stdout, pollMs = 500): Promise<never> {
+export async function watch(
+  root?: string,
+  out: NodeJS.WritableStream = process.stdout,
+  pollMs = 500,
+): Promise<never> {
   let project: string;
   try {
     project = root ?? projectRoot(process.cwd());
