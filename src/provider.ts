@@ -16,9 +16,26 @@ import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag provider [<provider id>]";
 
+type ProviderId = Provider["provider"];
+
 /** Redacts every line: a provider's error message can echo the key back. */
 function out(line = ""): void {
   process.stdout.write(redact(line) + "\n");
+}
+
+function listProviders(usable: ProviderId[], current: ProviderId | undefined): number {
+  if (!usable.length) {
+    out(`✗ no provider set up; run ${LOGIN_COMMAND}`);
+    return 1;
+  }
+  out("Providers set up:");
+  for (const id of usable) {
+    const inUse = id === current ? "  (in use)" : "";
+    out(`  ${id}  ${providerLabel(id)}${inUse}`);
+  }
+  const missing = PROVIDERS.filter(({ id }) => !usable.includes(id)).map(({ label }) => label);
+  if (missing.length) out(`Not set up: ${missing.join(", ")}. Add one with ${LOGIN_COMMAND}`);
+  return 0;
 }
 
 /**
@@ -29,18 +46,8 @@ function out(line = ""): void {
 export async function provider(args: string[]): Promise<number> {
   const usable = usableProviders();
   const current = detectProvider()?.provider;
-  if (!args.length || (args.length === 1 && args[0] === "--list")) {
-    if (!usable.length) {
-      out(`✗ no provider set up; run ${LOGIN_COMMAND}`);
-      return 1;
-    }
-    out("Providers set up:");
-    for (const id of usable)
-      out(`  ${id}  ${providerLabel(id)}${id === current ? "  (in use)" : ""}`);
-    const missing = PROVIDERS.filter((p) => !usable.includes(p.id)).map((p) => p.label);
-    if (missing.length) out(`Not set up: ${missing.join(", ")}. Add one with ${LOGIN_COMMAND}`);
-    return 0;
-  }
+  if (!args.length || (args.length === 1 && args[0] === "--list"))
+    return listProviders(usable, current);
   if (args.length !== 1) {
     out(`✗ ${USAGE}`);
     return 1;
