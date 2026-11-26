@@ -1049,3 +1049,12 @@ test("a bash call without a command verifies any claimed repro end to end (curre
   expect(text).toContain("\nrepro: `pytest` → 1 failed\n");
   expect(text).toContain("\nconfidence: high\n");
 });
+
+test("parseAnswer: dead_ends and dead ends are both read as the dead ends", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  for (const name of ["dead_ends", "Dead Ends"])
+    expect(parseAnswer(brief(`${name}: the cache\nnotes: x`), repo.dir, [], 200)?.deadEnds).toBe(
+      "the cache",
+    );
+});
