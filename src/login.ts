@@ -800,13 +800,12 @@ function explain(message: string, model: string) {
  * On an update, the plugin line says it was updated and the fresh-install closing line is left to the caller.
  */
 async function register(out: Output, update = false): Promise<number> {
-  const done = () => {
+  function setUpPlugin() {
     const plugin = installPlugin(out, { update });
     if (!update) finish(out, plugin);
-  };
+  }
   const command = serverCommand();
   const manual = `claude mcp add -s user cheapag -- ${command.map(quote).join(" ")}`;
-  const remove = "claude mcp remove cheapag -s user";
   const existing = runCli("claude", ["mcp", "get", "cheapag"], { encoding: "utf8" });
   if (!existing) {
     out(`Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  ${manual}`);
@@ -816,45 +815,51 @@ async function register(out: Output, update = false): Promise<number> {
   if (existing.status === 0 && /Scope:\s*User/i.test(existing.stdout)) {
     if (sameCommand(registeredCommand(existing.stdout), command)) {
       out("✓ cheapag is already registered with Claude Code");
-      done();
+      setUpPlugin();
       return 0;
     }
     // an older version or path would keep running the old server: replace it without asking
-    const removed = runCli("claude", ["mcp", "remove", "cheapag", "-s", "user"], {
-      encoding: "utf8",
-    });
-    const added =
-      removed?.status === 0
-        ? runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], {
-            encoding: "utf8",
-          })
-        : undefined;
-    if (removed?.status !== 0 || added?.status !== 0) {
-      const failed = removed?.status === 0 ? added : removed;
-      out(
-        `✗ claude mcp update failed (${firstLine(failed)}). Run it yourself:\n  ${remove}\n  ${manual}`,
-      );
-      done();
-      return 1;
-    }
-    out(`✓ Updated cheapag's server in Claude Code to ${version}`);
-    done();
-    return 0;
+    const replaced = replaceRegistration(command, manual, out);
+    setUpPlugin();
+    return replaced ? 0 : 1;
   }
   if (/^n/i.test(await ask("Add cheapag to Claude Code for all your projects? [Y/n] "))) {
     out(`Not registered. To add it later, run:\n  ${manual}`);
     return 0;
   }
-  const added = runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], {
-    encoding: "utf8",
-  });
+  const added = addServer(command);
   if (!added || added.status !== 0) {
     out(`✗ claude mcp add failed (${firstLine(added)}). Run it yourself:\n  ${manual}`);
     return 1;
   }
   out("✓ Added cheapag to Claude Code for all your projects");
-  done();
+  setUpPlugin();
   return 0;
+}
+
+/** Swaps the user-scope entry for `command`; false when `claude mcp` failed, after printing what to run instead. */
+function replaceRegistration(command: string[], manual: string, out: Output): boolean {
+  const remove = "claude mcp remove cheapag -s user";
+  const removed = runCli("claude", ["mcp", "remove", "cheapag", "-s", "user"], {
+    encoding: "utf8",
+  });
+  const added = removed?.status === 0 ? addServer(command) : undefined;
+  if (removed?.status !== 0 || added?.status !== 0) {
+    const failed = removed?.status === 0 ? added : removed;
+    out(
+      `✗ claude mcp update failed (${firstLine(failed)}). Run it yourself:\n  ${remove}\n  ${manual}`,
+    );
+    return false;
+  }
+  out(`✓ Updated cheapag's server in Claude Code to ${version}`);
+  return true;
+}
+
+/** Registers `command` as cheapag's server at user scope; undefined when Claude Code's CLI is not found. */
+function addServer(command: string[]) {
+  return runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], {
+    encoding: "utf8",
+  });
 }
 
 /** The executable and arguments `claude mcp get cheapag` reports for the entry, or undefined when it shows neither. */
