@@ -12,7 +12,7 @@ const KINDS = ["fix", "change"];
 export const PLAN_FORMAT =
   'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>", "difficulty: easy|medium|hard", "kind: fix|change" (fix: a bug to reproduce, change: no reproduction expected)), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks. Numbered or lettered list items count as separate changes, and a step or task with three or more is refused; write the details of one change as - bullets or prose.';
 
-/** A step while it is parsed: the lines of its heading and of its last `do:` and `files:`, for error messages. */
+/** A step being parsed, with the line numbers that its error messages cite. */
 type DraftStep = PlanStep & { line: number; doLine?: number; filesLine?: number };
 
 /** What parsePlan has read so far. `field` is the key that an indented line continues. */
@@ -33,7 +33,7 @@ export function parsePlan(source: string): Plan {
   };
 }
 
-/** Reads one line into the draft: the H1 title, a step heading, a line of the current step, or context. */
+/** Reads one line as the H1 title, a step heading, a line of the current step, or context. */
 function readLine(draft: PlanDraft, line: string, lineNumber: number): void {
   if (line.startsWith("# ")) readTitle(draft, line, lineNumber);
   else if (line.startsWith("## ")) readStepHeading(draft, line, lineNumber);
@@ -87,7 +87,7 @@ function readStepLine(draft: PlanDraft, line: string, lineNumber: number): void 
   }
 }
 
-/** Throws the first way a step breaks the format. The order of the checks decides which error the user sees. */
+/** Throws a step's first format problem; the check order decides which error the user sees. */
 function checkStep(step: DraftStep): void {
   checkRequiredFields(step);
   checkDifficulty(step);
@@ -229,7 +229,7 @@ export function overlap(a: Group, b: Group): string | undefined {
   return undefined;
 }
 
-/** A group's `files:` entries without trailing slashes, so a directory compares by its plain path. */
+/** A group's `files:` entries; a directory drops its trailing slash to compare as a path. */
 function groupFiles(group: Group): string[] {
   return group.steps
     .flatMap((step) => splitFiles(step.fields.files))
