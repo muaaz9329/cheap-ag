@@ -162,6 +162,8 @@ const rank = (s: JobStatus) =>
 /** The summary a worker that never reported gets (src/worker.ts). */
 export const NO_SUMMARY = "(worker gave no summary)";
 const BUDGET_TOKENS = 400;
+const CHARS_PER_TOKEN = 4;
+const ERROR_LINES_FLOOR = 12;
 const LINE_MAX = 200;
 
 /** How much of each cuttable section a layout keeps (D9 truncation). */
@@ -216,15 +218,21 @@ export function renderJob(r: JobRecord, budget = BUDGET_TOKENS, compact = false)
   if (r.status === "BLOCKED" && r.permission) return renderPermission(r);
   let cuts = FULL;
   let text = layout(r, cuts, compact);
-  const over = () => text.length / 4 > budget;
-  const cut = (c: Partial<Cuts>) => {
-    if (over()) text = layout(r, (cuts = { ...cuts, ...c }), compact);
+  const overBudget = () => text.length / CHARS_PER_TOKEN > budget;
+  const cut = (smaller: Partial<Cuts>) => {
+    if (!overBudget()) return;
+    cuts = { ...cuts, ...smaller };
+    text = layout(r, cuts, compact);
   };
   cut({ changed: 5 });
   cut({ tried: 1 });
   cut({ risks: 3 });
   cut({ review: 3 });
-  for (let n = r.error?.length ?? 0; n > 12 && over();) cut({ error: --n });
+  let errorLimit = r.error?.length ?? 0;
+  while (errorLimit > ERROR_LINES_FLOOR && overBudget()) {
+    errorLimit -= 1;
+    cut({ error: errorLimit });
+  }
   cut({ summary: 100 });
   return text;
 }
@@ -378,10 +386,13 @@ function foundLines(found: string) {
   return wrap(`found: ${oneLine(found)}`);
 }
 
-/** The `risks:` list, cut to `limit` risks of at most 120 chars each. */
+const RISK_MAX = 120;
+
+/** The `risks:` list, cut to `limit` risks, each clipped to RISK_MAX chars. */
 function riskLines(risks: string[], limit: number) {
   if (!risks.length) return [];
-  return ["risks:", ...risks.slice(0, limit).map((risk) => `  - ${clip(oneLine(risk), 120)}`)];
+  const shown = risks.slice(0, limit);
+  return ["risks:", ...shown.map((risk) => `  - ${clip(oneLine(risk), RISK_MAX)}`)];
 }
 
 /** The `changed:` list, cut to `limit` files with a count of the rest. */
