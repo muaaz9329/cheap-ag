@@ -204,13 +204,16 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
       .map((l, i) => (i ? "  " + l : l))
       .join("\n");
   const title = task.split(/\r?\n/)[0].slice(0, 70);
+  const doneWhen =
+    req.done_when?.trim() ||
+    "the change described in do: is made and the existing tests still pass";
   const body = [
     `# ${title}`,
     "",
     "## 1 task",
     `files: ${req.files?.trim() || "./"}`,
     `do: ${indent(task)}`,
-    `done-when: ${indent(req.done_when?.trim() || "the change described in do: is made and the existing tests still pass")}`,
+    `done-when: ${indent(doneWhen)}`,
     "",
   ].join("\n");
   const rel = join(
@@ -754,7 +757,10 @@ function runGroup(groupRun: GroupRun) {
     const others = landedSince(root, job, startedAt);
     conflict = files.map((f) => {
       const by = others.filter((r) => r.changed.some((c) => c.path === f)).map((r) => r.job);
-      return `${f} (${by.length ? `also changed by ${by.join(", ")}, landed first` : "changed in the working tree meanwhile"}; ${why})`;
+      const changedBy = by.length
+        ? `also changed by ${by.join(", ")}, landed first`
+        : "changed in the working tree meanwhile";
+      return `${f} (${changedBy}; ${why})`;
     });
   };
 
@@ -783,10 +789,8 @@ function runGroup(groupRun: GroupRun) {
           const part = event.properties.part;
           if (part.state.status === "completed" || part.state.status === "error") {
             const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
-            tell(
-              turns,
-              `step ${groupRun.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`,
-            );
+            const tool = target ? `${part.tool} ${target}` : part.tool;
+            tell(turns, `step ${groupRun.group.label} · turn ${turns} · ${tool} · ${elapsed()}s`);
             if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
             // finishing on the last allowed turn is fine
             if (part.tool !== "finish") {
@@ -1438,11 +1442,10 @@ async function checkReproduction(
 ): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
   const cwd = worktree.path;
   if (!claim || /^n\/?a\b/i.test(claim)) return {};
-  if (/^none\b/i.test(claim))
-    return {
-      repro: "none",
-      risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}`,
-    };
+  if (/^none\b/i.test(claim)) {
+    const why = claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem";
+    return { repro: "none", risk: `no reproduction: ${why}` };
+  }
   const runs = (cmd: string) =>
     runVerify(cwd, [cmd], () => {}, signal).then((r) => r[0]?.ok ?? false);
   const unverified = (why: string) => ({
@@ -1575,10 +1578,10 @@ export async function jobs(input: JobsInput, progress: Progress = () => {}): Pro
   if (input.action === "list") return listJobs(root);
   if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job))
     return waitBatch(root, input.job, progress, input.seconds);
-  if (!hasJobId(input))
-    return failBlock(
-      `jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`,
-    );
+  if (!hasJobId(input)) {
+    const orBatch = input.action === "wait" ? " or a batch id, e.g. b4k1x" : "";
+    return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a${orBatch}`);
+  }
   const live = liveJob(root, input.job);
   if (input.action === "wait" && live) return waitLiveJob(root, input, live);
   if (input.action === "cancel" && live) {
@@ -1625,8 +1628,10 @@ function recordAnswer(root: string, input: JobsInput & { job: string }) {
   const block = () => readFileSync(join(dir, "result.txt"), "utf8").trimEnd();
   if (input.action === "show") return block();
   if (record.status === "RUNNING" || record.status === "BLOCKED") {
+    const pid = record.pid ?? "unknown";
+    const verb = input.action === "wait" ? "wait for" : "cancel";
     return failBlock(
-      `job ${input.job} is ${record.status} but not in this session (server pid ${record.pid ?? "unknown"}); ${input.action === "wait" ? "wait for" : "cancel"} it from the session that started it`,
+      `job ${input.job} is ${record.status} but not in this session (server pid ${pid}); ${verb} it from the session that started it`,
     );
   }
   if (input.action === "wait") return block(); // finished: its final block at once
@@ -1916,8 +1921,9 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
   );
   if (clash) {
     const files = conflictPaths(clash);
+    const where = files.length ? ` in ${files.join(", ")}` : "";
     throw new Error(
-      `landing conflict${files.length ? ` in ${files.join(", ")}` : ""}, working tree untouched; discard it, or fix the overlap and delegate again`,
+      `landing conflict${where}, working tree untouched; discard it, or fix the overlap and delegate again`,
     );
   }
   // the change is in the working tree now: a folder Windows won't delete yet must not undo the landing's record
@@ -2080,9 +2086,11 @@ function contextPack(
   brief?: string,
   source?: string,
 ) {
+  const ids = steps.map((s) => s.id).join(", ");
+  const texts = steps.map((s) => s.text).join("\n\n");
   return [
     planText(plan),
-    `>>> CURRENT STEP(S): ${steps.map((s) => s.id).join(", ")}\n\n${steps.map((s) => s.text).join("\n\n")}`,
+    `>>> CURRENT STEP(S): ${ids}\n\n${texts}`,
     note && `Note: ${note}`,
     // start from what the scout found instead of re-exploring; an "unverified" repro is a lead, not a fact
     brief &&
@@ -2136,14 +2144,16 @@ const MAX_REDO_PATCH = 50_000;
 
 /** The redo's prompt to the same session: what clashed, where the conflict markers are, the step again and the original diff. */
 function redoPrompt(steps: PlanStep[], files: string[], marked: string[], patch: string) {
+  // shortcut: a huge diff is cut here; the worktree still holds the change wherever it applied
+  const shownPatch =
+    patch.length > MAX_REDO_PATCH ? `${patch.slice(0, MAX_REDO_PATCH)}\n… (cut)` : patch;
   return [
     `>>> REDO STEP(S): ${steps.map((s) => s.id).join(", ")}`,
     `Your change could not land: the working tree changed meanwhile (${files.join(", ")}). This worktree was rebuilt from the current code, ` +
       `with your change applied again where it could be. Files where both changed the same lines hold <<<<<<< ======= >>>>>>> conflict markers: ` +
       `${marked.join(", ") || "none"}. Keep the current code's changes, redo the step's intent on top of them, leave no conflict markers, then call finish again.`,
     steps.map((s) => s.text).join("\n\n"),
-    // shortcut: a huge diff is cut here; the worktree still holds the change wherever it applied
-    `Your original change:\n\`\`\`diff\n${patch.length > MAX_REDO_PATCH ? `${patch.slice(0, MAX_REDO_PATCH)}\n… (cut)` : patch}\`\`\``,
+    `Your original change:\n\`\`\`diff\n${shownPatch}\`\`\``,
   ].join("\n\n");
 }
 
