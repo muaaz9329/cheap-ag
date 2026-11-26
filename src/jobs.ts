@@ -434,7 +434,7 @@ function runGroup(g: GroupRun) {
     wake();
   };
   let notStarted: string | undefined;
-  let asked: NonNullable<JobRecord["question"]>[] | null = null;
+  let asked: Asked[] | null = null;
   let pending: PermissionBlock | null = null; // the command permission ask this job is paused on (ticket 69)
   let blockedAt: Date | undefined;
   let expiry: NodeJS.Timeout | undefined; // max_blocked_minutes, while BLOCKED
@@ -450,7 +450,7 @@ function runGroup(g: GroupRun) {
   let escalated = false;
   let repro: JobRecord["repro"]; // the server's check of the worker's reproduction test (OK jobs only)
   let reproRisk: string | undefined;
-  let failing: { run: VerifyRun; tail: string[] } | undefined;
+  let failing: Failing | undefined;
   let checked = false; // whether verify has seen the worker's latest changes
   let redone = 0; // 1 once a landing conflict started the redo (spec: Landing and redo)
   let conflict: string[] | undefined; // set when the redo could not land either: the job is CONFLICT
@@ -578,21 +578,7 @@ function runGroup(g: GroupRun) {
     const waiting = status === "BLOCKED";
     const silent = waiting || notStarted !== undefined; // likewise a group that never started
     const rejections = session?.totals().rejections ?? [];
-    // server risks go first, so the 5-risk cap never cuts them
-    const risks = [
-      ...(reproRisk ? [reproRisk] : []),
-      ...(report.disagree && !/^none\b/i.test(report.disagree)
-        ? [`spec vs source: ${report.disagree}`]
-        : []),
-      ...(rejections.length > MAX_QUIET_REJECTIONS
-        ? [
-            `${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`,
-          ]
-        : []),
-      ...report.risks,
-    ];
-    // a failing check that could not run at all (missing tool, broken Node) reads as an environment failure, not bad code
-    const env = failing ? envFailure(failing.run) : undefined;
+    const risks = jobRisks(reproRisk, report, rejections);
     const record = {
       format: "cheapag/1" as const,
       job,
@@ -613,57 +599,31 @@ function runGroup(g: GroupRun) {
       },
       difficulty,
       billing,
-      // tree: what the worktree's diff is measured against, so `land apply` can land it later
-      baseline: {
-        head: worktree?.head ?? null,
-        stash: worktree?.stash ?? null,
-        tree: worktree?.base ?? null,
-      },
-      worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
+      baseline: baselineOf(worktree),
+      worktree: unlandedWorktree(root, worktree, landed),
       cleanupError,
       sessionID: session?.sessionID ?? null,
-      // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
-      tests: silent
-        ? undefined
-        : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
-      error: failing ? (env ? [env, ...failing.tail] : failing.tail) : undefined,
-      ...(env && { check: "env" as const }),
+      tests: silent ? undefined : testsResult(verified.length > 0, failing),
+      ...failureFields(failing),
       tried,
       ...(found && { found }),
       summary: silent ? "" : report.summary,
       changed,
       risks: silent ? [] : risks,
-      ...(changed.some((c) => TEST_FILE.test(c.path)) && {
-        test: changed.find((c) => TEST_FILE.test(c.path))!.path,
-      }),
+      ...testFileField(changed),
       // a landed job's files are in the working tree; an unlanded one's only in its worktree
       review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
-      // a worker stopped by a cap rarely says what it left undone
-      missing:
-        status === "PARTIAL" && !report.missing.length
-          ? [`unknown: stopped (${stopped?.reason ?? "cap"}); compare the diff with the step`]
-          : report.missing,
+      missing: missingLines(status, report.missing, stopped),
       reason,
       conflict,
       verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })),
       selfFix,
       redo: redone,
       ...(repro && { repro }),
-      question: asked?.length === 1 ? asked[0] : null,
-      ...(pending && { permission: pending }),
-      ...(asked && asked.length > 1 && { questions: asked }),
+      ...questionFields(asked, pending),
       autoRejected: rejections,
-      usage: {
-        turns: session?.totals().turns ?? 0,
-        calls: session?.totals().calls ?? 0,
-        ...(session?.totals().usage ?? { costUsd: 0 }),
-      },
-      timing: {
-        startedAt,
-        endedAt: status === "RUNNING" || waiting ? null : new Date(),
-        ms: Date.now() - startedAt.getTime(),
-        ...(waiting && { blockedAt }),
-      },
+      usage: usageOf(session),
+      timing: timingOf(startedAt, status, blockedAt),
     };
     last = record;
     return saveRecord(dir, record);
@@ -1008,6 +968,96 @@ function runGroup(g: GroupRun) {
     announce(text);
   });
   return { job, outcome, done, record: () => last, settles: () => settled };
+}
+
+/** A failing check's run, and the error tail Claude sees. */
+type Failing = { run: VerifyRun; tail: string[] };
+
+/** The job's risks: the server's own first, so the 5-risk cap never cuts them, then the worker's. */
+function jobRisks(reproRisk: string | undefined, report: FinishReport, rejections: unknown[]) {
+  return [
+    ...(reproRisk ? [reproRisk] : []),
+    ...(report.disagree && !/^none\b/i.test(report.disagree)
+      ? [`spec vs source: ${report.disagree}`]
+      : []),
+    ...(rejections.length > MAX_QUIET_REJECTIONS
+      ? [
+          `${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`,
+        ]
+      : []),
+    ...report.risks,
+  ];
+}
+
+/** Where the worktree came from; `tree` is what its diff is measured against, so `land apply` can land it later. */
+function baselineOf(worktree: Worktree | undefined) {
+  return {
+    head: worktree?.head ?? null,
+    stash: worktree?.stash ?? null,
+    tree: worktree?.base ?? null,
+  };
+}
+
+/** An unlanded job's worktree, repo-relative; null once landed or before it has one. */
+function unlandedWorktree(root: string, worktree: Worktree | undefined, landed: boolean) {
+  return !landed && worktree ? normalisePath(relative(root, worktree.path)) : null;
+}
+
+/** Server-measured: "none" when nothing ran (no conditions, or the worker failed before verify). */
+function testsResult(ran: boolean, failing: Failing | undefined): JobRecord["tests"] {
+  if (!ran) return "none";
+  return failing ? "fail" : "pass";
+}
+
+/** A failing check's error: lines; a check that could not run at all (missing tool, broken Node) leads with that and sets check=env, since it is not bad code. */
+function failureFields(failing: Failing | undefined) {
+  if (!failing) return { error: undefined };
+  const env = envFailure(failing.run);
+  return {
+    error: env ? [env, ...failing.tail] : failing.tail,
+    ...(env && { check: "env" as const }),
+  };
+}
+
+/** The record's test= field: the first changed file that is a test, if any. */
+function testFileField(changed: Changed[]) {
+  const testFile = changed.find((c) => TEST_FILE.test(c.path));
+  return testFile ? { test: testFile.path } : {};
+}
+
+/** A PARTIAL job's missing: lines when the worker gave none, since a worker stopped by a cap rarely says what it left undone. */
+function missingLines(status: JobRecord["status"], missing: string[], stop: Stop | undefined) {
+  if (status !== "PARTIAL" || missing.length) return missing;
+  return [`unknown: stopped (${stop?.reason ?? "cap"}); compare the diff with the step`];
+}
+
+/** The record's question fields: one question, the command permission ask it waits on, or several questions. */
+function questionFields(asked: Asked[] | null, pending: PermissionBlock | null) {
+  return {
+    question: asked?.length === 1 ? asked[0] : null,
+    ...(pending && { permission: pending }),
+    ...(asked && asked.length > 1 && { questions: asked }),
+  };
+}
+
+/** The session's usage so far; zero before it opened. */
+function usageOf(session: Session | undefined) {
+  return {
+    turns: session?.totals().turns ?? 0,
+    calls: session?.totals().calls ?? 0,
+    ...(session?.totals().usage ?? { costUsd: 0 }),
+  };
+}
+
+/** The record's timing: a RUNNING or BLOCKED job has not ended, and a BLOCKED one says since when it waits. */
+function timingOf(startedAt: Date, status: JobRecord["status"], blockedAt: Date | undefined) {
+  const waiting = status === "BLOCKED";
+  return {
+    startedAt,
+    endedAt: status === "RUNNING" || waiting ? null : new Date(),
+    ms: Date.now() - startedAt.getTime(),
+    ...(waiting && { blockedAt }),
+  };
 }
 
 /** Compresses a settled job's (or research call's) events.jsonl; any error is ignored, nothing depends on it. */
@@ -1380,6 +1430,9 @@ async function checkRepro(
     ? { repro: "fail→pass" }
     : unverified(`\`${claim}\` also passes without the fix`);
 }
+
+/** A question the worker asked, with the user's answer once given. */
+type Asked = NonNullable<JobRecord["question"]>;
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
 type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider" | "down"; reason: string };
