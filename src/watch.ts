@@ -53,8 +53,7 @@ export function scan(state: WatchState): string[] {
     let job = state.jobs.get(dir);
     if (!job) {
       // a job that already finished before watch started is never shown; one still RUNNING (or BLOCKED) was just created
-      const word = firstWord(resultFile);
-      if (word && isFinal(word)) {
+      if (hasFinalResult(resultFile)) {
         state.jobs.set(dir, { offset: 0, started: true, verdict: true, skipped: true });
         continue;
       }
@@ -74,13 +73,10 @@ export function scan(state: WatchState): string[] {
     }
 
     // result.txt is rewritten each turn (RUNNING …): only a final first word is the verdict
-    if (!job.verdict) {
-      const word = firstWord(resultFile);
-      if (word && isFinal(word)) {
-        job.verdict = true;
-        const first = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
-        lines.push(`■ ${id} ${first}`);
-      }
+    if (!job.verdict && hasFinalResult(resultFile)) {
+      job.verdict = true;
+      const first = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
+      lines.push(`■ ${id} ${first}`);
     }
   }
   return lines;
@@ -127,6 +123,12 @@ function firstWord(file: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a result.txt starts with a final status word. */
+function hasFinalResult(file: string): boolean {
+  const word = firstWord(file);
+  return word !== undefined && isFinal(word);
 }
 
 /** Whether a job's status is final: RUNNING and BLOCKED are the two live states. */
