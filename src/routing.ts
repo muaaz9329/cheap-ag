@@ -487,18 +487,22 @@ function spentWithin(entries: LedgerEntry[], now: number, ms: number) {
 
 function readLedger(): LedgerEntry[] {
   if (!existsSync(ledgerFile())) return [];
-  return readFileSync(ledgerFile(), "utf8")
-    .split("\n")
-    .flatMap((line) => {
-      try {
-        const e = JSON.parse(line);
-        return typeof e.model === "string" && typeof e.costUsd === "number"
-          ? [{ model: e.model, costUsd: e.costUsd, at: Date.parse(e.at) }]
-          : [];
-      } catch {
-        return []; // a torn or damaged line only loses that entry
-      }
-    });
+  return readFileSync(ledgerFile(), "utf8").split("\n").flatMap(parseLedgerLine);
+}
+
+/** One ledger line as its entry, or none when the line is not one. */
+function parseLedgerLine(line: string): LedgerEntry[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return []; // a torn or damaged line only loses that entry
+  }
+  if (typeof value !== "object" || value === null) return [];
+  const { at, model, costUsd } = value as Record<string, unknown>;
+  if (typeof model !== "string" || typeof costUsd !== "number") return [];
+  // `at` is not checked: Date.parse reads any value as a string, and an unreadable time is NaN, inside no window
+  return [{ model, costUsd, at: Date.parse(at as string) }];
 }
 
 /**
