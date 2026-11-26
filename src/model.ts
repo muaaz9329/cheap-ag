@@ -240,28 +240,15 @@ async function pick(
   models: CatalogModel[],
   current: ReturnType<typeof currentRoute>,
 ) {
-  const row = (m: CatalogModel) => ({
-    label: m.id,
-    hint: details(m),
-  });
-  const main =
-    models[
-      await select(
-        `Main model on ${providerLabel(provider.provider)} (writes the code):`,
-        models.map(row),
-        Math.max(
-          0,
-          models.findIndex((m) => m.id === current.main.id),
-        ),
-      )
-    ];
+  const rows = models.map((entry) => ({ label: entry.id, hint: details(entry) }));
+  const mainQuestion = `Main model on ${providerLabel(provider.provider)} (writes the code):`;
+  const currentIndex = models.findIndex((entry) => entry.id === current.main.id);
+  const mainIndex = await select(mainQuestion, rows, Math.max(0, currentIndex));
+  const main = models[mainIndex];
   const mainEffort = await askEffort("main", main, current.main.variant);
-  const f = await select(
-    "Fallback model (used on a rate limit):",
-    [{ label: "none" }, ...models.map(row)],
-    0,
-  );
-  const fallback = f ? models[f - 1] : undefined;
+  const fallbackQuestion = "Fallback model (used on a rate limit):";
+  const fallbackIndex = await select(fallbackQuestion, [{ label: "none" }, ...rows], 0);
+  const fallback = fallbackIndex ? models[fallbackIndex - 1] : undefined;
   const fallbackEffort = fallback && (await askEffort("fallback", fallback));
   return apply(provider, {
     main: main.id,
