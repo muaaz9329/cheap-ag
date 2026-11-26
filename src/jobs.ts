@@ -236,24 +236,9 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
   const { route } = gate;
-  let input: DelegateInput;
-  const brief = resolveBrief(root, req.brief);
-  if ("fail" in brief) return failBlock(brief.fail);
-  const source = resolveSource(root, req.source);
-  const rest = {
-    note: req.note,
-    wait: req.wait,
-    brief: brief.text,
-    source,
-    difficulty: req.difficulty,
-    model: req.model,
-  };
-  if (req.task !== undefined) {
-    const made = inlinePlan(root, req);
-    if ("fail" in made) return failBlock(made.fail);
-    input = { plan: made.plan, steps: "1", ...rest };
-  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, ...rest };
-  else return failBlock("give task (what to change, files, how to check), or plan and steps");
+  const resolved = delegateInput(root, req);
+  if ("fail" in resolved) return failBlock(resolved.fail);
+  const { input } = resolved;
   // only the caller's path: an inline task's own plan lives under .cheapag/plans/
   if (
     req.task === undefined &&
@@ -268,24 +253,9 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
         .map((m) => m.id)
         .join(", ")}; run /cheapag:allow to add it`,
     );
-  const planFile = join(root, input.plan);
-  if (isAbsolute(input.plan) || !inside(root, planFile))
-    return failBlock(
-      `plan ${input.plan} must be a path inside the repository, relative to its root`,
-    );
-  if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
-  let plan: Plan;
-  let groups: Group[];
-  try {
-    plan = parsePlan(readFileSync(planFile, "utf8"));
-  } catch (err) {
-    return failBlock(`plan ${input.plan}: ${(err as Error).message}\n${PLAN_FORMAT}`);
-  }
-  try {
-    groups = selectGroups(plan, input.steps);
-  } catch (err) {
-    return failBlock(`plan ${input.plan}: ${(err as Error).message}`);
-  }
+  const read = readPlan(root, input);
+  if ("fail" in read) return failBlock(read.fail);
+  const { plan, groups } = read;
 
   let config: Config;
   try {
@@ -323,6 +293,55 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   const run = runBatch(groups, shared);
   void run.all.catch(() => {}).finally(release);
   return input.wait === false ? run.render() : run.look(false, ctx.progress);
+}
+
+/** The call's input: an inline task as a one-step plan, or the caller's plan and steps; or why neither. */
+function delegateInput(
+  root: string,
+  req: DelegateRequest,
+): { input: DelegateInput } | { fail: string } {
+  const brief = resolveBrief(root, req.brief);
+  if ("fail" in brief) return brief;
+  const source = resolveSource(root, req.source);
+  const rest = {
+    note: req.note,
+    wait: req.wait,
+    brief: brief.text,
+    source,
+    difficulty: req.difficulty,
+    model: req.model,
+  };
+  if (req.task !== undefined) {
+    const made = inlinePlan(root, req);
+    if ("fail" in made) return made;
+    return { input: { plan: made.plan, steps: "1", ...rest } };
+  }
+  if (req.plan && req.steps) return { input: { plan: req.plan, steps: req.steps, ...rest } };
+  return { fail: "give task (what to change, files, how to check), or plan and steps" };
+}
+
+/** Reads and parses the input's plan file and selects the groups of steps to run; or why it cannot. */
+function readPlan(
+  root: string,
+  input: DelegateInput,
+): { plan: Plan; groups: Group[] } | { fail: string } {
+  const planFile = join(root, input.plan);
+  if (isAbsolute(input.plan) || !inside(root, planFile))
+    return {
+      fail: `plan ${input.plan} must be a path inside the repository, relative to its root`,
+    };
+  if (!existsSync(planFile)) return { fail: `plan ${input.plan} not found` };
+  let plan: Plan;
+  try {
+    plan = parsePlan(readFileSync(planFile, "utf8"));
+  } catch (err) {
+    return { fail: `plan ${input.plan}: ${(err as Error).message}\n${PLAN_FORMAT}` };
+  }
+  try {
+    return { plan, groups: selectGroups(plan, input.steps) };
+  } catch (err) {
+    return { fail: `plan ${input.plan}: ${(err as Error).message}` };
+  }
 }
 
 type Shared = {
