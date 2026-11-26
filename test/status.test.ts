@@ -502,6 +502,7 @@ test("lastSession reads ~/.claude when CLAUDE_CONFIG_DIR is not set", () => {
   const home = mkdtempSync(join(tmpdir(), "cheapag-home-"));
   vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
   vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home); // homedir() reads this one on Windows
   onTestFinished(() => {
     vi.unstubAllEnvs();
     rmSync(home, { recursive: true, force: true });
