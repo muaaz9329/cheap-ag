@@ -82,11 +82,26 @@ export function select(
       drawnLineCount = rows.length + 1;
     }
 
+    function takeTerminal() {
+      emitKeypressEvents(input);
+      input.setRawMode?.(true);
+      input.resume();
+      output.write(HIDE_CURSOR);
+      input.on("keypress", onKeypress);
+    }
+
     function releaseTerminal() {
       input.off("keypress", onKeypress);
       input.setRawMode?.(false);
       input.pause();
       output.write(SHOW_CURSOR);
+    }
+
+    function confirmSelection() {
+      releaseTerminal();
+      const picked = options[selection.index];
+      output.write(`${eraseLinesAbove(drawnLineCount)}${question} ${picked.label}\n`);
+      resolve(selection.index);
     }
 
     function onKeypress(character: string | undefined, key: Key = {}) {
@@ -95,10 +110,8 @@ export function select(
           releaseTerminal();
           process.exit(EXIT_CODE_INTERRUPTED);
         } else if (key.name === "return") {
-          releaseTerminal();
-          const picked = options[selection.index];
-          output.write(`${eraseLinesAbove(drawnLineCount)}${question} ${picked.label}\n`);
-          return resolve(selection.index);
+          confirmSelection();
+          return;
         } else if (key.name === "up" || key.name === "down") {
           selection = moveSelection(selection, key.name, options.length);
         } else if (character && /^\d$/.test(character)) {
@@ -110,11 +123,8 @@ export function select(
         reject(error);
       }
     }
-    emitKeypressEvents(input);
-    input.setRawMode?.(true);
-    input.resume();
-    output.write(HIDE_CURSOR);
-    input.on("keypress", onKeypress);
+
+    takeTerminal();
     draw();
   });
 }
