@@ -14,7 +14,7 @@ import { userConfigFile } from "./config.js";
 import { firstLine, normalisePath, runCli, which } from "./platform.js";
 
 /**
- * The Claude Code plugin (hooks and slash commands), installed by setup (ticket 31). It is generated from this package's
+ * The Claude Code plugin (hooks and slash commands), installed by setup. It is generated from this package's
  * own plugin/ so it always matches the installed version, needs no public marketplace, and leaves out .mcp.json (setup
  * registers the server at user scope). Its hooks run on every tool call once a job has run, so they call a launcher that
  * starts this install with node (~0.1 s) instead of npx (~0.4 s), falling back to npx if this install is gone.
