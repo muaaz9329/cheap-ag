@@ -18,17 +18,17 @@ import { callRoot, projectRoot } from "./workspace.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
-/** Ticket 26: Claude has read the issue when it delegates, so its difficulty rating picks the worker model for free. */
+/** Claude has read the issue when it delegates, so its difficulty rating picks the worker model for free. */
 const DIFFICULTY_HINT =
   "Pass difficulty from the issue: time a new engineer needs to fix and test it, easy < 15 min, medium < 1 h, hard > 1 h.";
-/** The repo's `hard_tasks` (ticket 26): a delegated hard task runs on models.hard either way. */
+/** The repo's `hard_tasks`: a delegated hard task runs on models.hard either way. */
 const HARD_RULE: Record<HardTasks, string> = {
   delegate: "",
   self: " For a hard task, do it yourself instead of delegating.",
   sonnet:
     " For a hard task, use your Agent tool with model: sonnet to implement it instead of delegating.",
 };
-/** Codex has no Sonnet subagent and cannot show a question UI, so `ask` becomes asking the user in chat (ticket 51). */
+/** Codex has no Sonnet subagent and cannot show a question UI, so `ask` becomes asking the user in chat. */
 const CODEX_ASK_RULE =
   "After a FAIL, PARTIAL or TIMEOUT, ask the user in chat whether to continue yourself, retry the worker on another model, or stop, then end your turn.";
 
@@ -62,7 +62,7 @@ const ROOT = z
     "Absolute path of the git repository or worktree to work in (default: the session's directory). Consent, config and jobs come from that repository; pass the same root to jobs, land and reply for its jobs",
   );
 
-/** Claude Code defers MCP tools behind tool search unless a tool's `_meta` asks to load upfront (spec: delegate and research always load). */
+/** Claude Code defers MCP tools behind tool search unless a tool's `_meta` asks to load upfront; delegate and research always load. */
 const ALWAYS_LOAD = { "anthropic/alwaysLoad": true };
 
 /**
@@ -104,8 +104,8 @@ export async function serve(host: "claude" | "codex" = "claude") {
     return hint ? `${text}\n\n${hint}` : text;
   };
   /**
-   * Issue #27: a `models` entry naming another provider never reaches the route, so the job runs on something else than
-   * the config says. Say it after the block, naming the model that actually runs; a clean config adds nothing.
+   * A `models` entry naming another provider never reaches the route, so the job runs on something else than the
+   * config says. Say it after the block, naming the model that actually runs; a clean config adds nothing.
    */
   const withWarnings = (text: string, provider: Provider, root?: string) => {
     const warnings = modelWarnings(provider.provider, root);
@@ -123,13 +123,13 @@ export async function serve(host: "claude" | "codex" = "claude") {
       // recovery is housekeeping: a failure must not stop the server or the call
       process.stderr.write(`cheapag: job recovery failed: ${(err as Error).message}\n`);
     }
-    // after recovery, so a crashed server's jobs age like any other (spec A20: cleanup at server start)
+    // after recovery, so a crashed server's jobs age like any other
     try {
       cleanProject(dir);
     } catch {
       // a bad config (delegate reports that): nothing to clean
     }
-    // and hourly while the server runs, so a long session frees old worktrees and logs (ticket 49); once per repo, like the rest
+    // and hourly while the server runs, so a long session frees old worktrees and logs; once per repo, like the rest
     try {
       startPeriodicCleanup(dir, loadConfig(dir), 60 * 60_000);
     } catch {
