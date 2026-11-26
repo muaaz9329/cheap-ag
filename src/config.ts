@@ -352,25 +352,9 @@ function readJsonObject(file: string): Record<string, unknown> {
   return value;
 }
 
-function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
-  const {
-    test_cmd,
-    integration_cmd,
-    link_dirs,
-    allow_commands,
-    limits,
-    retention,
-    models,
-    escalation_skip_at,
-    guard_lines,
-    hard_tasks,
-    takeover,
-    on_blocked_command,
-    local,
-    ollama,
-    preset,
-    provider,
-  } = value;
+/** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
+function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
+  const { provider, local, ollama, preset } = value;
   if (provider !== undefined) {
     if (file !== userConfigFile())
       throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
@@ -395,6 +379,25 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
     if (!PRESET_NAMES.includes(preset as Preset))
       throw new Error(`${file}: preset must be one of ${PRESET_NAMES.join(", ")}`);
   }
+}
+
+function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
+  const {
+    test_cmd,
+    integration_cmd,
+    link_dirs,
+    allow_commands,
+    limits,
+    retention,
+    models,
+    escalation_skip_at,
+    guard_lines,
+    hard_tasks,
+    takeover,
+    on_blocked_command,
+    preset,
+  } = value;
+  checkUserOnlyKeys(value, file);
   if (limits !== undefined && !isPlainObject(limits))
     throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
