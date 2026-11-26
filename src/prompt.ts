@@ -10,9 +10,14 @@ const EXIT_CODE_INTERRUPTED = 130;
 const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
 
-/** Moves the cursor up to the first drawn line and clears from there down, so the next write replaces the drawing. */
+/** Moves the cursor up to the first drawn line and clears from there down. */
 function eraseLinesAbove(lineCount: number) {
   return `\x1b[${lineCount}A\x1b[J`;
+}
+
+/** Keeps `value` between `low` and `high`. `high` wins when it is below `low`, as for an empty list. */
+function clamp(value: number, low: number, high: number) {
+  return Math.min(Math.max(value, low), high);
 }
 
 /**
@@ -29,16 +34,14 @@ export function select(
   const input = io.input ?? (process.stdin as RawInput);
   const output = io.output ?? process.stdout;
   return new Promise((resolve, reject) => {
-    let index = Math.min(Math.max(initial, 0), options.length - 1);
+    let index = clamp(initial, 0, options.length - 1);
     let typedNumber = "";
     let drawnLineCount = 0;
     const visibleRowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
     const fitToWidth = (line: string) => line.slice(0, (output.columns || DEFAULT_COLUMNS) - 1);
     const draw = () => {
-      const first = Math.min(
-        Math.max(index - Math.floor(visibleRowCount / 2), 0),
-        options.length - visibleRowCount,
-      );
+      const centred = index - Math.floor(visibleRowCount / 2);
+      const first = clamp(centred, 0, options.length - visibleRowCount);
       const rows = options
         .slice(first, first + visibleRowCount)
         .map((option, offset) =>
