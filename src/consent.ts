@@ -104,11 +104,9 @@ export function routeMoved(root: string, consent: Consent) {
     (consent.provider === "ollama" && ollamaIsLocal());
   if (!checksRoute) return false;
   const models = configuredModels(root, consent.provider);
-  return (
-    !!models &&
-    !!consent.route &&
-    String(consent.route) !== String(routeNames(fullRoute(consent.provider, models)))
-  );
+  if (!models || !consent.route) return false;
+  const current = routeNames(fullRoute(consent.provider, models));
+  return String(consent.route) !== String(current);
 }
 
 /** `preset=` for ping and status: the preset the effective `models` here match (the repo's config too, inside one). */
