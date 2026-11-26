@@ -6,8 +6,8 @@ import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch", "Bash"]);
-// Bash forms that write a file: redirects and heredocs into a path, in-place sed/perl, tee, cp/mv targets, and
-// python/node one-liners that open files for writing. The benchmark showed Claude writing whole files this way.
+// Bash forms that write a named file: redirects and heredocs into a path, tee, and cp/mv targets; in-place sed/perl and
+// python/node one-liners follow. The benchmark showed Claude writing whole files these ways.
 const BASH_WRITES = [
   /(?:^|[^<>])>{1,2}\s*(?!&)["']?(?<path>[^\s"'|;&]+)/g,
   /\btee\s+(?:-a\s+)?["']?(?<path>[^\s"'|;&]+)/g,
