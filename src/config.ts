@@ -293,9 +293,7 @@ export function loadConfig(root: string): Config {
   };
 }
 
-function read(
-  file: string,
-): Partial<Omit<Config, "limits" | "retention">> & {
+function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   limits?: Partial<Limits>;
   retention?: Partial<Retention>;
 } {
