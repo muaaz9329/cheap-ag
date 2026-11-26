@@ -21,11 +21,12 @@ export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: s
 export function opencodeBinary() {
   const { os, binary } = opencodePlatform();
   const base = `opencode-${os}-${arch()}`;
-  const fromPkg = createRequire(require.resolve("opencode-ai/package.json"));
+  const requireFromOpencode = createRequire(require.resolve("opencode-ai/package.json"));
   for (const name of [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]) {
     try {
-      const bin = join(dirname(fromPkg.resolve(`${name}/package.json`)), "bin", binary);
-      if (existsSync(bin)) return bin;
+      const packageDir = dirname(requireFromOpencode.resolve(`${name}/package.json`));
+      const path = join(packageDir, "bin", binary);
+      if (existsSync(path)) return path;
     } catch {
       // variant not installed for this platform
     }
@@ -150,8 +151,8 @@ function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
   const models = Object.fromEntries(
     routeModels(route)
-      .filter((m) => m.options)
-      .map((m) => [m.id, { options: m.options }]),
+      .filter((model) => model.options)
+      .map((model) => [model.id, { options: model.options }]),
   );
   const providerConfig: Record<string, unknown> = Object.keys(models).length ? { models } : {};
   /** An OpenAI-compatible endpoint as OpenCode declares one: its URL, a key reference, and every route model with the endpoint's token limits and prices. */
@@ -180,7 +181,10 @@ function opencodeConfig(provider: Provider, route: Route) {
       name,
       options: { baseURL: at.base_url, ...(apiKey && { apiKey }) },
       models: Object.fromEntries(
-        routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...models[m.id] }]),
+        routeModels(route).map((model) => [
+          model.id,
+          { name: model.id, ...limit, ...cost, ...models[model.id] },
+        ]),
       ),
     };
   };
@@ -188,7 +192,7 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "commandcode") {
     Object.assign(providerConfig, COMMAND_CODE, {
       models: Object.fromEntries(
-        routeModels(route).map((m) => [m.id, { name: m.id, ...models[m.id] }]),
+        routeModels(route).map((model) => [model.id, { name: model.id, ...models[model.id] }]),
       ),
     });
   }
@@ -293,10 +297,10 @@ export function ensureOpencode(
     stopOpencode();
   }
   if (!started) booted = config;
-  started ??= boot(projectDir, config).catch((err) => {
+  started ??= boot(projectDir, config).catch((error) => {
     stopOpencode();
     started = undefined;
-    throw err;
+    throw error;
   });
   return started;
 }
@@ -309,12 +313,12 @@ async function boot(projectDir: string, config: string): Promise<Opencode> {
     (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
   const url = external || (await spawnServer(configDir, password));
 
-  const res = await fetch(new URL("/global/health", url), {
+  const response = await fetch(new URL("/global/health", url), {
     headers: authHeaders(password),
     signal: AbortSignal.timeout(5_000),
   });
-  if (!res.ok) throw new Error(`opencode health check at ${url} answered ${res.status}`);
-  const { version } = (await res.json()) as { version: string };
+  if (!response.ok) throw new Error(`opencode health check at ${url} answered ${response.status}`);
+  const { version } = (await response.json()) as { version: string };
   if (version !== OPENCODE_PIN) {
     throw new Error(`opencode version ${version}, expected ${OPENCODE_PIN}; reinstall cheap-agent`);
   }
@@ -326,7 +330,7 @@ function spawnServer(configDir: string, password: string) {
   const bash = process.platform === "win32" ? gitBash() : undefined;
   return new Promise<string>((resolve, reject) => {
     // detached: its own process group, so stopOpencode() also takes down anything it spawned
-    const proc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
+    const server = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
       detached: true,
       // a detached console child would open a window on Windows
       windowsHide: true,
@@ -346,21 +350,21 @@ function spawnServer(configDir: string, password: string) {
         OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
       },
     });
-    child = proc;
+    child = server;
     let output = "";
     let listening = false;
     const timer = setTimeout(
       () => fail(new Error("opencode serve did not start within 15s")),
       15_000,
     );
-    const fail = (err: Error) => {
+    const fail = (error: Error) => {
       clearTimeout(timer);
       stopOpencode();
-      reject(err);
+      reject(error);
     };
     // keep draining both pipes for the server's lifetime (a full pipe blocks it), but only buffer until it listens
-    proc.stderr!.on("data", (chunk) => listening || (output += chunk));
-    proc.stdout!.on("data", (chunk) => {
+    server.stderr!.on("data", (chunk) => listening || (output += chunk));
+    server.stdout!.on("data", (chunk) => {
       if (listening) return;
       output += chunk;
       const match = output.match(/opencode server listening on (http:\/\/\S+)/);
@@ -370,12 +374,12 @@ function spawnServer(configDir: string, password: string) {
         resolve(match[1]);
       }
     });
-    proc.on("error", fail);
-    proc.on("exit", (code) => {
+    server.on("error", fail);
+    server.on("exit", (code) => {
       if (listening) {
         // a crash after startup: forget the dead server so the next call boots a fresh one. An old server exiting
         // after a reboot is not this boot's failure: it must never stop the server that replaced it.
-        if (child === proc) started = child = undefined;
+        if (child === server) started = child = undefined;
       } else fail(new Error(`opencode serve exited (${code}): ${output.trim().slice(-500)}`));
     });
   });
@@ -388,13 +392,13 @@ function spawnServer(configDir: string, password: string) {
  */
 export function stopOpencode(exiting = false) {
   started = undefined; // the next ensureOpencode boots afresh
-  const proc = child;
+  const server = child;
   child = undefined;
-  if (proc?.exitCode !== null || !proc.pid) return;
-  if (exiting) return killProcessGroup(proc.pid, "SIGKILL");
-  killProcessGroup(proc.pid);
+  if (server?.exitCode !== null || !server.pid) return;
+  if (exiting) return killProcessGroup(server.pid, "SIGKILL");
+  killProcessGroup(server.pid);
   setTimeout(
-    () => proc.exitCode === null && killProcessGroup(proc.pid, "SIGKILL"),
+    () => server.exitCode === null && killProcessGroup(server.pid, "SIGKILL"),
     STOP_GRACE_MS,
   ).unref();
 }
