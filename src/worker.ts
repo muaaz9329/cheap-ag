@@ -254,6 +254,7 @@ export async function openSession(opts: {
     const asked = askedPermission(event.properties);
     const { request, command, prefix } = asked;
     if (request.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
+      // not askable: the usual rejection
       return (await rejectUnaskable(asked, current)) ? "log" : "stop";
     }
     if (refusedCommands.has(command)) {
