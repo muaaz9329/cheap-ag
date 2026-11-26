@@ -51,15 +51,10 @@ export function cleanup(
   const job = (id: string) => {
     const dir = join(jobsDir, id);
     const record = readRecord(dir, id);
-    // the record's own time, not mtime: recovery rewrites a record long after its job stopped
-    const at = Date.parse(record?.timing?.endedAt ?? record?.timing?.startedAt ?? "");
+    const at = recordTime(record);
     // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
     const unknown = !record && now - (mtime(dir) ?? 0) < UNKNOWN_GRACE_MS;
-    const live =
-      unknown ||
-      ((record?.status === "RUNNING" || record?.status === "BLOCKED") &&
-        !!record.pid &&
-        isAlive(record.pid));
+    const live = unknown || isInFlight(record);
     return {
       live,
       status: record?.status ?? (unknown ? "STARTING" : undefined),
@@ -191,6 +186,21 @@ function readRecord(dir: string, id: string): JobRecord | undefined {
     // no record (yet), or unreadable
     return undefined;
   }
+}
+
+/** When the job ended, else started, in ms; NaN when the record has neither. */
+function recordTime(record: JobRecord | undefined) {
+  // the record's own time, not mtime: recovery rewrites a record long after its job stopped
+  return Date.parse(record?.timing?.endedAt ?? record?.timing?.startedAt ?? "");
+}
+
+/** A RUNNING or BLOCKED job whose process is still alive. */
+function isInFlight(record: JobRecord | undefined) {
+  return (
+    (record?.status === "RUNNING" || record?.status === "BLOCKED") &&
+    !!record.pid &&
+    isAlive(record.pid)
+  );
 }
 
 /** The job ids a batch record lists; none when it is unreadable, so it is judged by age alone. */
