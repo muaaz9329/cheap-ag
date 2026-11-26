@@ -431,22 +431,16 @@ export async function serve(host: "claude" | "codex" = "claude") {
   server.registerTool("delegate", DELEGATE_TOOL, (input, extra) =>
     inRepo(input.root, async (root, provider) => {
       const request = { ...input, root, ...(host === "codex" && { wait: false }) };
-      return withWarnings(
-        withHint(await delegate(request, workerContext(provider, root, extra)), root),
-        provider,
-        root,
-      );
+      const result = await delegate(request, workerContext(provider, root, extra));
+      return withWarnings(withHint(result, root), provider, root);
     }),
   );
 
   server.registerTool("research", RESEARCH_TOOL, (input, extra) =>
-    inRepo(input.root, async (root, provider) =>
-      withWarnings(
-        withHint(await research({ ...input, root }, workerContext(provider, root, extra)), root),
-        provider,
-        root,
-      ),
-    ),
+    inRepo(input.root, async (root, provider) => {
+      const answer = await research({ ...input, root }, workerContext(provider, root, extra));
+      return withWarnings(withHint(answer, root), provider, root);
+    }),
   );
 
   server.registerTool("reply", REPLY_TOOL, (input, extra) =>
