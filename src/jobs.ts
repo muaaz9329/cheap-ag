@@ -1982,21 +1982,30 @@ export async function reply(
   if (!input.answer.trim())
     return failBlock("empty answer; reply with an option letter or free text"); // the job stays BLOCKED
   if (entry.permission) {
-    const answers = entry.always === false ? /^\s*[ac]\)?\s*$/i : /^\s*[a-c]\)?\s*$/i;
-    if (!answers.test(input.answer))
-      return failBlock(entry.always === false ? "answer a or c" : "answer a, b or c"); // the job stays BLOCKED
+    const refusal = permissionRefusal(entry, input.answer);
+    if (refusal) return failBlock(refusal); // the job stays BLOCKED
   }
-  // one question also takes the numbered form ("1a", "1: text") that several questions need
-  const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(input.answer);
-  const answers =
-    entry.questions.length === 1 && !numbered
-      ? [pick(input.answer, entry.questions[0])]
-      : answerEach(input.answer, entry.questions);
+  const answers = readAnswers(input.answer, entry.questions);
   if (typeof answers === "string") return failBlock(answers); // the job stays BLOCKED
   // in a batch, the same early return as delegate from here (spec: reply resolves like delegate): the first BLOCKED, or all settled
   const batch = batches.get(running.get(input.job)?.batch ?? "");
   const next = entry.resume(answers, batch ? batch.forward : progress);
   return batch ? batch.look(false, progress) : next;
+}
+
+/** Why an answer cannot answer a command permission block, whose only answers are its letters. */
+function permissionRefusal(entry: BlockedJob, answer: string) {
+  const letters = entry.always === false ? /^\s*[ac]\)?\s*$/i : /^\s*[a-c]\)?\s*$/i;
+  if (letters.test(answer)) return undefined;
+  return entry.always === false ? "answer a or c" : "answer a, b or c";
+}
+
+/** One answer per question, or the error when the reply cannot be read. */
+function readAnswers(answer: string, questions: Question[]) {
+  // one question also takes the numbered form ("1a", "1: text") that several questions need
+  const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(answer);
+  if (questions.length === 1 && !numbered) return [pick(answer, questions[0])];
+  return answerEach(answer, questions);
 }
 
 /** A letter picks that option's label; anything else is free text. */
