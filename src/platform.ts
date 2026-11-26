@@ -35,8 +35,8 @@ export function isAlive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -70,33 +70,33 @@ export function which(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  const dirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
+  const directories = (env.PATH ?? "").split(delimiter).filter(Boolean);
   const candidates =
     platform === "win32"
       ? [
           ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
             .split(";")
             .filter(Boolean)
-            .map((ext) => name + ext),
+            .map((extension) => name + extension),
           name,
         ]
       : [name];
-  for (const dir of dirs) {
+  for (const directory of directories) {
     for (const candidate of candidates) {
       if (platform !== "win32") {
-        const full = join(dir, candidate);
-        if (existsSync(full)) return full;
+        const fullPath = join(directory, candidate);
+        if (existsSync(fullPath)) return fullPath;
         continue;
       }
       // Windows filesystems are case-insensitive; read the dir so a case difference still matches
       let entries: string[];
       try {
-        entries = readdirSync(dir);
+        entries = readdirSync(directory);
       } catch {
         break;
       }
-      const hit = entries.find((entry) => entry.toLowerCase() === candidate.toLowerCase());
-      if (hit) return join(dir, hit);
+      const match = entries.find((entry) => entry.toLowerCase() === candidate.toLowerCase());
+      if (match) return join(directory, match);
     }
   }
   return undefined;
@@ -126,7 +126,8 @@ export const firstLine = (run: SpawnSyncReturns<string> | undefined) =>
   ((run?.stderr || run?.stdout) ?? "").trim().split("\n")[0];
 
 /** Double-quotes an argument Node will re-split under `shell: true` on Windows. */
-const quoteWinArg = (arg: string) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg);
+const quoteWindowsArgument = (argument: string) =>
+  /[\s"]/.test(argument) ? `"${argument.replace(/"/g, '\\"')}"` : argument;
 
 /**
  * Runs a CLI found on the PATH. `.cmd`/`.bat` shims (claude.cmd, npx.cmd) cannot be spawned without a shell, so
@@ -150,7 +151,11 @@ export function runCli(
   const file = which(name);
   if (!file) return undefined;
   if (/\.(cmd|bat)$/i.test(file)) {
-    return spawnSync(file, args.map(quoteWinArg), { ...opts, shell: true, windowsHide: true });
+    return spawnSync(file, args.map(quoteWindowsArgument), {
+      ...opts,
+      shell: true,
+      windowsHide: true,
+    });
   }
   return spawnSync(file, args, opts);
 }
