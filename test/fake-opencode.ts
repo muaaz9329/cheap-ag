@@ -44,7 +44,7 @@ export type Action =
   /** Asks several questions in one question-tool call. */
   | { questions: { question: string; options: string[] }[] }
   /** Requests a permission, then pauses until Cheap Agent replies. */
-  | { permission: string; patterns?: string[]; command?: string; description?: string }
+  | { permission: string; patterns?: readonly string[]; command?: string; description?: string }
   /**
    * A retry status, after which the run hangs until aborted, as the real one does while it waits out retry-after.
    * With `reason`, a Go/free-tier limit (`action` set, as OpenCode 1.19 builds it); without, a plain rate limit such as
