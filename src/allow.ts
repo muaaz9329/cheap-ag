@@ -8,6 +8,27 @@ import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]";
 
+type ConsentChoice = Omit<Consent, "provider" | "approvedAt">;
+
+function parseConsentChoice(args: string[]): ConsentChoice | undefined {
+  if (!args.length) return { mode: "all" };
+  if (args.length === 1 && args[0] === "--zdr-only") return { mode: "zdr-only" };
+  if (
+    args.length === 2 &&
+    args[0] === "--models" &&
+    args[1].split(",").some((model) => model.trim())
+  ) {
+    return {
+      mode: "models",
+      models: args[1]
+        .split(",")
+        .map((model) => model.trim())
+        .filter(Boolean),
+    };
+  }
+  return undefined;
+}
+
 /**
  * `cheapag allow`: the developer's opt-in for the current repo (spec: Consent). Non-interactive, so the plugin's
  * user-only `/cheapag:allow` can wrap it. No MCP tool calls this. Modes: all models (no flag), zero-retention only,
@@ -15,22 +36,8 @@ const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]
  */
 export function allow(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
-  let consent: Omit<Consent, "provider" | "approvedAt">;
-  if (!args.length) consent = { mode: "all" };
-  else if (args.length === 1 && args[0] === "--zdr-only") consent = { mode: "zdr-only" };
-  else if (
-    args.length === 2 &&
-    args[0] === "--models" &&
-    args[1].split(",").some((m) => m.trim())
-  ) {
-    consent = {
-      mode: "models",
-      models: args[1]
-        .split(",")
-        .map((m) => m.trim())
-        .filter(Boolean),
-    };
-  } else {
+  const choice = parseConsentChoice(args);
+  if (!choice) {
     out(`✗ ${USAGE}`);
     return 1;
   }
@@ -47,7 +54,7 @@ export function allow(args: string[]): number {
     return 1;
   }
   const record: Consent = {
-    ...consent,
+    ...choice,
     provider: provider.provider,
     approvedAt: new Date().toISOString(),
   };
