@@ -68,6 +68,11 @@ const CHOICES = [...PRESET_NAMES, "custom"] as const;
 type Choice = (typeof CHOICES)[number];
 const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).includes(s);
 
+const PROVIDER_HINTS: Partial<Record<Provider["provider"], string>> = {
+  local: "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)",
+  ollama: "(this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)",
+};
+
 export async function login(
   args: string[] = [],
   { setup = false }: { setup?: boolean } = {},
@@ -131,15 +136,7 @@ export async function login(
     PROVIDERS[
       await select(
         "Provider:",
-        PROVIDERS.map((p) => ({
-          label: p.label,
-          hint:
-            p.id === "local"
-              ? "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)"
-              : p.id === "ollama"
-                ? "(this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)"
-                : undefined,
-        })),
+        PROVIDERS.map((p) => ({ label: p.label, hint: PROVIDER_HINTS[p.id] })),
         Math.max(
           0,
           PROVIDERS.findIndex((p) => p.id === current?.provider),
@@ -224,6 +221,11 @@ function currentPreset(provider: Provider["provider"]): Preset | "custom" | unde
   }
 }
 
+const CHOICE_HINTS: Partial<Record<Choice, string>> = {
+  balanced: "(recommended)",
+  custom: "(set models yourself in cheapag.json)",
+};
+
 /** The worker-models choice: `--preset` when given (login has checked it), else asked, starting on the provider's current preset. */
 async function askPreset(
   provider: Provider["provider"],
@@ -231,16 +233,10 @@ async function askPreset(
 ): Promise<Choice> {
   if (flag !== undefined) return flag;
   const preset = currentPreset(provider) ?? "balanced";
-  const hint = (name: Choice) =>
-    name === "balanced"
-      ? "(recommended)"
-      : name === "custom"
-        ? "(set models yourself in cheapag.json)"
-        : undefined;
   return CHOICES[
     await select(
       "Worker models:",
-      CHOICES.map((name) => ({ label: name, hint: hint(name) })),
+      CHOICES.map((name) => ({ label: name, hint: CHOICE_HINTS[name] })),
       CHOICES.indexOf(preset),
     )
   ];
@@ -781,12 +777,11 @@ function serverCommand() {
 }
 
 // double quotes on Windows: cmd and PowerShell don't treat single quotes as quoting
-const quote = (arg: string) =>
-  /^[\w@%+=:,./-]+$/.test(arg)
-    ? arg
-    : process.platform === "win32"
-      ? `"${arg.replace(/"/g, '\\"')}"`
-      : `'${arg.replace(/'/g, `'\\''`)}'`;
+function quote(arg: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(arg)) return arg;
+  if (process.platform === "win32") return `"${arg.replace(/"/g, '\\"')}"`;
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
 
 /** One question on a fresh readline, closed before anything else (OpenCode's login) reads the terminal. */
 async function ask(question: string) {
