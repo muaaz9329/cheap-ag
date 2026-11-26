@@ -14,7 +14,7 @@ import { git, projectRoot } from "./workspace.js";
  */
 
 const DAY_MS = 86_400_000;
-// only folders named like our job ids are ours to remove
+// a batch's job list becomes paths under jobs/: only names shaped like our job ids count
 const JOB_ID = /^j[0-9a-z]{4}$/;
 /** A job (`j…`) or research (`r…`) log folder under `.cheapag/jobs/`. */
 const LOG_ID = /^[jr][0-9a-z]{4}$/;
@@ -74,7 +74,7 @@ export function cleanup(
 function sweepWorktrees(sweep: Sweep) {
   const limit = sweep.retention.unlanded_worktree_days;
   let removedTree = false;
-  for (const id of entries(sweep.treesDir, LOG_ID)) {
+  for (const id of logFolders(sweep.treesDir)) {
     // r…: a research worktree left by a crash
     const job = readJob(sweep, id);
     if (job.live) {
@@ -105,7 +105,7 @@ function deleteWorktree(sweep: Sweep, path: string) {
 /** Removes job and research log folders past `job_log_days`, unless in flight or explaining a kept worktree. */
 function sweepJobLogs(sweep: Sweep) {
   const limit = sweep.retention.job_log_days;
-  for (const id of entries(sweep.jobsDir, LOG_ID)) {
+  for (const id of logFolders(sweep.jobsDir)) {
     const job = readJob(sweep, id);
     if (job.live) {
       sweep.out.kept.push(`job ${id}: ${job.status} job in flight`);
@@ -267,9 +267,11 @@ function readBatchJobs(file: string): string[] {
   }
 }
 
-/** Our job-id folders directly under `dir`, if `dir` is a real directory. */
-const entries = (dir: string, ids = JOB_ID) =>
-  realDir(dir) ? readdirSync(dir).filter((id) => ids.test(id) && realDir(join(dir, id))) : [];
+/** Our job and research log folders directly under `dir`, if `dir` is a real directory. */
+function logFolders(dir: string) {
+  if (!realDir(dir)) return [];
+  return readdirSync(dir).filter((id) => LOG_ID.test(id) && realDir(join(dir, id)));
+}
 
 /** A directory that is not a symlink. */
 function realDir(path: string) {
