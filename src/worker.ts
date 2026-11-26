@@ -2,6 +2,7 @@ import {
   createOpencodeClient,
   type AssistantMessage,
   type Event,
+  type EventPermissionAsked,
   type EventQuestionAsked,
   type Part,
   type PermissionRequest,
@@ -108,6 +109,13 @@ type PartText = { messageID: string; text: string };
  * passed before a long wait, `stop` ends the prompt because OpenCode did not take a reply.
  */
 type AfterEvent = "log" | "logged" | "stop";
+/** A permission request with the command it is for, that command's prefix, and the text it is recorded under. */
+type AskedPermission = {
+  request: PermissionRequest;
+  command: string;
+  prefix: string;
+  what: string;
+};
 
 /**
  * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
@@ -211,78 +219,9 @@ export async function openSession(opts: {
         if (props.sessionID !== sessionID) continue;
 
         if (event.type === "permission.asked") {
-          const props = event.properties;
-          const what = props.patterns.join(" ") || props.permission;
-          const metadata = props.metadata as Record<string, unknown> | undefined;
-          const command =
-            typeof metadata?.command === "string" && metadata.command.trim()
-              ? metadata.command.trim()
-              : what;
-          const prefix = commandPrefix(command);
-          const reject = async (message: string, record = true): Promise<boolean> => {
-            if (record) rejections.push({ kind: "asked", permission: props.permission, what });
-            const replied = await client.permission
-              .reply({ requestID: props.id, directory, reply: "reject", message })
-              .catch((err: Error) => ({ error: err.message }));
-            if (replied.error) {
-              current.error ??= `could not reject a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
-              return false;
-            }
-            return true;
-          };
-          const allowOnce = async (): Promise<boolean> => {
-            const replied = await client.permission
-              .reply({ requestID: props.id, directory, reply: "once" })
-              .catch((err: Error) => ({ error: err.message }));
-            if (replied.error) {
-              current.error ??= `could not answer a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
-              return false;
-            }
-            return true;
-          };
-          if (props.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
-            // not askable: the usual rejection
-            if (!(await reject(rejectionMessage(what)))) break;
-          } else if (refusedCommands.has(command)) {
-            // the user already refused this exact command in this job
-            if (!(await reject(REFUSED_MESSAGE, false))) break;
-          } else {
-            const matchesPrefix = command === prefix || command.startsWith(`${prefix} `);
-            if (allowedPrefixes.has(prefix) && matchesPrefix) {
-              if (!(await allowOnce())) break;
-            } else if (permissionAsks >= MAX_PERMISSION_ASKS) {
-              if (!(await reject(rejectionMessage(what)))) break;
-            } else {
-              permissionAsks++;
-              opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
-              const title = askTitle(props, command, prefix);
-              const why = askReason(current, props.tool?.messageID);
-              const stopped = untilAborted(signal);
-              const answer = await Promise.race([
-                opts.onPermission({
-                  permission: props.permission,
-                  command,
-                  title,
-                  why,
-                  prefix,
-                  always: canAlwaysAllow(prefix),
-                }),
-                stopped,
-              ]);
-              if (answer === undefined) {
-                if (!(await reject(rejectionMessage(what), false))) break;
-              } else if (answer === "once") {
-                if (!(await allowOnce())) break;
-              } else if (answer === "always") {
-                allowedPrefixes.add(prefix);
-                if (!(await allowOnce())) break;
-              } else {
-                refusedCommands.add(command);
-                if (!(await reject(REFUSED_MESSAGE, false))) break;
-              }
-              continue;
-            }
-          }
+          const after = await answerPermission(event, current);
+          if (after === "stop") break;
+          if (after === "logged") continue;
         } else if (event.type === "question.asked") {
           if ((await answerQuestion(event, current)) === "stop") break;
           continue;
@@ -312,6 +251,101 @@ export async function openSession(opts: {
       clearTimeout(backstop);
       abort.abort();
     }
+  }
+
+  /**
+   * Answers a permission request: the usual rejection when the user cannot be asked about it, a refusal for a command
+   * the user already refused, an allow for a prefix the user always allows, else whatever the user answers.
+   */
+  async function answerPermission(
+    event: EventPermissionAsked,
+    current: PromptState,
+  ): Promise<AfterEvent> {
+    const request = event.properties;
+    const what = request.patterns.join(" ") || request.permission;
+    const metadata = request.metadata as Record<string, unknown> | undefined;
+    const command = nonBlank(metadata?.command)?.trim() ?? what;
+    const prefix = commandPrefix(command);
+    const asked: AskedPermission = { request, command, prefix, what };
+    if (request.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
+      return (await rejectUnaskable(asked, current)) ? "log" : "stop";
+    }
+    if (refusedCommands.has(command)) {
+      // the user already refused this exact command in this job
+      return (await rejectPermission(request, REFUSED_MESSAGE, current)) ? "log" : "stop";
+    }
+    const matchesPrefix = command === prefix || command.startsWith(`${prefix} `);
+    if (allowedPrefixes.has(prefix) && matchesPrefix) {
+      return (await allowPermissionOnce(request, current)) ? "log" : "stop";
+    }
+    if (permissionAsks >= MAX_PERMISSION_ASKS) {
+      return (await rejectUnaskable(asked, current)) ? "log" : "stop";
+    }
+    permissionAsks++;
+    opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
+    const ask: PermissionAsk = {
+      permission: request.permission,
+      command,
+      title: askTitle(request, command, prefix),
+      why: askReason(current, request.tool?.messageID),
+      prefix,
+      always: canAlwaysAllow(prefix),
+    };
+    const stopped = untilAborted(current.signal);
+    const answer = await Promise.race([opts.onPermission(ask), stopped]);
+    return (await applyAnswer(answer, asked, current)) ? "logged" : "stop";
+  }
+
+  /** Applies the user's answer (undefined: the session stopped first); false when OpenCode did not take the reply. */
+  function applyAnswer(
+    answer: PermissionAnswer | undefined,
+    asked: AskedPermission,
+    current: PromptState,
+  ): Promise<boolean> {
+    const { request, command, prefix, what } = asked;
+    if (answer === undefined) return rejectPermission(request, rejectionMessage(what), current);
+    if (answer === "once") return allowPermissionOnce(request, current);
+    if (answer === "always") {
+      allowedPrefixes.add(prefix);
+      return allowPermissionOnce(request, current);
+    }
+    refusedCommands.add(command);
+    return rejectPermission(request, REFUSED_MESSAGE, current);
+  }
+
+  /** The usual rejection, recorded: for a request the user cannot be asked about, or one past the ask limit. */
+  function rejectUnaskable(asked: AskedPermission, current: PromptState): Promise<boolean> {
+    rejections.push({ kind: "asked", permission: asked.request.permission, what: asked.what });
+    return rejectPermission(asked.request, rejectionMessage(asked.what), current);
+  }
+
+  /** Rejects a permission request with `message`; false, with the prompt's error set, when OpenCode did not take it. */
+  async function rejectPermission(
+    request: PermissionRequest,
+    message: string,
+    current: PromptState,
+  ): Promise<boolean> {
+    const replied = await client.permission
+      .reply({ requestID: request.id, directory, reply: "reject", message })
+      .catch((error: Error) => ({ error: error.message }));
+    if (!replied.error) return true;
+    const failure = JSON.stringify(replied.error);
+    current.error ??= `could not reject a ${request.permission} permission request: ${failure}`;
+    return false;
+  }
+
+  /** Allows a permission request once; false, with the prompt's error set, when OpenCode did not take it. */
+  async function allowPermissionOnce(
+    request: PermissionRequest,
+    current: PromptState,
+  ): Promise<boolean> {
+    const replied = await client.permission
+      .reply({ requestID: request.id, directory, reply: "once" })
+      .catch((error: Error) => ({ error: error.message }));
+    if (!replied.error) return true;
+    const failure = JSON.stringify(replied.error);
+    current.error ??= `could not answer a ${request.permission} permission request: ${failure}`;
+    return false;
   }
 
   /** An ask's title: the bash call's own description, else the request's, else one naming the plan step, else the program. */
