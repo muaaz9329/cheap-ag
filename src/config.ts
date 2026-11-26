@@ -400,6 +400,29 @@ function parseJobLimit(key: keyof Limits, value: unknown, file: string): number 
   return value;
 }
 
+/** How many days cleanup keeps each kind of leftover, as far as a file sets them. */
+function parseRetention(retention: unknown, file: string): Partial<Retention> {
+  if (retention !== undefined && !isPlainObject(retention))
+    throw new Error(`${file}: retention must be an object`);
+  const keep: Partial<Retention> = {};
+  for (const key of ["unlanded_worktree_days", "job_log_days"] as const) {
+    const days = retention?.[key];
+    if (days === undefined) continue;
+    if (typeof days !== "number" || !Number.isFinite(days) || days < 0)
+      throw new Error(`${file}: retention.${key} must be a number of days (0 or more)`);
+    keep[key] = days;
+  }
+  return keep;
+}
+
+/** The allowed command prefixes, trimmed. */
+function parseAllowCommands(commands: unknown, file: string): string[] | undefined {
+  if (commands === undefined) return undefined;
+  if (!Array.isArray(commands) || commands.some((command) => !isNonEmptyString(command)))
+    throw new Error(`${file}: allow_commands must be a list of commands`);
+  return (commands as string[]).map((command) => command.trim());
+}
+
 /** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
 function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
   const { provider, local, ollama, preset } = value;
@@ -447,22 +470,8 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
   } = value;
   checkUserOnlyKeys(value, file);
   const caps = parseJobLimits(limits, file);
-  if (retention !== undefined && !isPlainObject(retention))
-    throw new Error(`${file}: retention must be an object`);
-  const keep: Partial<Retention> = {};
-  for (const key of ["unlanded_worktree_days", "job_log_days"] as const) {
-    const v = (retention as Record<string, unknown> | undefined)?.[key];
-    if (v === undefined) continue;
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0)
-      throw new Error(`${file}: retention.${key} must be a number of days (0 or more)`);
-    keep[key] = v;
-  }
-  if (
-    allow_commands !== undefined &&
-    (!Array.isArray(allow_commands) || allow_commands.some((command) => !isNonEmptyString(command)))
-  ) {
-    throw new Error(`${file}: allow_commands must be a list of commands`);
-  }
+  const keep = parseRetention(retention, file);
+  const commands = parseAllowCommands(allow_commands, file);
   if (models !== undefined && !isPlainObject(models))
     throw new Error(`${file}: models must be an object`);
   const roles = (models ?? {}) as Record<string, unknown>;
@@ -526,9 +535,7 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
     ...(test_cmd !== undefined && { test_cmd }),
     ...(integration_cmd != null && { integration_cmd }),
     ...(dirs && { link_dirs: dirs }),
-    ...(allow_commands !== undefined && {
-      allow_commands: (allow_commands as string[]).map((c) => c.trim()),
-    }),
+    ...(commands && { allow_commands: commands }),
     limits: caps,
     retention: keep,
     ...(models !== undefined && { models: roles as ModelsConfig }),
