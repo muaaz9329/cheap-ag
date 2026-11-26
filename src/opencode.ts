@@ -155,34 +155,6 @@ function opencodeConfig(provider: Provider, route: Route) {
       .map((model) => [model.id, { options: model.options }]),
   );
   const providerConfig: Record<string, unknown> = Object.keys(models).length ? { models } : {};
-  /** An OpenAI-compatible endpoint as OpenCode declares one: its URL, a key reference, and every route model with the endpoint's token limits and prices. */
-  const endpoint = (
-    name: string,
-    at: {
-      base_url: string;
-      context?: number;
-      output?: number;
-      price?: { input: number; output: number };
-    },
-    apiKey: string | undefined,
-  ) => {
-    const limit = at.context
-      ? {
-          limit: {
-            context: at.context,
-            output: at.output ?? Math.min(32_768, Math.floor(at.context / 4)),
-          },
-        }
-      : {};
-    // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
-    const cost = at.price ? { cost: { input: at.price.input, output: at.price.output } } : {};
-    return {
-      npm: "@ai-sdk/openai-compatible",
-      name,
-      options: { baseURL: at.base_url, ...(apiKey && { apiKey }) },
-      models: routeModelEntries(route, models, { ...limit, ...cost }),
-    };
-  };
   // Command Code is not in OpenCode's catalog: declare it as an OpenAI-compatible provider (the key still comes from the auth store)
   if (provider.provider === "commandcode") {
     Object.assign(providerConfig, COMMAND_CODE, { models: routeModelEntries(route, models) });
@@ -192,13 +164,18 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "ollama") {
     const ollama = ollamaEndpoint();
     if (!ollama) throw new Error("no Ollama endpoint configured; run cheapag login");
-    Object.assign(providerConfig, endpoint("Ollama", ollama, ollamaKeyReference(ollama)));
+    const declaration = endpointProvider("Ollama", ollama.base_url, ollamaKeyReference(ollama));
+    const entries = routeModelEntries(route, models, endpointModelFields(ollama));
+    Object.assign(providerConfig, declaration, { models: entries });
   }
   // a custom endpoint is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} or {env:} reference
   // OpenCode resolves itself, so the key is never in this config or in Cheap Agent's memory
   if (provider.provider === "local") {
     const local = localServer()!;
-    Object.assign(providerConfig, endpoint("Custom endpoint", local, localKeyReference(local)));
+    const apiKey = localKeyReference(local);
+    const declaration = endpointProvider("Custom endpoint", local.base_url, apiKey);
+    const entries = routeModelEntries(route, models, endpointModelFields(local));
+    Object.assign(providerConfig, declaration, { models: entries });
   }
   const config = {
     $schema: "https://opencode.ai/config.json",
@@ -208,6 +185,24 @@ function opencodeConfig(provider: Provider, route: Route) {
     provider: Object.keys(providerConfig).length ? { [provider.provider]: providerConfig } : {},
   };
   return JSON.stringify(config, null, 2) + "\n";
+}
+
+/** An OpenAI-compatible endpoint as OpenCode declares one: its URL and, when it needs one, a key reference. */
+function endpointProvider(name: string, baseUrl: string, apiKey: string | undefined) {
+  const options = { baseURL: baseUrl, ...(apiKey && { apiKey }) };
+  return { npm: "@ai-sdk/openai-compatible", name, options };
+}
+
+/** The token limits and prices a local or Ollama endpoint may set for the models it serves. */
+type EndpointLimits = Pick<LocalServer, "context" | "output" | "price">;
+
+/** An endpoint's token limits and prices, as the fields every one of its models carries. */
+function endpointModelFields({ context, output, price }: EndpointLimits) {
+  // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
+  const cost = price ? { cost: { input: price.input, output: price.output } } : {};
+  if (!context) return cost;
+  const limit = { context, output: output ?? Math.min(32_768, Math.floor(context / 4)) };
+  return { limit, ...cost };
 }
 
 /** Every route model as OpenCode declares it: named by its id, then `fields`, then the model's options. */
