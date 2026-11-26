@@ -245,7 +245,7 @@ function nums(v: string): readonly [number, number, number] | undefined {
 function guard(): number {
   try {
     const input = JSON.parse(readFileSync(0, "utf8"));
-    const reason = budget(input) ?? check(input);
+    const reason = budget(input) ?? editCheck(input);
     if (reason)
       process.stdout.write(
         JSON.stringify({
@@ -445,25 +445,34 @@ function text(v: unknown): string {
   return "";
 }
 
-function check(input: Input): string | undefined {
+/** The edit guard: the reason to deny an edit or a Bash command that writes a file, or undefined. */
+function editCheck(input: Input): string | undefined {
   if (process.env.CHEAPAG_ALLOW_EDITS === "1" || !EDIT_TOOLS.has(input.tool_name ?? "")) return;
-  const tool = input.tool_input ?? {};
+  const toolInput = input.tool_input ?? {};
   if (typeof input.cwd !== "string") return;
+  const { command } = toolInput;
   if (input.tool_name === "Bash")
-    return typeof tool.command === "string" ? bashCheck(input.cwd, tool.command) : undefined;
+    return typeof command === "string" ? bashCheck(input.cwd, command) : undefined;
   if (input.tool_name === "apply_patch")
-    return typeof tool.command === "string"
-      ? patchCheck(input.cwd, tool.command, input)
-      : undefined;
-  if (typeof tool.file_path !== "string") return;
-  const root = projectRoot(input.cwd);
+    return typeof command === "string" ? patchCheck(input.cwd, command, input) : undefined;
+  return fileCheck(input, input.cwd, toolInput);
+}
+
+/** Edit, Write and MultiEdit in a repo with the guard on: the size rule, then the turn rule. */
+function fileCheck(
+  input: Input,
+  cwd: string,
+  toolInput: Record<string, unknown>,
+): string | undefined {
+  if (typeof toolInput.file_path !== "string") return;
+  const root = projectRoot(cwd);
   if (!existsSync(flagFile(root))) return;
-  const file = resolve(input.cwd, tool.file_path);
+  const file = resolve(cwd, toolInput.file_path);
   if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
-  const lines = changed(input.tool_name!, tool, file);
+  const lines = changed(input.tool_name!, toolInput, file);
   const state = turnState(input, root);
-  const reason = editRules(state?.turn.edits, tool.file_path, file, lines, limit);
+  const reason = editRules(state?.turn.edits, toolInput.file_path, file, lines, limit);
   if (reason) return reason;
   if (state) saveTurn(root, state);
 }
