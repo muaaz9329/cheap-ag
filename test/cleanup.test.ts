@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { callText, hermeticHome, serverEntry, startServer, tempRepo } from "./harness.js";
-import { cleanProject, cleanup, gitignoreHint, startPeriodicCleanup } from "../src/cleanup.js";
+import {
+  cleanProject,
+  cleanup,
+  gitignoreHint,
+  startPeriodicCleanup,
+  type Cleaned,
+} from "../src/cleanup.js";
 import { loadConfig } from "../src/config.js";
 import * as platform from "../src/platform.js";
 import * as workspace from "../src/workspace.js";
@@ -334,6 +340,37 @@ function outsideFolder() {
   return dir;
 }
 
+const PASSES = ["worktree", "job", "batch"];
+
+/** The pass a report line comes from: worktrees, then job logs, then batches. */
+function passOf(line: string) {
+  return PASSES.indexOf(/(worktree|job|batch) /.exec(line)![1]);
+}
+
+/**
+ * Report lines sorted within each pass, after checking the passes come in their fixed order:
+ * within a pass the order is readdir's, which differs by filesystem (APFS sorts, ext4 hashes).
+ */
+function sortWithinPasses(lines: string[]) {
+  const passes = lines.map(passOf);
+  expect(passes).toEqual([...passes].sort((a, b) => a - b));
+  return [...lines].sort().sort((a, b) => passOf(a) - passOf(b));
+}
+
+/** A cleanup result with both lists sorted within their passes. */
+function withinPasses(cleaned: Cleaned) {
+  return { removed: sortWithinPasses(cleaned.removed), kept: sortWithinPasses(cleaned.kept) };
+}
+
+/** `cheapag clean` stdout sorted within passes, after checking it is the header, then removed lines, then kept lines. */
+function stdoutWithinPasses(stdout: string) {
+  const lines = stdout.split("\n");
+  const removed = lines.filter((line) => line.startsWith("  removed "));
+  const kept = lines.filter((line) => line.startsWith("  kept "));
+  expect(lines).toEqual([lines[0], ...removed, ...kept, ""]);
+  return [lines[0], ...sortWithinPasses(removed), ...sortWithinPasses(kept), ""].join("\n");
+}
+
 test("cleanup: every age rule, keep rule and reason, in the order it reports them, then --all", () => {
   const repo = tempRepo();
   onTestFinished(repo.cleanup);
@@ -414,42 +451,45 @@ test("cleanup: every age rule, keep rule and reason, in the order it reports the
   batch("bnull.json", "null", 8 * DAY);
   batch("notbatch.json", "{}", 30 * DAY);
 
-  expect(cleanup(repo.dir, RETENTION, ["node_modules"], { now })).toEqual({
-    removed: [
-      "worktree jbare: unlanded, 4d old",
-      "worktree jwedg: unlanded, 2d old",
-      "worktree jwold: unlanded, 3d old",
-      "worktree jwunt: unlanded, 5d old",
-      "worktree rwold: unlanded, 5d old",
-      "job jbadr: 10d old",
-      "job jdead: 10d old",
-      "job jedge: 7d old",
-      "job jlink: 8d old",
-      "job jnopd: 8d old",
-      "job jnotm: 9d old",
-      "job rlog1: 8d old",
-      "batch bbadj: 8d old",
-      "batch bdead: 8d old",
-      "batch bgone: its jobs are gone",
-      "batch bjunk: its jobs are gone",
-      "batch bnull: 8d old",
-    ],
-    kept: [
-      "worktree jwnew: 1d old, kept 2d",
-      "worktree jwrun: RUNNING job in flight",
-      "job jblk1: BLOCKED job in flight",
-      "job jjust: 6d old, kept 7d",
-      "job jlong: 1d old, kept 7d",
-      "job jstrt: STARTING job in flight",
-      "job jwedg: 2d old, kept 7d",
-      "job jwnew: its worktree is kept",
-      "job jwold: 3d old, kept 7d",
-      "job jwrun: RUNNING job in flight",
-      "job jwunt: 5d old, kept 7d",
-      "job rlog2: 1d old, kept 7d",
-      "job rwold: 5d old, kept 7d",
-    ],
-  });
+  const first = cleanup(repo.dir, RETENTION, ["node_modules"], { now });
+  expect(withinPasses(first)).toEqual(
+    withinPasses({
+      removed: [
+        "worktree jbare: unlanded, 4d old",
+        "worktree jwedg: unlanded, 2d old",
+        "worktree jwold: unlanded, 3d old",
+        "worktree jwunt: unlanded, 5d old",
+        "worktree rwold: unlanded, 5d old",
+        "job jbadr: 10d old",
+        "job jdead: 10d old",
+        "job jedge: 7d old",
+        "job jlink: 8d old",
+        "job jnopd: 8d old",
+        "job jnotm: 9d old",
+        "job rlog1: 8d old",
+        "batch bbadj: 8d old",
+        "batch bdead: 8d old",
+        "batch bgone: its jobs are gone",
+        "batch bjunk: its jobs are gone",
+        "batch bnull: 8d old",
+      ],
+      kept: [
+        "worktree jwnew: 1d old, kept 2d",
+        "worktree jwrun: RUNNING job in flight",
+        "job jblk1: BLOCKED job in flight",
+        "job jjust: 6d old, kept 7d",
+        "job jlong: 1d old, kept 7d",
+        "job jstrt: STARTING job in flight",
+        "job jwedg: 2d old, kept 7d",
+        "job jwnew: its worktree is kept",
+        "job jwold: 3d old, kept 7d",
+        "job jwrun: RUNNING job in flight",
+        "job jwunt: 5d old, kept 7d",
+        "job rlog2: 1d old, kept 7d",
+        "job rwold: 5d old, kept 7d",
+      ],
+    }),
+  );
   const exists = (path: string) => existsSync(join(state, path));
   for (const id of ["jbare", "jwedg", "jwold", "jwunt", "rwold"])
     expect(exists(`worktrees/${id}`)).toBe(false);
@@ -470,30 +510,34 @@ test("cleanup: every age rule, keep rule and reason, in the order it reports the
   );
   const listed = repo.git("worktree", "list", "--porcelain");
   expect(listed).not.toMatch(/jwold|jwedg|rwold/);
-  expect(listed).toMatch(/jwnew[\s\S]*jwrun/);
+  expect(listed).toMatch(/jwnew/);
+  expect(listed).toMatch(/jwrun/);
 
   // a batch whose jobs are gone says so even under --all
-  expect(cleanup(repo.dir, RETENTION, ["node_modules"], { all: true, now })).toEqual({
-    removed: [
-      "worktree jwnew: --all",
-      "job jjust: --all",
-      "job jlong: --all",
-      "job jwedg: --all",
-      "job jwnew: --all",
-      "job jwold: --all",
-      "job jwunt: --all",
-      "job rlog2: --all",
-      "job rwold: --all",
-      "batch bkeep: its jobs are gone",
-      "batch bnew0: --all",
-    ],
-    kept: [
-      "worktree jwrun: RUNNING job in flight",
-      "job jblk1: BLOCKED job in flight",
-      "job jstrt: STARTING job in flight",
-      "job jwrun: RUNNING job in flight",
-    ],
-  });
+  const all = cleanup(repo.dir, RETENTION, ["node_modules"], { all: true, now });
+  expect(withinPasses(all)).toEqual(
+    withinPasses({
+      removed: [
+        "worktree jwnew: --all",
+        "job jjust: --all",
+        "job jlong: --all",
+        "job jwedg: --all",
+        "job jwnew: --all",
+        "job jwold: --all",
+        "job jwunt: --all",
+        "job rlog2: --all",
+        "job rwold: --all",
+        "batch bkeep: its jobs are gone",
+        "batch bnew0: --all",
+      ],
+      kept: [
+        "worktree jwrun: RUNNING job in flight",
+        "job jblk1: BLOCKED job in flight",
+        "job jstrt: STARTING job in flight",
+        "job jwrun: RUNNING job in flight",
+      ],
+    }),
+  );
   expect(readFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "utf8")).toBe(
     "module.exports = 42;\n",
   );
@@ -547,18 +591,24 @@ test("a stale worktree loses its dependency links first, then git removes it; on
     );
     return realGit(cwd, args, env);
   });
-  expect(cleanup(repo.dir, RETENTION, ["node_modules", "vendor"], { all: true })).toEqual({
-    removed: ["worktree jold1: --all", "worktree jold2: --all"],
-    kept: [],
-  });
-  expect(calls).toEqual([
-    "unlink .cheapag/worktrees/jold1/node_modules",
-    "unlink .cheapag/worktrees/jold1/vendor",
-    "git in .: worktree remove --force .cheapag/worktrees/jold1",
-    "unlink .cheapag/worktrees/jold2/node_modules",
-    "unlink .cheapag/worktrees/jold2/vendor",
-    "git in .: worktree remove --force .cheapag/worktrees/jold2",
-    "git in .: worktree prune",
+  const result = cleanup(repo.dir, RETENTION, ["node_modules", "vendor"], { all: true });
+  expect(withinPasses(result)).toEqual(
+    withinPasses({ removed: ["worktree jold1: --all", "worktree jold2: --all"], kept: [] }),
+  );
+  // prune comes last, once; which worktree goes first is readdir order
+  expect(calls.pop()).toBe("git in .: worktree prune");
+  const byWorktree = (a: string[], b: string[]) => a[2].localeCompare(b[2]);
+  expect([calls.slice(0, 3), calls.slice(3)].sort(byWorktree)).toEqual([
+    [
+      "unlink .cheapag/worktrees/jold1/node_modules",
+      "unlink .cheapag/worktrees/jold1/vendor",
+      "git in .: worktree remove --force .cheapag/worktrees/jold1",
+    ],
+    [
+      "unlink .cheapag/worktrees/jold2/node_modules",
+      "unlink .cheapag/worktrees/jold2/vendor",
+      "git in .: worktree remove --force .cheapag/worktrees/jold2",
+    ],
   ]);
   expect(existsSync(join(repo.dir, "node_modules")) && existsSync(join(repo.dir, "vendor"))).toBe(
     true,
@@ -592,18 +642,20 @@ test("cheapag clean prints exactly what went and what stayed, from any folder in
   const batches = join(repo.dir, ".cheapag", "batches");
   mkdirSync(batches);
   writeFileSync(join(batches, "bdone.json"), JSON.stringify({ jobs: ["jold1"] }));
-  expect(clean()).toBe(
-    [
-      "✓ removed 3, kept 4",
-      "  removed worktree jold1: unlanded, 8d old",
-      "  removed job jold1: 8d old",
-      "  removed batch bdone: its jobs are gone",
-      "  kept worktree jnew1: 1d old, kept 2d",
-      "  kept job jlog2: 3d old, kept 7d",
-      "  kept job jnew1: its worktree is kept",
-      "  kept job jrun1: RUNNING job in flight",
-      "",
-    ].join("\n"),
+  expect(stdoutWithinPasses(clean())).toBe(
+    stdoutWithinPasses(
+      [
+        "✓ removed 3, kept 4",
+        "  removed worktree jold1: unlanded, 8d old",
+        "  removed job jold1: 8d old",
+        "  removed batch bdone: its jobs are gone",
+        "  kept worktree jnew1: 1d old, kept 2d",
+        "  kept job jlog2: 3d old, kept 7d",
+        "  kept job jnew1: its worktree is kept",
+        "  kept job jrun1: RUNNING job in flight",
+        "",
+      ].join("\n"),
+    ),
   );
 
   const sub = join(repo.dir, "sub");
@@ -611,16 +663,18 @@ test("cheapag clean prints exactly what went and what stayed, from any folder in
   const run = (cwd: string, ...args: string[]) =>
     spawnSync(process.execPath, [serverEntry, "clean", ...args], { cwd, env, encoding: "utf8" });
   const all = run(sub, "--all");
-  expect([all.status, all.stdout, all.stderr]).toEqual([
+  expect([all.status, stdoutWithinPasses(all.stdout), all.stderr]).toEqual([
     0,
-    [
-      "✓ removed 3, kept 1",
-      "  removed worktree jnew1: --all",
-      "  removed job jlog2: --all",
-      "  removed job jnew1: --all",
-      "  kept job jrun1: RUNNING job in flight",
-      "",
-    ].join("\n"),
+    stdoutWithinPasses(
+      [
+        "✓ removed 3, kept 1",
+        "  removed worktree jnew1: --all",
+        "  removed job jlog2: --all",
+        "  removed job jnew1: --all",
+        "  kept job jrun1: RUNNING job in flight",
+        "",
+      ].join("\n"),
+    ),
     "",
   ]);
   expect(clean()).toBe("✓ removed 0, kept 1\n  kept job jrun1: RUNNING job in flight\n");
