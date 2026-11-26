@@ -68,7 +68,11 @@ const CHOICES = [...PRESET_NAMES, "custom"] as const;
 type Choice = (typeof CHOICES)[number];
 const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).includes(s);
 
-const PROVIDER_HINTS: Partial<Record<Provider["provider"], string>> = {
+type Output = (line?: string) => void;
+type ProviderId = Provider["provider"];
+type ProviderEntry = (typeof PROVIDERS)[number];
+
+const PROVIDER_HINTS: Partial<Record<ProviderId, string>> = {
   local: "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)",
   ollama: "(this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)",
 };
@@ -78,91 +82,76 @@ export async function login(
   { setup = false }: { setup?: boolean } = {},
 ): Promise<number> {
   const out = (line = "") => process.stdout.write(redact(line) + "\n");
-  const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
-  if (args.length && flag === undefined) {
-    out(`✗ usage: cheapag login [--preset ${CHOICES.join("|")}]`);
+  const parsed = parseArgs(args);
+  if ("error" in parsed) {
+    out(parsed.error);
     return 1;
   }
-  if (flag !== undefined && !isChoice(flag)) {
-    out(`✗ "${flag}" is not a preset; use one of ${CHOICES.join(", ")}; nothing changed`);
-    return 1;
-  }
+  const { flag } = parsed;
   // `npx cheap-agent` with a login already saved is just an update: no questions, no key prompt
   if (setup && flag === undefined) {
     const saved = detectProvider();
-    if (saved) {
-      if (!localEndpoint(saved.provider)) migratePreset(saved.provider, out);
-      out(
-        `Cheap Agent ${version} · already set up with ${label(saved.provider)} (${currentPreset(saved.provider) ?? "custom"})`,
-      );
-      const code = await register(out, true);
-      out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
-      return code;
-    }
+    if (saved) return updateSetup(saved.provider, out);
   }
-  if (!process.stdin.isTTY) {
-    const saved = detectProvider();
-    if (!saved) {
-      out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
-      return 1;
-    }
-    if (localEndpoint(saved.provider)) {
-      out(
-        `No terminal to ask in: the ${label(saved.provider).toLowerCase()} setting stays as configured in ${userConfigFile()}`,
-      );
-      return 0;
-    }
-    // no terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the benchmark)
-    migratePreset(saved.provider, out);
-    const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
-    if (!flag)
-      out(
-        `No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`,
-      );
-    return savePreset(saved.provider, choice, out) ? 0 : 1;
+  if (!process.stdin.isTTY) return loginWithoutTerminal(flag, out);
+  return loginInTerminal(flag, out);
+}
+
+/** The `--preset` choice login's arguments give, or the line saying why they are wrong. */
+function parseArgs(args: string[]): { flag: Choice | undefined } | { error: string } {
+  const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
+  if (args.length && flag === undefined)
+    return { error: `✗ usage: cheapag login [--preset ${CHOICES.join("|")}]` };
+  if (flag !== undefined && !isChoice(flag))
+    return {
+      error: `✗ "${flag}" is not a preset; use one of ${CHOICES.join(", ")}; nothing changed`,
+    };
+  return { flag };
+}
+
+/** Setup run again with a login saved: re-registers the server and updates the plugin, asking nothing. */
+async function updateSetup(provider: ProviderId, out: Output): Promise<number> {
+  if (!localEndpoint(provider)) migratePreset(provider, out);
+  const preset = currentPreset(provider) ?? "custom";
+  out(`Cheap Agent ${version} · already set up with ${label(provider)} (${preset})`);
+  const code = await register(out, true);
+  out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
+  return code;
+}
+
+/**
+ * No terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the
+ * benchmark). A local endpoint has none to set and stays as configured.
+ */
+function loginWithoutTerminal(flag: Choice | undefined, out: Output): number {
+  const saved = detectProvider();
+  if (!saved) {
+    out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
+    return 1;
   }
+  if (localEndpoint(saved.provider)) {
+    const setting = label(saved.provider).toLowerCase();
+    out(`No terminal to ask in: the ${setting} setting stays as configured in ${userConfigFile()}`);
+    return 0;
+  }
+  migratePreset(saved.provider, out);
+  const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
+  if (!flag)
+    out(
+      `No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`,
+    );
+  return savePreset(saved.provider, choice, out) ? 0 : 1;
+}
+
+/** The interactive login: pick a provider, set it up, live-check it, then offer to register the server. */
+async function loginInTerminal(flag: Choice | undefined, out: Output): Promise<number> {
   // the live check's OpenCode runs in its own process group; take it down on Ctrl-C too
   process.on("exit", () => stopOpencode(true));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
     process.on(signal, () => process.exit(130));
   out("Cheap Agent login");
-  const current = detectProvider();
-  if (current)
-    out(
-      `Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`,
-    );
-  // arrow keys or a number, Enter picks; the provider in use starts highlighted
-  const picked =
-    PROVIDERS[
-      await select(
-        "Provider:",
-        PROVIDERS.map((p) => ({ label: p.label, hint: PROVIDER_HINTS[p.id] })),
-        Math.max(
-          0,
-          PROVIDERS.findIndex((p) => p.id === current?.provider),
-        ),
-      )
-    ];
-  if (picked.id === "local") {
-    if (flag) out("--preset does not apply to a local server: its model is asked for below");
-    if (!(await localLogin(out))) return 1;
-  } else if (picked.id === "ollama") {
-    if (!(await ollamaLogin(out, flag))) return 1;
-  } else {
-    migratePreset(picked.id, out);
-    const choice = await askPreset(picked.id, flag);
-
-    // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
-    const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], {
-      stdio: "inherit",
-      env: { ...process.env, OPENCODE_DB },
-    });
-    if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
-      out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
-      return 1;
-    }
-    if (!savePreset(picked.id, choice, out) || !dropLocal(out, picked.label)) return 1;
-  }
+  const picked = await pickProvider(out);
+  if (!(await setUpProvider(picked, flag, out))) return 1;
 
   // another provider set up earlier would otherwise keep winning: point the user config at the one just logged in to
   if (detectProvider()?.provider !== picked.id && !setUserKey("provider", picked.id, out)) return 1;
@@ -175,11 +164,61 @@ export async function login(
   if (!check.ok) {
     const hint = regionHint(check.line);
     if (hint) out(hint);
+    return 1; // the login stays saved; fix the cause and run login again
   }
-  if (!check.ok) return 1; // the login stays saved; fix the cause and run login again
 
   await register(out);
   return 0;
+}
+
+/** The provider menu: arrow keys or a number, Enter picks; the provider in use starts highlighted. */
+async function pickProvider(out: Output): Promise<ProviderEntry> {
+  const current = detectProvider();
+  if (current)
+    out(
+      `Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`,
+    );
+  const options = PROVIDERS.map((entry) => ({
+    label: entry.label,
+    hint: PROVIDER_HINTS[entry.id],
+  }));
+  const inUse = PROVIDERS.findIndex((entry) => entry.id === current?.provider);
+  return PROVIDERS[await select("Provider:", options, Math.max(0, inUse))];
+}
+
+/** Runs the picked provider's own setup; false when it stopped, after saying why. */
+async function setUpProvider(
+  picked: ProviderEntry,
+  flag: Choice | undefined,
+  out: Output,
+): Promise<boolean> {
+  if (picked.id === "local") {
+    if (flag) out("--preset does not apply to a local server: its model is asked for below");
+    return localLogin(out);
+  }
+  if (picked.id === "ollama") return ollamaLogin(out, flag);
+  return hostedLogin(picked, flag, out);
+}
+
+/** A hosted provider: the worker models, then the key, which the bundled OpenCode takes; false when either is not saved. */
+async function hostedLogin(
+  picked: ProviderEntry,
+  flag: Choice | undefined,
+  out: Output,
+): Promise<boolean> {
+  migratePreset(picked.id, out);
+  const choice = await askPreset(picked.id, flag);
+
+  // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
+  const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], {
+    stdio: "inherit",
+    env: { ...process.env, OPENCODE_DB },
+  });
+  if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
+    out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
+    return false;
+  }
+  return savePreset(picked.id, choice, out) && dropLocal(out, picked.label);
 }
 
 /** The user-level config as written, so saving a preset keeps its other keys; {} when there is none. */
