@@ -51,7 +51,7 @@ export async function model(args: string[]): Promise<number> {
   try {
     const models = await catalog(provider, dir);
     const current = currentRoute(provider);
-    if (flags.main !== undefined) return save(provider, models, flags as Required<Flags>);
+    if (flags.main !== undefined) return saveFlags(provider, models, flags as Required<Flags>);
     if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current);
     print(describe(provider, models, current));
     // a `models` entry naming another provider is ignored when the next job routes
@@ -176,10 +176,10 @@ function describe(
   ].join("\n");
 }
 
-function save(provider: Provider, models: CatalogModel[], flags: Required<Flags>) {
+function saveFlags(provider: Provider, models: CatalogModel[], flags: Required<Flags>) {
   const label = providerLabel(provider.provider);
-  const check = (id: string, wanted?: string) => {
-    const found = models.find((m) => m.id === bareId(provider, id));
+  const validModel = (id: string, wanted?: string) => {
+    const found = models.find((entry) => entry.id === bareId(provider, id));
     if (!found) {
       print(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`);
       return undefined;
@@ -190,15 +190,16 @@ function save(provider: Provider, models: CatalogModel[], flags: Required<Flags>
     }
     return found;
   };
-  const none = flags.fallback === undefined || flags.fallback === "none";
-  if (none && flags.fallbackEffort !== undefined) {
+  const noFallback = flags.fallback === undefined || flags.fallback === "none";
+  if (noFallback && flags.fallbackEffort !== undefined) {
     print("✗ --fallback-effort needs --fallback <id>");
     return 1;
   }
-  const main = check(flags.main, flags.effort);
-  const fallback = none ? null : check(flags.fallback, flags.fallbackEffort);
+  const main = validModel(flags.main, flags.effort);
+  // both are checked, so a bad main and a bad fallback are both reported; null means no fallback, undefined a refused one
+  const fallback = noFallback ? null : validModel(flags.fallback, flags.fallbackEffort);
   if (!main || fallback === undefined) return 1;
-  return apply(provider, {
+  return savePick(provider, {
     main: main.id,
     mainEffort: flags.effort,
     fallback: fallback?.id ?? null,
@@ -206,7 +207,7 @@ function save(provider: Provider, models: CatalogModel[], flags: Required<Flags>
   });
 }
 
-function apply(provider: Provider, chosen: Pick) {
+function savePick(provider: Provider, chosen: Pick) {
   saveModels(provider, chosen);
   // on OpenRouter the model decides the upstream company: picking it is the consent for this repo
   if (provider.provider === "openrouter") {
@@ -225,14 +226,14 @@ function apply(provider: Provider, chosen: Pick) {
 }
 
 /** Effort, when the model has any: `default` first. */
-async function askEffort(who: string, m: CatalogModel, now?: string) {
-  if (!m.efforts.length) return undefined;
-  const i = await select(
-    `Effort for ${who} ${m.id}:`,
-    [{ label: "default" }, ...m.efforts.map((label) => ({ label }))],
-    m.efforts.indexOf(now ?? "") + 1,
+async function askEffort(role: string, entry: CatalogModel, current?: string) {
+  if (!entry.efforts.length) return undefined;
+  const index = await select(
+    `Effort for ${role} ${entry.id}:`,
+    [{ label: "default" }, ...entry.efforts.map((label) => ({ label }))],
+    entry.efforts.indexOf(current ?? "") + 1,
   );
-  return i ? m.efforts[i - 1] : undefined;
+  return index ? entry.efforts[index - 1] : undefined;
 }
 
 async function pick(
@@ -250,7 +251,7 @@ async function pick(
   const fallbackIndex = await select(fallbackQuestion, [{ label: "none" }, ...rows], 0);
   const fallback = fallbackIndex ? models[fallbackIndex - 1] : undefined;
   const fallbackEffort = fallback && (await askEffort("fallback", fallback));
-  return apply(provider, {
+  return savePick(provider, {
     main: main.id,
     mainEffort,
     fallback: fallback?.id ?? null,
