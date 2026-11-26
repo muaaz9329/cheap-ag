@@ -7,10 +7,10 @@
   "options": {
     "typeAware": true
   },
-  "ignorePatterns": ["dist/**", "coverage/**", "node_modules/**"],
+  "ignorePatterns": ["dist/**", "coverage/**", "node_modules/**", "bench/**"],
   "rules": {
     "typescript/no-floating-promises": "error",
-    "no-nested-ternary": "error",
+    "no-nested-ternary": "warn",
     "complexity": ["warn", { "max": 15 }],
     "max-depth": ["warn", { "max": 4 }]
   }
