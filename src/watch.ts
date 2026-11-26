@@ -53,23 +53,23 @@ export function scan(state: WatchState): string[] {
   if (!existsSync(base)) return [];
   const lines: string[] = [];
   for (const id of readdirSync(base).sort()) {
-    const dir = join(base, id);
-    if (!isDirectory(dir)) continue;
-    const job = trackedJob(state.jobs, dir);
+    const directory = join(base, id);
+    if (!isDirectory(directory)) continue;
+    const job = trackedJob(state.jobs, directory);
     if (job.skipped) continue;
 
     if (!job.started) {
       job.started = true;
-      lines.push(startLine(id, dir));
+      lines.push(startLine(id, directory));
     }
 
-    for (const line of readAppendedLines(join(dir, "events.jsonl"), job)) {
+    for (const line of readAppendedLines(join(directory, "events.jsonl"), job)) {
       const shown = toolLine(id, line, state.root);
       if (shown) lines.push(shown);
     }
 
     // result.txt is rewritten each turn (RUNNING …): only a final first word is the verdict
-    const resultFile = join(dir, "result.txt");
+    const resultFile = join(directory, "result.txt");
     if (!job.verdict && hasFinalResult(resultFile)) {
       job.verdict = true;
       const firstLine = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
@@ -79,21 +79,21 @@ export function scan(state: WatchState): string[] {
   return lines;
 }
 
-/** The watch record for a job dir, made the first time a scan sees the dir. */
-function trackedJob(jobs: Map<string, JobWatch>, dir: string): JobWatch {
-  const known = jobs.get(dir);
+/** The watch record for a job directory, made the first time a scan sees it. */
+function trackedJob(jobs: Map<string, JobWatch>, directory: string): JobWatch {
+  const known = jobs.get(directory);
   if (known) return known;
   // a job that already finished before watch started is never shown; one still RUNNING (or BLOCKED) was just created
-  const job = hasFinalResult(join(dir, "result.txt"))
+  const job = hasFinalResult(join(directory, "result.txt"))
     ? { offset: 0, started: true, verdict: true, skipped: true }
     : { offset: 0, started: false, verdict: false, skipped: false };
-  jobs.set(dir, job);
+  jobs.set(directory, job);
   return job;
 }
 
 /** The ▶ line that opens a job: its id, then the steps and the model's last segment when request.json has them. */
-function startLine(id: string, dir: string): string {
-  const request = readJson(join(dir, "request.json"));
+function startLine(id: string, directory: string): string {
+  const request = readJson(join(directory, "request.json"));
   if (!request) return `▶ ${id}`;
   const model = typeof request.model === "string" ? request.model : undefined;
   const modelName = model?.split("/").pop();
@@ -190,19 +190,19 @@ export async function follow(
   for (;;) {
     for (const id of ids) {
       if (final.has(id)) continue;
-      const dir = join(base, id);
-      if (!existsSync(dir)) {
+      const directory = join(base, id);
+      if (!existsSync(directory)) {
         out.write(`✗ no job ${id}\n`);
         final.add(id);
         continue;
       }
-      const progressFile = join(dir, "progress.txt");
+      const progressFile = join(directory, "progress.txt");
       const line = existsSync(progressFile) ? readTrimmed(progressFile) : "";
       if (line && line !== printed.get(id)) {
         printed.set(id, line);
         out.write(`  ${id}  ${line}\n`);
       }
-      const resultFile = join(dir, "result.txt");
+      const resultFile = join(directory, "result.txt");
       const word = firstWord(resultFile);
       if (word && word !== "RUNNING") {
         final.add(id);
@@ -235,8 +235,8 @@ export async function watch(
   let project: string;
   try {
     project = root ?? projectRoot(process.cwd());
-  } catch (err) {
-    out.write(`✗ ${(err as Error).message}\n`);
+  } catch (error) {
+    out.write(`✗ ${(error as Error).message}\n`);
     process.exit(1);
   }
   out.write(`watching ${join(project, ".cheapag", "jobs")} (Ctrl-C to stop)\n`);
