@@ -2,6 +2,7 @@ import {
   createOpencodeClient,
   type AssistantMessage,
   type Event,
+  type EventQuestionAsked,
   type Part,
   type SessionStatus,
   type ToolPart,
@@ -101,6 +102,11 @@ type PromptState = {
 };
 /** The latest text of a text or reasoning part, and the message it belongs to. */
 type PartText = { messageID: string; text: string };
+/**
+ * What the event loop does once an event is handled: `log` passes it to onEvent, `logged` skips that because it was
+ * passed before a long wait, `stop` ends the prompt because OpenCode did not take a reply.
+ */
+type AfterEvent = "log" | "logged" | "stop";
 
 /**
  * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
@@ -304,36 +310,7 @@ export async function openSession(opts: {
             }
           }
         } else if (event.type === "question.asked") {
-          opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
-          const questions = event.properties.questions.map((q) => ({
-            question: q.question,
-            options: q.options.map((o) => o.label),
-          }));
-          const requestID = event.properties.id;
-          // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
-          const stopped = untilAborted(signal);
-          // a question asked after a stop is never put to Claude: the job is ending, not blocked
-          const answers =
-            opts.onQuestion && questions.length && !signal?.aborted
-              ? await Promise.race([opts.onQuestion(questions), stopped])
-              : undefined;
-          // nowhere to put the question (a parallel group until early return exists, or the login check): it is rejected, and said so
-          if (!opts.onQuestion && questions.length)
-            rejections.push({
-              kind: "asked",
-              permission: "question",
-              what: questions.map((q) => q.question).join(" / "),
-            });
-          const replied = await (
-            answers === undefined
-              ? client.question.reject({ requestID, directory })
-              : client.question.reply({ requestID, directory, answers: answers.map((a) => [a]) })
-          ).catch((err: Error) => ({ error: err.message }));
-          // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
-          if (replied.error) {
-            current.error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
-            break;
-          }
+          if ((await answerQuestion(event, current)) === "stop") break;
           continue;
         } else {
           recordEvent(event, current);
@@ -361,6 +338,45 @@ export async function openSession(opts: {
       clearTimeout(backstop);
       abort.abort();
     }
+  }
+
+  /** Puts the worker's questions to Claude, or rejects them when they have nowhere to go or the session stopped. */
+  async function answerQuestion(
+    event: EventQuestionAsked,
+    current: PromptState,
+  ): Promise<AfterEvent> {
+    opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
+    const questions = event.properties.questions.map((asked) => ({
+      question: asked.question,
+      options: asked.options.map((option) => option.label),
+    }));
+    const requestID = event.properties.id;
+    const { signal } = current;
+    // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
+    const stopped = untilAborted(signal);
+    // a question asked after a stop is never put to Claude: the job is ending, not blocked
+    const answers =
+      opts.onQuestion && questions.length && !signal?.aborted
+        ? await Promise.race([opts.onQuestion(questions), stopped])
+        : undefined;
+    // nowhere to put the question (a parallel group until early return exists, or the login check): it is rejected, and said so
+    if (!opts.onQuestion && questions.length) {
+      const what = questions.map(({ question }) => question).join(" / ");
+      rejections.push({ kind: "asked", permission: "question", what });
+    }
+    const replied = await (
+      answers === undefined
+        ? client.question.reject({ requestID, directory })
+        : client.question.reply({
+            requestID,
+            directory,
+            answers: answers.map((answer) => [answer]),
+          })
+    ).catch((error: Error) => ({ error: error.message }));
+    // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
+    if (!replied.error) return "logged";
+    current.error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
+    return "stop";
   }
 
   /** Records what a worker event shows: tool calls, texts, usage, errors and provider limits. */
