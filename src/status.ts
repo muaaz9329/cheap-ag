@@ -20,6 +20,7 @@ const { version } = createRequire(import.meta.url)("../package.json") as { versi
 const RECENT = 5;
 
 type ProviderId = Provider["provider"];
+type Job = ReturnType<typeof newestFirst>[number];
 
 /**
  * `cheapag status` (spec story 112): provider, this repo's consent, running jobs, recent results, and tracked spend
@@ -42,17 +43,7 @@ export function status(args: string[]): number {
   if (root) {
     print(`consent: ${consentText(root, provider)}`);
     print(storageLine(root));
-    const all = newestFirst(root);
-    const inFlight = (r: (typeof all)[number]) => r.status === "RUNNING" || r.status === "BLOCKED";
-    const live = all.filter((r) => inFlight(r) && !!r.pid && isAlive(r.pid));
-    const rest = all.filter((r) => !live.includes(r));
-    const headline = (r: (typeof all)[number]) =>
-      `  ${renderJob(r).split("\n")[0]}${blockedFor(r)}${inFlight(r) && !live.includes(r) ? " (its server is gone; cancelled at next start)" : ""}`;
-    print(live.length ? "running:" : "running: none");
-    live.forEach((r) => print(headline(r)));
-    print(rest.length ? "recent:" : "recent: none");
-    rest.slice(0, RECENT).forEach((r) => print(headline(r)));
-    if (rest.length > RECENT) print(`  … +${rest.length - RECENT} older (jobs list)`);
+    printJobs(root);
     const last = lastSession(root);
     if (last) {
       print(
@@ -100,6 +91,33 @@ function consentText(root: string, provider: ProviderId | undefined): string {
   }
   // approvedAt is read last, so a hand-edited record without it still reports the cases above
   return `${describe(consent)} (since ${consent.approvedAt.slice(0, 10)})`;
+}
+
+/** The `running:` jobs whose server is alive, then the newest `recent:` others. */
+function printJobs(root: string) {
+  const all = newestFirst(root);
+  const live = all.filter((job) => isInFlight(job) && !!job.pid && isAlive(job.pid));
+  const rest = all.filter((job) => !live.includes(job));
+  const headline = (job: Job) => jobHeadline(job, live.includes(job));
+  print(live.length ? "running:" : "running: none");
+  live.forEach((job) => print(headline(job)));
+  print(rest.length ? "recent:" : "recent: none");
+  rest.slice(0, RECENT).forEach((job) => print(headline(job)));
+  if (rest.length > RECENT) print(`  … +${rest.length - RECENT} older (jobs list)`);
+}
+
+function isInFlight(job: Job): boolean {
+  return job.status === "RUNNING" || job.status === "BLOCKED";
+}
+
+const SERVER_GONE = " (its server is gone; cancelled at next start)";
+
+/** A job's one-line headline, marked when it is still in flight but its server is not alive. */
+function jobHeadline(job: Job, live: boolean): string {
+  const firstLine = renderJob(job).split("\n")[0];
+  const waiting = blockedFor(job);
+  const gone = isInFlight(job) && !live ? SERVER_GONE : "";
+  return `  ${firstLine}${waiting}${gone}`;
 }
 
 /** Writes one line of the report, with any API key in it redacted. */
