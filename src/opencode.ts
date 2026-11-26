@@ -311,9 +311,28 @@ async function boot(projectDir: string, config: string): Promise<Opencode> {
   return { url, password, version };
 }
 
-function spawnServer(configDir: string, password: string) {
+/** The env `opencode serve` runs with: this process's, plus what keeps the server Cheap Agent's own. */
+function serverEnv(configDir: string, password: string) {
   // on Windows point the worker at Git Bash, so it runs and parses its commands as bash, like the rest of cheapag
   const bash = process.platform === "win32" ? gitBash() : undefined;
+  return {
+    ...process.env,
+    OPENCODE_SERVER_PASSWORD: password,
+    OPENCODE_CONFIG_DIR: configDir,
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    // its own session database beside the user's (relative to OpenCode's data dir, where the shared auth.json stays): a newer
+    // OpenCode installed by the user migrates opencode.db to a schema 1.19 refuses to start on ("has no session table")
+    OPENCODE_DB,
+    // OpenCode watches each session dir's .git; cheapag uses none of its events, and on Windows the open handle blocks removing the worktree
+    OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
+    ...(bash ? { SHELL: bash } : {}),
+    // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
+    OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
+  };
+}
+
+function spawnServer(configDir: string, password: string) {
+  const env = serverEnv(configDir, password);
   return new Promise<string>((resolve, reject) => {
     // detached: its own process group, so stopOpencode() also takes down anything it spawned
     const server = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
@@ -321,20 +340,7 @@ function spawnServer(configDir: string, password: string) {
       // a detached console child would open a window on Windows
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        OPENCODE_SERVER_PASSWORD: password,
-        OPENCODE_CONFIG_DIR: configDir,
-        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-        // its own session database beside the user's (relative to OpenCode's data dir, where the shared auth.json stays): a newer
-        // OpenCode installed by the user migrates opencode.db to a schema 1.19 refuses to start on ("has no session table")
-        OPENCODE_DB,
-        // OpenCode watches each session dir's .git; cheapag uses none of its events, and on Windows the open handle blocks removing the worktree
-        OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
-        ...(bash ? { SHELL: bash } : {}),
-        // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
-        OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
-      },
+      env,
     });
     child = server;
     let output = "";
