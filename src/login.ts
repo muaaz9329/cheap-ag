@@ -234,7 +234,7 @@ function readUser(): Record<string, unknown> {
 /** Rewrites the user config from what it holds now; false, and said (with what was `unsaved`), when it cannot be read or written. */
 function updateUser(
   change: (config: Record<string, unknown>) => Record<string, unknown>,
-  out: (line?: string) => void,
+  out: Output,
   unsaved?: string,
 ) {
   const file = userConfigFile();
@@ -282,7 +282,7 @@ async function askPreset(
 }
 
 /** Writes the preset name as the user config's `preset`, other keys kept; an old equal `models` is dropped, custom writes nothing. */
-function savePreset(provider: Provider["provider"], choice: Choice, out: (line?: string) => void) {
+function savePreset(provider: Provider["provider"], choice: Choice, out: Output) {
   // login asks a local endpoint for its model instead; this keeps the narrowing below honest
   if (provider === "local") throw new Error("a custom endpoint has no presets");
   const file = userConfigFile();
@@ -310,7 +310,7 @@ function savePreset(provider: Provider["provider"], choice: Choice, out: (line?:
 }
 
 /** Rewrites an old user config whose `models` exactly match a current preset to that preset's name; anything else is left alone. */
-function migratePreset(provider: Provider["provider"], out: (line?: string) => void) {
+function migratePreset(provider: Provider["provider"], out: Output) {
   if (provider === "local") return;
   try {
     const config = readUser();
@@ -331,7 +331,7 @@ function migratePreset(provider: Provider["provider"], out: (line?: string) => v
  * needs a key, and the context window (detected from llama.cpp's /props or LM Studio's API when they answer). Saves it as
  * the user config's `local`, other keys kept. The key file is only checked to exist: OpenCode reads it, Cheap Agent never does.
  */
-async function localLogin(out: (line?: string) => void): Promise<boolean> {
+async function localLogin(out: Output): Promise<boolean> {
   let current: LocalServer | undefined;
   try {
     current = localServer();
@@ -458,10 +458,7 @@ async function localLogin(out: (line?: string) => void): Promise<boolean> {
  * which reads the key from OLLAMA_API_KEY. Saves it as the user config's `ollama`, other keys kept. Login reads the key
  * only to list the cloud models; the config names the variable, and OpenCode resolves it for every job.
  */
-async function ollamaLogin(
-  out: (line?: string) => void,
-  flag: Choice | undefined,
-): Promise<boolean> {
+async function ollamaLogin(out: Output, flag: Choice | undefined): Promise<boolean> {
   let current: OllamaConfig | undefined;
   try {
     current = ollamaConfig();
@@ -482,7 +479,7 @@ async function ollamaLogin(
 
 /** Ollama on this machine: its URL, then one of the models `/api/tags` lists, with the context `/api/show` reports. */
 async function localOllamaLogin(
-  out: (line?: string) => void,
+  out: Output,
   current: OllamaConfig | undefined,
   flag: Choice | undefined,
 ): Promise<boolean> {
@@ -548,7 +545,7 @@ async function localOllamaLogin(
 
 /** Ollama Cloud: the key must already be in the environment (never typed here), then the cloud presets are offered. */
 async function cloudOllamaLogin(
-  out: (line?: string) => void,
+  out: Output,
   current: OllamaConfig | undefined,
   flag: Choice | undefined,
 ): Promise<boolean> {
@@ -591,7 +588,7 @@ async function cloudOllamaLogin(
 }
 
 /** Writes the user config's `ollama`, other keys kept; true when saved. */
-function saveOllama(ollama: OllamaConfig, out: (line?: string) => void) {
+function saveOllama(ollama: OllamaConfig, out: Output) {
   return updateUser((user) => ({ ...user, ollama }), out, "Ollama setting not saved");
 }
 
@@ -644,7 +641,7 @@ export function setUserKey(key: string, value: unknown, out: (line?: string) => 
 }
 
 /** After a login to a hosted provider: removes the user config's `local`, which would otherwise keep winning over it. */
-function dropLocal(out: (line?: string) => void, provider: string) {
+function dropLocal(out: Output, provider: string) {
   try {
     const { local, ...rest } = readUser();
     if (local === undefined) return true;
@@ -724,7 +721,7 @@ function explain(message: string, model: string) {
  * Offers user-scope registration with Claude Code, then the plugin; prints the commands whenever it does not run them.
  * On an update, the plugin line says it was updated and the fresh-install closing line is left to the caller.
  */
-async function register(out: (line?: string) => void, update = false): Promise<number> {
+async function register(out: Output, update = false): Promise<number> {
   const done = () => {
     const plugin = installPlugin(out, { update });
     if (!update) finish(out, plugin);
@@ -799,7 +796,7 @@ function sameCommand(existing: string[] | undefined, current: string[]) {
 }
 
 /** The last thing setup says: how to start. */
-function finish(out: (line?: string) => void, plugin: boolean) {
+function finish(out: Output, plugin: boolean) {
   out(
     plugin
       ? "\nDone. Open a new Claude Code session in your project and run /cheapag:allow once there; then ask for changes as usual."
