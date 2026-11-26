@@ -24,6 +24,13 @@ const UNKNOWN_GRACE_MS = 60 * 60_000;
 
 export type Cleaned = { removed: string[]; kept: string[] };
 
+/** What cleanup reads from a job folder's record. */
+type JobRecord = {
+  status?: string;
+  pid?: number;
+  timing?: { startedAt?: string; endedAt?: string | null };
+};
+
 export function cleanup(
   root: string,
   retention: Config["retention"],
@@ -43,17 +50,7 @@ export function cleanup(
   /** A job folder's record: whether it is in flight, and its age from when it ended (else started), else the folder's mtime. */
   const job = (id: string) => {
     const dir = join(jobsDir, id);
-    let record:
-      | { status?: string; pid?: number; timing?: { startedAt?: string; endedAt?: string | null } }
-      | undefined;
-    try {
-      // research logs keep their record as research.json (never in flight across a restart: it has no RUNNING state)
-      record = JSON.parse(
-        readFileSync(join(dir, id.startsWith("r") ? "research.json" : "result.json"), "utf8"),
-      );
-    } catch {
-      // no record (yet), or unreadable
-    }
+    const record = readRecord(dir, id);
     // the record's own time, not mtime: recovery rewrites a record long after its job stopped
     const at = Date.parse(record?.timing?.endedAt ?? record?.timing?.startedAt ?? "");
     // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
@@ -111,12 +108,7 @@ export function cleanup(
   if (realDir(batchesDir)) {
     for (const name of readdirSync(batchesDir).filter((n) => BATCH_FILE.test(n))) {
       const file = join(batchesDir, name);
-      let jobs: string[] = [];
-      try {
-        jobs = (JSON.parse(readFileSync(file, "utf8")) as { jobs?: string[] }).jobs ?? [];
-      } catch {
-        // unreadable: judged by age alone
-      }
+      const jobs = readBatchJobs(file);
       const id = name.slice(0, -".json".length);
       if (jobs.some((j) => JOB_ID.test(j) && existsSync(join(jobsDir, j)))) continue; // its jobs say what it was: kept silently
       const since = mtime(file) ?? now;
@@ -186,6 +178,28 @@ export function gitignoreHint(cwd: string) {
     return (err as { status?: number }).status === 1
       ? "hint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed"
       : undefined;
+  }
+}
+
+/** A job folder's record; undefined while it has none or it is unreadable. */
+function readRecord(dir: string, id: string): JobRecord | undefined {
+  // research logs keep their record as research.json (never in flight across a restart: it has no RUNNING state)
+  const name = id.startsWith("r") ? "research.json" : "result.json";
+  try {
+    return JSON.parse(readFileSync(join(dir, name), "utf8"));
+  } catch {
+    // no record (yet), or unreadable
+    return undefined;
+  }
+}
+
+/** The job ids a batch record lists; none when it is unreadable, so it is judged by age alone. */
+function readBatchJobs(file: string): string[] {
+  try {
+    return (JSON.parse(readFileSync(file, "utf8")) as { jobs?: string[] }).jobs ?? [];
+  } catch {
+    // unreadable: judged by age alone
+    return [];
   }
 }
 
