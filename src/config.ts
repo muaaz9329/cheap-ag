@@ -352,6 +352,61 @@ function readJsonObject(file: string): Record<string, unknown> {
   return value;
 }
 
+/** Checks one file's settings in a fixed order, so a file with several mistakes always reports the same one first. */
+function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
+  checkUserOnlyKeys(value, file);
+  const limits = parseJobLimits(value.limits, file);
+  const retention = parseRetention(value.retention, file);
+  const allowCommands = parseAllowCommands(value.allow_commands, file);
+  const models = parseModels(value.models, file);
+  const escalationSkipAt = parseEscalationSkipAt(value.escalation_skip_at, file);
+  const handOffs = parseHandOffs(value, file);
+  const guardLines = parseGuardLines(value.guard_lines, file);
+  const commands = parseCommands(value, file);
+  const linkDirs = parseLinkDirs(value.link_dirs, file);
+  return {
+    ...commands,
+    ...(linkDirs && { link_dirs: linkDirs }),
+    ...(allowCommands && { allow_commands: allowCommands }),
+    limits,
+    retention,
+    ...(models && { models }),
+    ...(value.preset !== undefined && { preset: value.preset as Preset }),
+    ...(escalationSkipAt !== undefined && { escalation_skip_at: escalationSkipAt }),
+    ...(guardLines !== undefined && { guard_lines: guardLines }),
+    ...handOffs,
+  };
+}
+
+/** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
+function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
+  const { provider, local, ollama, preset } = value;
+  if (provider !== undefined) {
+    if (file !== userConfigFile())
+      throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
+    if (typeof provider !== "string")
+      throw new Error(
+        `${file}: provider must be a provider id, e.g. opencode-go; switch with cheapag provider`,
+      );
+  }
+  if (local !== undefined) {
+    if (file !== userConfigFile())
+      throw new Error(`${file}: local can only be set in ${userConfigFile()}, never in a repo`);
+    parseLocal(local, file);
+  }
+  if (ollama !== undefined) {
+    if (file !== userConfigFile())
+      throw new Error(`${file}: ollama can only be set in ${userConfigFile()}, never in a repo`);
+    parseOllama(ollama, file);
+  }
+  if (preset !== undefined) {
+    if (file !== userConfigFile())
+      throw new Error(`${file}: preset can only be set in ${userConfigFile()}`);
+    if (!PRESET_NAMES.includes(preset as Preset))
+      throw new Error(`${file}: preset must be one of ${PRESET_NAMES.join(", ")}`);
+  }
+}
+
 /** The job caps, in the order a file's caps are checked. */
 const LIMIT_KEYS = [
   "max_turns",
@@ -456,6 +511,57 @@ function parseModels(models: unknown, file: string): ModelsConfig | undefined {
   return models as ModelsConfig;
 }
 
+/** The share of a tracked usage cap at which the escalation attempt is skipped. */
+function parseEscalationSkipAt(share: unknown, file: string): number | undefined {
+  if (share === undefined) return undefined;
+  if (typeof share !== "number" || !(share > 0 && share <= 1))
+    throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
+  return share;
+}
+
+/** Who implements a hard task, who finishes a failed step, and what a blocked command does. */
+function parseHandOffs(value: Record<string, unknown>, file: string) {
+  const { hard_tasks, takeover, on_blocked_command } = value;
+  if (hard_tasks !== undefined && !HARD_TASKS.includes(hard_tasks as HardTasks))
+    throw new Error(`${file}: hard_tasks must be one of ${HARD_TASKS.join(", ")}`);
+  if (takeover !== undefined && !TAKE_OVER.includes(takeover as TakeOver))
+    throw new Error(`${file}: takeover must be one of ${TAKE_OVER.join(", ")}`);
+  if (
+    on_blocked_command !== undefined &&
+    !ON_BLOCKED_COMMAND.includes(on_blocked_command as OnBlockedCommand)
+  ) {
+    throw new Error(`${file}: on_blocked_command must be one of ${ON_BLOCKED_COMMAND.join(", ")}`);
+  }
+  return {
+    ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
+    ...(takeover !== undefined && { takeover: takeover as TakeOver }),
+    ...(on_blocked_command !== undefined && {
+      on_blocked_command: on_blocked_command as OnBlockedCommand,
+    }),
+  };
+}
+
+function parseGuardLines(lines: unknown, file: string): number | undefined {
+  if (lines === undefined) return undefined;
+  if (!isPositiveWholeNumber(lines))
+    throw new Error(`${file}: guard_lines must be a positive whole number`);
+  return lines;
+}
+
+/** The repo's test and integration commands. */
+function parseCommands(value: Record<string, unknown>, file: string) {
+  const { test_cmd, integration_cmd } = value;
+  if (test_cmd !== undefined && !isNonEmptyString(test_cmd))
+    throw new Error(`${file}: test_cmd must be a non-empty string`);
+  // null is E4's written default: test_cmd
+  if (integration_cmd != null && !isNonEmptyString(integration_cmd))
+    throw new Error(`${file}: integration_cmd must be a non-empty string`);
+  return {
+    ...(test_cmd !== undefined && { test_cmd }),
+    ...(integration_cmd != null && { integration_cmd }),
+  };
+}
+
 /** The folders a worktree links from the repo, as repo-relative paths joined with forward slashes. */
 function parseLinkDirs(dirs: unknown, file: string): string[] | undefined {
   if (dirs === undefined) return undefined;
@@ -469,99 +575,6 @@ function parseLinkDirs(dirs: unknown, file: string): string[] | undefined {
       throw new Error(`${file}: link_dirs entry "${dir}" is build output, which is never linked`);
     return parts.join("/");
   });
-}
-
-/** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
-function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
-  const { provider, local, ollama, preset } = value;
-  if (provider !== undefined) {
-    if (file !== userConfigFile())
-      throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
-    if (typeof provider !== "string")
-      throw new Error(
-        `${file}: provider must be a provider id, e.g. opencode-go; switch with cheapag provider`,
-      );
-  }
-  if (local !== undefined) {
-    if (file !== userConfigFile())
-      throw new Error(`${file}: local can only be set in ${userConfigFile()}, never in a repo`);
-    parseLocal(local, file);
-  }
-  if (ollama !== undefined) {
-    if (file !== userConfigFile())
-      throw new Error(`${file}: ollama can only be set in ${userConfigFile()}, never in a repo`);
-    parseOllama(ollama, file);
-  }
-  if (preset !== undefined) {
-    if (file !== userConfigFile())
-      throw new Error(`${file}: preset can only be set in ${userConfigFile()}`);
-    if (!PRESET_NAMES.includes(preset as Preset))
-      throw new Error(`${file}: preset must be one of ${PRESET_NAMES.join(", ")}`);
-  }
-}
-
-function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
-  const {
-    test_cmd,
-    integration_cmd,
-    link_dirs,
-    allow_commands,
-    limits,
-    retention,
-    models,
-    escalation_skip_at,
-    guard_lines,
-    hard_tasks,
-    takeover,
-    on_blocked_command,
-    preset,
-  } = value;
-  checkUserOnlyKeys(value, file);
-  const caps = parseJobLimits(limits, file);
-  const keep = parseRetention(retention, file);
-  const commands = parseAllowCommands(allow_commands, file);
-  const roles = parseModels(models, file);
-  if (
-    escalation_skip_at !== undefined &&
-    (typeof escalation_skip_at !== "number" || !(escalation_skip_at > 0 && escalation_skip_at <= 1))
-  ) {
-    throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
-  }
-  if (hard_tasks !== undefined && !HARD_TASKS.includes(hard_tasks as HardTasks))
-    throw new Error(`${file}: hard_tasks must be one of ${HARD_TASKS.join(", ")}`);
-  if (takeover !== undefined && !TAKE_OVER.includes(takeover as TakeOver))
-    throw new Error(`${file}: takeover must be one of ${TAKE_OVER.join(", ")}`);
-  if (
-    on_blocked_command !== undefined &&
-    !ON_BLOCKED_COMMAND.includes(on_blocked_command as OnBlockedCommand)
-  ) {
-    throw new Error(`${file}: on_blocked_command must be one of ${ON_BLOCKED_COMMAND.join(", ")}`);
-  }
-  if (guard_lines !== undefined && !isPositiveWholeNumber(guard_lines))
-    throw new Error(`${file}: guard_lines must be a positive whole number`);
-  if (test_cmd !== undefined && !isNonEmptyString(test_cmd))
-    throw new Error(`${file}: test_cmd must be a non-empty string`);
-  // null is E4's written default: test_cmd
-  if (integration_cmd != null && !isNonEmptyString(integration_cmd))
-    throw new Error(`${file}: integration_cmd must be a non-empty string`);
-  const dirs = parseLinkDirs(link_dirs, file);
-  return {
-    ...(test_cmd !== undefined && { test_cmd }),
-    ...(integration_cmd != null && { integration_cmd }),
-    ...(dirs && { link_dirs: dirs }),
-    ...(commands && { allow_commands: commands }),
-    limits: caps,
-    retention: keep,
-    ...(roles && { models: roles }),
-    ...(preset !== undefined && { preset: preset as Preset }),
-    ...(escalation_skip_at !== undefined && { escalation_skip_at }),
-    ...(guard_lines !== undefined && { guard_lines }),
-    ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
-    ...(takeover !== undefined && { takeover: takeover as TakeOver }),
-    ...(on_blocked_command !== undefined && {
-      on_blocked_command: on_blocked_command as OnBlockedCommand,
-    }),
-  };
 }
 
 /** "Always allow" (ticket 69): appends `prefix` to `allow_commands` in the repo's cheapag.json, creating the file with only that key; every other key and its order stay. */
