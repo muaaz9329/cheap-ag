@@ -741,8 +741,7 @@ function runGroup(g: GroupRun) {
     // the same path, so the session's directory stays valid
     worktree = createWorktree(root, job, config.link_dirs);
     const marked = reapply(worktree, patch);
-    const named = conflictPaths(clash);
-    const files = marked.length ? marked : named.length ? named : changed.map((c) => c.path);
+    const files = clashFiles(marked, conflictPaths(clash), changed);
     landing = false;
     await Promise.race([g.beforeRedo?.(), halted]); // max_parallel counts a redo's worker too
     startClock();
@@ -753,15 +752,7 @@ function runGroup(g: GroupRun) {
     changed = diff.changed;
     write("diff.patch", diff.patch);
     if (stopped) return; // the cap or cancel explains it
-    let why = result.error
-      ? "redo worker error"
-      : failing
-        ? "redo failed verification"
-        : leftoverMarkers(worktree).length
-          ? "redo left conflict markers"
-          : !diff.changed.length
-            ? "redo made no changes"
-            : undefined;
+    let why = redoFailure({ result, failing, worktree, changed: diff.changed });
     if (!why) {
       landing = true;
       pauseClock();
@@ -1953,6 +1944,27 @@ function fixPrompt(plan: Plan, steps: PlanStep[], fix: { cmd: string; error: str
       "Fix the cause so it passes, keeping every step's intent, then call finish.",
     fix.error.join("\n"),
   ].join("\n\n");
+}
+
+/** The files a redo names as clashing: those with conflict markers, else those git named, else every changed file. */
+function clashFiles(marked: string[], named: string[], changed: Changed[]) {
+  if (marked.length) return marked;
+  if (named.length) return named;
+  return changed.map((c) => c.path);
+}
+
+/** Why a redo cannot land, checked in this order; undefined when it can. */
+function redoFailure(redo: {
+  result: RunResult;
+  failing: unknown;
+  worktree: Worktree;
+  changed: Changed[];
+}) {
+  if (redo.result.error) return "redo worker error";
+  if (redo.failing) return "redo failed verification";
+  if (leftoverMarkers(redo.worktree).length) return "redo left conflict markers";
+  if (!redo.changed.length) return "redo made no changes";
+  return undefined;
 }
 
 /** A redo diff longer than this is cut in its prompt. */
