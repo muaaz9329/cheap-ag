@@ -161,45 +161,53 @@ export type Group = { label: string; steps: PlanStep[] };
  * separate groups (`"1-2,3,4"`). Groups come back in plan order; a step may be in only one group.
  */
 export function selectGroups(plan: Plan, spec: string): Group[] {
-  const index = (id: string) => {
-    const i = plan.steps.findIndex((s) => s.id === id);
-    if (i < 0)
-      throw new Error(
-        `step ${id} not found (plan steps: ${plan.steps.map((s) => s.id).join(", ")})`,
-      );
-    return i;
-  };
   const seen = new Set<string>();
   const groups = spec.split(",").map((raw) => {
-    const part = raw.trim();
-    // same id forms as headings: s1, step1, step-1 normalise to the digits
-    const m = part.match(/^(?:step-?|s)?(\d+[a-z]?)(?:\s*-\s*(?:step-?|s)?(\d+[a-z]?))?$/);
-    if (!m)
-      throw new Error(
-        `steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)`,
-      );
-    const [from, to] = [index(m[1]), index(m[2] ?? m[1])];
-    if (to < from) throw new Error(`steps "${spec}": range ${part} runs backwards`);
-    const steps = plan.steps.slice(from, to + 1);
-    for (const s of steps) {
+    const group = readGroup(plan, spec, raw.trim());
+    for (const s of group.steps) {
       if (seen.has(s.id))
         throw new Error(`steps "${spec}": step ${s.id} is in more than one group`);
       seen.add(s.id);
     }
-    return { label: m[2] ? `${m[1]}-${m[2]}` : m[1], steps, at: from };
+    return group;
   });
   const sorted = groups.sort((a, b) => a.at - b.at).map(({ at: _at, ...g }) => g);
-  // groups land in step order, so a group waiting on a later one would never land
-  sorted.forEach((g, i) => {
+  checkNeedsOrder(sorted, spec);
+  return sorted;
+}
+
+/** One part of a steps string as a group, with `at`: where its first step is in the plan. */
+function readGroup(plan: Plan, spec: string, part: string): Group & { at: number } {
+  // same id forms as headings: s1, step1, step-1 normalise to the digits
+  const m = part.match(/^(?:step-?|s)?(\d+[a-z]?)(?:\s*-\s*(?:step-?|s)?(\d+[a-z]?))?$/);
+  if (!m)
+    throw new Error(
+      `steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)`,
+    );
+  const [from, to] = [indexOfStep(plan, m[1]), indexOfStep(plan, m[2] ?? m[1])];
+  if (to < from) throw new Error(`steps "${spec}": range ${part} runs backwards`);
+  const steps = plan.steps.slice(from, to + 1);
+  return { label: m[2] ? `${m[1]}-${m[2]}` : m[1], steps, at: from };
+}
+
+function indexOfStep(plan: Plan, id: string): number {
+  const i = plan.steps.findIndex((s) => s.id === id);
+  if (i < 0)
+    throw new Error(`step ${id} not found (plan steps: ${plan.steps.map((s) => s.id).join(", ")})`);
+  return i;
+}
+
+/** Groups land in step order, so a group waiting on a later one would never land. */
+function checkNeedsOrder(groups: Group[], spec: string): void {
+  groups.forEach((g, i) => {
     const later = needsOf(g).find((id) =>
-      sorted.slice(i + 1).some((o) => o.steps.some((s) => s.id === id)),
+      groups.slice(i + 1).some((o) => o.steps.some((s) => s.id === id)),
     );
     if (later)
       throw new Error(
         `steps "${spec}": step ${g.label} needs ${later}, which comes later in the plan; put dependencies first`,
       );
   });
-  return sorted;
 }
 
 /** Where two groups' `files:` overlap: an equal entry, or one inside the other's directory entry. Returns the inner path. */
