@@ -21,30 +21,45 @@ const USAGE =
 export const MORE_MODELS = "For more models, exit Claude/Codex and run: npx cheap-agent model";
 const SHOWN = 4;
 
-const effort = (e?: string) => `effort ${e ?? "default"}`;
-const list = (xs: string[]) => (xs.length ? xs.join(", ") : "none");
+function effortText(effort?: string) {
+  return `effort ${effort ?? "default"}`;
+}
+
+function listText(items: string[]) {
+  return items.length ? items.join(", ") : "none";
+}
+
+// every line goes through redact, so a key quoted in an error never reaches the terminal
+function print(line: string) {
+  process.stdout.write(redact(line) + "\n");
+}
 
 /** `cheapag model`: choose the worker's main and fallback models, each with an effort, from the provider's own catalog. */
 export async function model(args: string[]): Promise<number> {
-  const out = (line: string) => process.stdout.write(redact(line) + "\n");
   const flags = parse(args);
-  if (typeof flags === "string") return (out(`✗ ${flags}\n${USAGE}`), 1);
+  if (typeof flags === "string") {
+    print(`✗ ${flags}\n${USAGE}`);
+    return 1;
+  }
   const provider = detectProvider();
-  if (!provider) return (out(`✗ no worker provider; run ${LOGIN_COMMAND} first`), 1);
+  if (!provider) {
+    print(`✗ no worker provider; run ${LOGIN_COMMAND} first`);
+    return 1;
+  }
   process.on("exit", () => stopOpencode(true));
   const dir = mkdtempSync(join(tmpdir(), "cheapag-model-"));
   try {
     const models = await catalog(provider, dir);
     const current = currentRoute(provider);
-    if (flags.main !== undefined) return save(provider, models, flags as Required<Pick2>, out);
-    if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current, out);
-    out(describe(provider, models, current));
+    if (flags.main !== undefined) return saveFlags(provider, models, flags as Required<Flags>);
+    if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current);
+    print(describe(provider, models, current));
     // a `models` entry naming another provider is ignored when the next job routes
-    for (const warning of modelWarnings(provider.provider, repoRoot())) out(`! ${warning}`);
-    if (!flags.list) out(USAGE);
+    for (const warning of modelWarnings(provider.provider, repoRoot())) print(`! ${warning}`);
+    if (!flags.list) print(USAGE);
     return 0;
   } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+    print(`✗ ${(err as Error).message}`);
     return 1;
   } finally {
     stopOpencode();
@@ -52,7 +67,7 @@ export async function model(args: string[]): Promise<number> {
   }
 }
 
-type Pick2 = {
+type Flags = {
   list: boolean;
   main?: string;
   effort?: string;
@@ -60,18 +75,20 @@ type Pick2 = {
   fallbackEffort?: string;
 };
 
-function parse(args: string[]): Pick2 | string {
-  const flags: Pick2 = { list: false };
-  const keys: Record<string, "main" | "effort" | "fallback" | "fallbackEffort"> = {
+function parse(args: string[]): Flags | string {
+  const flags: Flags = { list: false };
+  const valueFlags: Record<string, "main" | "effort" | "fallback" | "fallbackEffort"> = {
     "--main": "main",
     "--effort": "effort",
     "--fallback": "fallback",
     "--fallback-effort": "fallbackEffort",
   };
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--list") flags.list = true;
-    else if (keys[args[i]] && args[i + 1] !== undefined) flags[keys[args[i]]] = args[++i];
-    else return `unknown or incomplete argument ${args[i]}`;
+    const arg = args[i];
+    const key = valueFlags[arg];
+    if (arg === "--list") flags.list = true;
+    else if (key && args[i + 1] !== undefined) flags[key] = args[++i];
+    else return `unknown or incomplete argument ${arg}`;
   }
   if (flags.main === undefined && (flags.effort || flags.fallback || flags.fallbackEffort))
     return "--effort, --fallback and --fallback-effort need --main";
@@ -96,84 +113,102 @@ function currentRoute(provider: Provider) {
   return { main: route.implement, fallback: route.fallbacks[0] as WorkerModel | undefined };
 }
 
-const bare = (provider: Provider, id: string) =>
-  id.startsWith(`${provider.provider}/`) ? id.slice(provider.provider.length + 1) : id;
-// Ollama reports no price and may not report a context window; neither is a zero
-const money = (m: CatalogModel) =>
-  m.input > 0 || m.output > 0 ? `$${m.input}/$${m.output} per M` : "no price";
-const ctx = (context: number) =>
-  context > 0 ? `${Math.round(context / 1000)}K ctx` : "ctx unknown";
-const line = (m: CatalogModel) =>
-  `${m.id} · ${money(m)} · ${ctx(m.context)} · efforts: ${list(m.efforts)}`;
+type CurrentRoute = ReturnType<typeof currentRoute>;
 
-/** The 4 models worth showing first: the current main, the preset's balanced pick, then the cheapest (the catalog is cheapest first). */
-function suggestions(provider: Provider, models: CatalogModel[], main: WorkerModel) {
-  // the current model, then the ones we route and bench (presets, role defaults), then the cheapest paid ones: free
-  // catalog entries are often short-lived promos, so they stay in the full picker only
-  const presets = Object.values(
-    (PRESETS as Record<string, (typeof PRESETS)["opencode-go"]>)[provider.provider] ?? {},
-  ).map((p) => p.implement && bare(provider, p.implement));
-  const roles = (ROLES as Record<string, (typeof ROLES)["opencode-go"]>)[provider.provider];
-  const ours = [main.id, ...presets, ...(roles ? [...roles.implement, roles.escalation] : [])].map(
-    (id) => models.find((m) => m.id === id),
-  );
-  const paid = models.filter((m) => m.input > 0 || m.output > 0);
-  return [...new Set([...ours, ...paid].filter((m): m is CatalogModel => !!m))].slice(0, SHOWN);
+/** The id without this provider's prefix, the way the catalog lists it. */
+function bareId(provider: Provider, id: string) {
+  const prefix = `${provider.provider}/`;
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
 }
 
-function describe(
-  provider: Provider,
-  models: CatalogModel[],
-  current: ReturnType<typeof currentRoute>,
-) {
+function hasPrice(entry: CatalogModel) {
+  return entry.input > 0 || entry.output > 0;
+}
+
+// Ollama reports no price and may not report a context window; neither is a zero
+function priceText(entry: CatalogModel) {
+  return hasPrice(entry) ? `$${entry.input}/$${entry.output} per M` : "no price";
+}
+
+function contextText(context: number) {
+  return context > 0 ? `${Math.round(context / 1000)}K ctx` : "ctx unknown";
+}
+
+/** Price, context window and efforts: the picker's hint, and a suggestion after its id. */
+function details(entry: CatalogModel) {
+  const efforts = listText(entry.efforts);
+  return `${priceText(entry)} · ${contextText(entry.context)} · efforts: ${efforts}`;
+}
+
+function suggestionLine(entry: CatalogModel) {
+  return `${entry.id} · ${details(entry)}`;
+}
+
+/**
+ * At most SHOWN models worth showing first: the current main, the ones we route and bench (presets, role
+ * defaults), then the cheapest paid ones (the catalog is cheapest first).
+ */
+function suggestions(provider: Provider, models: CatalogModel[], main: WorkerModel) {
+  const presets = (PRESETS as Record<string, (typeof PRESETS)["opencode-go"]>)[provider.provider];
+  const presetIds = Object.values(presets ?? {}).map(
+    (preset) => preset.implement && bareId(provider, preset.implement),
+  );
+  const roles = (ROLES as Record<string, (typeof ROLES)["opencode-go"]>)[provider.provider];
+  const roleIds = roles ? [...roles.implement, roles.escalation] : [];
+  const routed = [main.id, ...presetIds, ...roleIds].map((id) =>
+    models.find((entry) => entry.id === id),
+  );
+  // free catalog entries are often short-lived promos, so they stay in the full picker only
+  const paid = models.filter(hasPrice);
+  const found = [...routed, ...paid].filter((entry): entry is CatalogModel => !!entry);
+  return [...new Set(found)].slice(0, SHOWN);
+}
+
+function describe(provider: Provider, models: CatalogModel[], current: CurrentRoute) {
   const { main, fallback } = current;
   return [
     `Provider: ${providerLabel(provider.provider)}`,
-    `Main: ${main.id} (${effort(main.variant)})`,
-    `Fallback: ${fallback?.id ?? "none"} (${effort(fallback?.variant)})`,
+    `Main: ${main.id} (${effortText(main.variant)})`,
+    `Fallback: ${fallback?.id ?? "none"} (${effortText(fallback?.variant)})`,
     "Suggestions:",
-    ...suggestions(provider, models, main).map(line),
+    ...suggestions(provider, models, main).map(suggestionLine),
     MORE_MODELS,
   ].join("\n");
 }
 
-function save(
-  provider: Provider,
-  models: CatalogModel[],
-  flags: Required<Pick2>,
-  out: (l: string) => void,
-) {
+function saveFlags(provider: Provider, models: CatalogModel[], flags: Required<Flags>) {
   const label = providerLabel(provider.provider);
-  const check = (id: string, wanted?: string) => {
-    const found = models.find((m) => m.id === bare(provider, id));
-    if (!found)
-      return (
-        out(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`),
-        undefined
-      );
-    if (wanted !== undefined && !found.efforts.includes(wanted))
-      return (out(`✗ ${id} has no effort ${wanted}; it has: ${list(found.efforts)}`), undefined);
+  const validModel = (id: string, wanted?: string) => {
+    const found = models.find((entry) => entry.id === bareId(provider, id));
+    if (!found) {
+      print(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`);
+      return undefined;
+    }
+    if (wanted !== undefined && !found.efforts.includes(wanted)) {
+      print(`✗ ${id} has no effort ${wanted}; it has: ${listText(found.efforts)}`);
+      return undefined;
+    }
     return found;
   };
-  const none = flags.fallback === undefined || flags.fallback === "none";
-  if (none && flags.fallbackEffort !== undefined)
-    return (out("✗ --fallback-effort needs --fallback <id>"), 1);
-  const main = check(flags.main, flags.effort);
-  const fallback = none ? null : check(flags.fallback, flags.fallbackEffort);
+  const noFallback = flags.fallback === undefined || flags.fallback === "none";
+  if (noFallback && flags.fallbackEffort !== undefined) {
+    print("✗ --fallback-effort needs --fallback <id>");
+    return 1;
+  }
+  const main = validModel(flags.main, flags.effort);
+  // both are checked, so a bad main and a bad fallback are both reported;
+  // null means no fallback, undefined a refused one
+  const fallback = noFallback ? null : validModel(flags.fallback, flags.fallbackEffort);
   if (!main || fallback === undefined) return 1;
-  return apply(
-    provider,
-    {
-      main: main.id,
-      mainEffort: flags.effort,
-      fallback: fallback?.id ?? null,
-      fallbackEffort: flags.fallbackEffort,
-    },
-    out,
-  );
+  return savePick(provider, {
+    main: main.id,
+    mainEffort: flags.effort,
+    fallback: fallback?.id ?? null,
+    fallbackEffort: flags.fallbackEffort,
+  });
 }
 
-function apply(provider: Provider, chosen: Pick, out: (l: string) => void) {
+function savePick(provider: Provider, chosen: Pick) {
   saveModels(provider, chosen);
   // on OpenRouter the model decides the upstream company: picking it is the consent for this repo
   if (provider.provider === "openrouter") {
@@ -181,59 +216,42 @@ function apply(provider: Provider, chosen: Pick, out: (l: string) => void) {
       acceptRoute(projectRoot(process.cwd()));
     } catch {} // not inside a repo: no consent to update
   }
-  const name = (id: string) => `${provider.provider}/${id}`;
-  const second = chosen.fallback
-    ? `${name(chosen.fallback)} (${effort(chosen.fallbackEffort)})`
+  const fullName = (id: string) => `${provider.provider}/${id}`;
+  const mainText = `${fullName(chosen.main)} (${effortText(chosen.mainEffort)})`;
+  const fallbackText = chosen.fallback
+    ? `${fullName(chosen.fallback)} (${effortText(chosen.fallbackEffort)})`
     : "none";
-  out(
-    `✓ main ${name(chosen.main)} (${effort(chosen.mainEffort)}), fallback ${second} — saved in ${userConfigFile()}; the next job uses it`,
-  );
+  const file = userConfigFile();
+  print(`✓ main ${mainText}, fallback ${fallbackText} — saved in ${file}; the next job uses it`);
   return 0;
 }
 
 /** Effort, when the model has any: `default` first. */
-async function askEffort(who: string, m: CatalogModel, now?: string) {
-  if (!m.efforts.length) return undefined;
-  const i = await select(
-    `Effort for ${who} ${m.id}:`,
-    [{ label: "default" }, ...m.efforts.map((label) => ({ label }))],
-    m.efforts.indexOf(now ?? "") + 1,
+async function askEffort(role: string, entry: CatalogModel, currentEffort?: string) {
+  if (!entry.efforts.length) return undefined;
+  const index = await select(
+    `Effort for ${role} ${entry.id}:`,
+    [{ label: "default" }, ...entry.efforts.map((label) => ({ label }))],
+    entry.efforts.indexOf(currentEffort ?? "") + 1,
   );
-  return i ? m.efforts[i - 1] : undefined;
+  return index ? entry.efforts[index - 1] : undefined;
 }
 
-async function pick(
-  provider: Provider,
-  models: CatalogModel[],
-  current: ReturnType<typeof currentRoute>,
-  out: (l: string) => void,
-) {
-  const row = (m: CatalogModel) => ({
-    label: m.id,
-    hint: `${money(m)} · ${ctx(m.context)} · efforts: ${list(m.efforts)}`,
-  });
-  const main =
-    models[
-      await select(
-        `Main model on ${providerLabel(provider.provider)} (writes the code):`,
-        models.map(row),
-        Math.max(
-          0,
-          models.findIndex((m) => m.id === current.main.id),
-        ),
-      )
-    ];
+async function pick(provider: Provider, models: CatalogModel[], current: CurrentRoute) {
+  const rows = models.map((entry) => ({ label: entry.id, hint: details(entry) }));
+  const mainQuestion = `Main model on ${providerLabel(provider.provider)} (writes the code):`;
+  const currentIndex = models.findIndex((entry) => entry.id === current.main.id);
+  const mainIndex = await select(mainQuestion, rows, Math.max(0, currentIndex));
+  const main = models[mainIndex];
   const mainEffort = await askEffort("main", main, current.main.variant);
-  const f = await select(
-    "Fallback model (used on a rate limit):",
-    [{ label: "none" }, ...models.map(row)],
-    0,
-  );
-  const fallback = f ? models[f - 1] : undefined;
+  const fallbackQuestion = "Fallback model (used on a rate limit):";
+  const fallbackIndex = await select(fallbackQuestion, [{ label: "none" }, ...rows], 0);
+  const fallback = fallbackIndex ? models[fallbackIndex - 1] : undefined;
   const fallbackEffort = fallback && (await askEffort("fallback", fallback));
-  return apply(
-    provider,
-    { main: main.id, mainEffort, fallback: fallback?.id ?? null, fallbackEffort },
-    out,
-  );
+  return savePick(provider, {
+    main: main.id,
+    mainEffort,
+    fallback: fallback?.id ?? null,
+    fallbackEffort,
+  });
 }
