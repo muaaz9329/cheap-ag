@@ -260,6 +260,9 @@ export async function runningOpencode(): Promise<Opencode | undefined> {
   }
 }
 
+const CONFIG_CHANGED_WHILE_HELD =
+  "the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish";
+
 // Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
 // Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
 // `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
@@ -274,12 +277,7 @@ export function ensureOpencode(
   if (started && route && booted !== config) {
     // a reboot would kill every live session: refuse it while any job or research call holds the server
     // shortcut: one server per config would let both run; worth it only if config changes mid-session become common
-    if (holds > 0)
-      return Promise.reject(
-        new Error(
-          "the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish",
-        ),
-      );
+    if (holds > 0) return Promise.reject(new Error(CONFIG_CHANGED_WHILE_HELD));
     stopOpencode();
   }
   if (!started) booted = config;
