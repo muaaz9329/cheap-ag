@@ -5,7 +5,7 @@ import { DIFFICULTIES, type Difficulty } from "./routing.js";
 export type PlanStep = { id: string; title: string; fields: Record<string, string>; text: string };
 export type Plan = { title: string; context: string; steps: PlanStep[] };
 
-const REQUIRED = ["files", "done-when"];
+const REQUIRED_FIELDS = ["files", "done-when"];
 const KINDS = ["fix", "change"];
 
 /** The plan grammar in one line, for Claude: the delegate tool description and every plan-error FAIL carry it. */
@@ -21,7 +21,7 @@ type PlanDraft = { title?: string; context: string[]; steps: DraftStep[]; field?
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
   const draft: PlanDraft = { context: [], steps: [] };
-  source.split(/\r?\n/).forEach((line, i) => readLine(draft, line, i + 1));
+  source.split(/\r?\n/).forEach((line, index) => readLine(draft, line, index + 1));
   const { title, context, steps } = draft;
   if (title === undefined) throw new Error('plan has no H1 title ("# <title>")');
   if (!steps.length) throw new Error('plan has no steps ("## <id> <title>")');
@@ -51,16 +51,17 @@ function readStepHeading(draft: PlanDraft, line: string, lineNumber: number): vo
   if (draft.title === undefined)
     throw new Error(`line ${lineNumber}: step before the plan's H1 title`);
   // s1, step2, step-2 and plain 3 all normalise to the digits (plus an optional letter, like 3a)
-  const m = line.match(/^## +(?:step-?|s)?(\d+[a-z]?)(?: +(.*))?$/);
-  if (!m)
+  const heading = line.match(/^## +(?:step-?|s)?(\d+[a-z]?)(?: +(.*))?$/);
+  if (!heading)
     throw new Error(
       `line ${lineNumber}: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")`,
     );
-  if (draft.steps.some((s) => s.id === m[1]))
-    throw new Error(`line ${lineNumber}: duplicate step id ${m[1]}`);
+  const id = heading[1];
+  if (draft.steps.some((step) => step.id === id))
+    throw new Error(`line ${lineNumber}: duplicate step id ${id}`);
   draft.steps.push({
-    id: m[1],
-    title: (m[2] ?? "").trim(),
+    id,
+    title: (heading[2] ?? "").trim(),
     fields: {},
     text: line,
     line: lineNumber,
@@ -72,13 +73,13 @@ function readStepHeading(draft: PlanDraft, line: string, lineNumber: number): vo
 function readStepLine(draft: PlanDraft, line: string, lineNumber: number): void {
   const step = draft.steps[draft.steps.length - 1];
   step.text += `\n${line}`;
-  const kv = line.match(/^([a-z][a-z-]*):\s?(.*)$/);
-  if (kv) {
-    const field = kv[1];
+  const keyValue = line.match(/^([a-z][a-z-]*):\s?(.*)$/);
+  if (keyValue) {
+    const field = keyValue[1];
     draft.field = field;
     if (field === "do") step.doLine = lineNumber;
     if (field === "files") step.filesLine = lineNumber;
-    step.fields[field] = kv[2].trim();
+    step.fields[field] = keyValue[2].trim();
   } else if (/^ {2,}\S/.test(line) && draft.field) {
     step.fields[draft.field] += `\n${line.trim()}`;
   } else if (line.trim()) {
@@ -96,16 +97,16 @@ function checkStep(step: DraftStep): void {
 }
 
 function checkRequiredFields(step: DraftStep): void {
-  const missing = REQUIRED.filter((key) => !step.fields[key]);
+  const missing = REQUIRED_FIELDS.filter((key) => !step.fields[key]);
   if (missing.length)
     throw new Error(
-      `step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`,
+      `step ${step.id} (line ${step.line}): missing ${missing.map((key) => `${key}:`).join(", ")}`,
     );
 }
 
 function checkDifficulty(step: DraftStep): void {
-  const d = step.fields.difficulty;
-  if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty))
+  const difficulty = step.fields.difficulty;
+  if (difficulty !== undefined && !DIFFICULTIES.includes(difficulty as Difficulty))
     throw new Error(
       `step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`,
     );
@@ -121,7 +122,7 @@ function checkKind(step: DraftStep): void {
 
 /** Workers cannot see `.cheapag/`, so a step aimed at a file there could never succeed. */
 function checkFilesVisible(step: DraftStep): void {
-  const hidden = splitFiles(step.fields.files).find((f) => f.split("/")[0] === ".cheapag");
+  const hidden = splitFiles(step.fields.files).find((file) => file.split("/")[0] === ".cheapag");
   if (hidden)
     throw new Error(
       `line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`,
@@ -130,7 +131,7 @@ function checkFilesVisible(step: DraftStep): void {
 
 /** The entries of a `files:` value: split on commas and lines, trimmed, without a leading `./`. */
 function splitFiles(files: string): string[] {
-  return files.split(/[,\n]/).map((f) => f.trim().replace(/^\.\//, ""));
+  return files.split(/[,\n]/).map((file) => file.trim().replace(/^\.\//, ""));
 }
 
 function checkChangeCount(step: DraftStep): void {
@@ -141,18 +142,18 @@ function checkChangeCount(step: DraftStep): void {
     );
 }
 
-const MARK = "(?:\\d+[.)]|\\(\\d+\\)|[a-z][.)])";
-const LEAD = new RegExp(`^${MARK}\\s`);
-const INLINE = new RegExp(`[.;:] ${MARK}\\s`, "g");
+const ITEM_MARK = "(?:\\d+[.)]|\\(\\d+\\)|[a-z][.)])";
+const LEADING_ITEM = new RegExp(`^${ITEM_MARK}\\s`);
+const INLINE_ITEM = new RegExp(`[.;:] ${ITEM_MARK}\\s`, "g");
 
 /** Numbered/lettered items in a `do:` text, at line start or inline after `.`, `;` or `:`; bullets are not counted. */
 function countChanges(text: string): number {
-  let n = 0;
+  let count = 0;
   for (const line of text.split("\n")) {
     if (/^[-*] /.test(line)) continue;
-    n += +LEAD.test(line) + (line.match(INLINE)?.length ?? 0);
+    count += Number(LEADING_ITEM.test(line)) + (line.match(INLINE_ITEM)?.length ?? 0);
   }
-  return n;
+  return count;
 }
 
 /** One job's worth of steps, run in order in one session. `label` is how Claude wrote it ("3", "3-5"). */
@@ -166,14 +167,14 @@ export function selectGroups(plan: Plan, spec: string): Group[] {
   const seen = new Set<string>();
   const groups = spec.split(",").map((raw) => {
     const group = readGroup(plan, spec, raw.trim());
-    for (const s of group.steps) {
-      if (seen.has(s.id))
-        throw new Error(`steps "${spec}": step ${s.id} is in more than one group`);
-      seen.add(s.id);
+    for (const step of group.steps) {
+      if (seen.has(step.id))
+        throw new Error(`steps "${spec}": step ${step.id} is in more than one group`);
+      seen.add(step.id);
     }
     return group;
   });
-  const sorted = groups.sort((a, b) => a.at - b.at).map(({ at: _at, ...g }) => g);
+  const sorted = groups.sort((a, b) => a.at - b.at).map(({ at: _at, ...group }) => group);
   checkNeedsOrder(sorted, spec);
   return sorted;
 }
@@ -181,44 +182,48 @@ export function selectGroups(plan: Plan, spec: string): Group[] {
 /** One part of a steps string as a group, with `at`: where its first step is in the plan. */
 function readGroup(plan: Plan, spec: string, part: string): Group & { at: number } {
   // same id forms as headings: s1, step1, step-1 normalise to the digits
-  const m = part.match(/^(?:step-?|s)?(\d+[a-z]?)(?:\s*-\s*(?:step-?|s)?(\d+[a-z]?))?$/);
-  if (!m)
+  const range = part.match(/^(?:step-?|s)?(\d+[a-z]?)(?:\s*-\s*(?:step-?|s)?(\d+[a-z]?))?$/);
+  if (!range)
     throw new Error(
       `steps "${spec}": "${part}" is not a step id or range; use e.g. "3", "3-5" or "1-2,3,4" (a heading "## s1" is step 1)`,
     );
-  const [from, to] = [indexOfStep(plan, m[1]), indexOfStep(plan, m[2] ?? m[1])];
+  const [, first, last] = range;
+  const from = indexOfStep(plan, first);
+  const to = indexOfStep(plan, last ?? first);
   if (to < from) throw new Error(`steps "${spec}": range ${part} runs backwards`);
   const steps = plan.steps.slice(from, to + 1);
-  return { label: m[2] ? `${m[1]}-${m[2]}` : m[1], steps, at: from };
+  return { label: last ? `${first}-${last}` : first, steps, at: from };
 }
 
 function indexOfStep(plan: Plan, id: string): number {
-  const i = plan.steps.findIndex((s) => s.id === id);
-  if (i < 0)
-    throw new Error(`step ${id} not found (plan steps: ${plan.steps.map((s) => s.id).join(", ")})`);
-  return i;
+  const index = plan.steps.findIndex((step) => step.id === id);
+  if (index < 0)
+    throw new Error(
+      `step ${id} not found (plan steps: ${plan.steps.map((step) => step.id).join(", ")})`,
+    );
+  return index;
 }
 
 /** Groups land in step order, so a group waiting on a later one would never land. */
 function checkNeedsOrder(groups: Group[], spec: string): void {
-  groups.forEach((g, i) => {
-    const later = needsOf(g).find((id) =>
-      groups.slice(i + 1).some((o) => o.steps.some((s) => s.id === id)),
+  groups.forEach((group, index) => {
+    const later = needsOf(group).find((id) =>
+      groups.slice(index + 1).some((other) => other.steps.some((step) => step.id === id)),
     );
     if (later)
       throw new Error(
-        `steps "${spec}": step ${g.label} needs ${later}, which comes later in the plan; put dependencies first`,
+        `steps "${spec}": step ${group.label} needs ${later}, which comes later in the plan; put dependencies first`,
       );
   });
 }
 
 /** Where two groups' `files:` overlap: an equal entry, or one inside the other's directory entry. Returns the inner path. */
 export function overlap(a: Group, b: Group): string | undefined {
-  const theirs = groupFiles(b);
-  for (const x of groupFiles(a)) {
-    for (const y of theirs) {
-      if (x === y || x.startsWith(`${y}/`)) return x;
-      if (y.startsWith(`${x}/`)) return y;
+  const theirPaths = groupFiles(b);
+  for (const ourPath of groupFiles(a)) {
+    for (const theirPath of theirPaths) {
+      if (ourPath === theirPath || ourPath.startsWith(`${theirPath}/`)) return ourPath;
+      if (theirPath.startsWith(`${ourPath}/`)) return theirPath;
     }
   }
   return undefined;
@@ -227,13 +232,15 @@ export function overlap(a: Group, b: Group): string | undefined {
 /** A group's `files:` entries without trailing slashes, so a directory compares by its plain path. */
 function groupFiles(group: Group): string[] {
   return group.steps
-    .flatMap((s) => splitFiles(s.fields.files))
-    .map((f) => f.replace(/\/+$/, ""))
+    .flatMap((step) => splitFiles(step.fields.files))
+    .map((file) => file.replace(/\/+$/, ""))
     .filter(Boolean);
 }
 
 /** The step ids a group's `needs:` names, outside the group itself (a range already runs in order). */
-export const needsOf = (g: Group) =>
-  [
-    ...new Set(g.steps.flatMap((s) => (s.fields.needs ?? "").split(/[\s,]+/).filter(Boolean))),
-  ].filter((id) => !g.steps.some((s) => s.id === id));
+export const needsOf = (g: Group) => {
+  const named = g.steps.flatMap((step) =>
+    (step.fields.needs ?? "").split(/[\s,]+/).filter(Boolean),
+  );
+  return [...new Set(named)].filter((id) => !g.steps.some((step) => step.id === id));
+};
