@@ -294,11 +294,7 @@ export async function openSession(opts: {
                     .replace(/\s+/g, " ")
                     .trim();
               const why = (whyText || reasoningText).slice(0, 200) || "the worker gave no reason";
-              const stopped = new Promise<undefined>((resolve) =>
-                signal?.aborted
-                  ? resolve(undefined)
-                  : signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
-              );
+              const stopped = untilAborted(signal);
               const answer = await Promise.race([
                 opts.onPermission({
                   permission: props.permission,
@@ -332,11 +328,7 @@ export async function openSession(opts: {
           }));
           const requestID = event.properties.id;
           // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
-          const stopped = new Promise<undefined>((resolve) =>
-            signal?.aborted
-              ? resolve(undefined)
-              : signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
-          );
+          const stopped = untilAborted(signal);
           // a question asked after a stop is never put to Claude: the job is ending, not blocked
           const answers =
             opts.onQuestion && questions.length && !signal?.aborted
@@ -485,6 +477,14 @@ export async function runSession(
   const session = await openSession(opts);
   const result = await session.run(opts.prompt);
   return { ...session.totals(), ...result };
+}
+
+/** Resolves with undefined when `signal` aborts, at once if it already has; without a signal, never. */
+function untilAborted(signal: AbortSignal | undefined): Promise<undefined> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) resolve(undefined);
+    else signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
 }
 
 /** OpenCode validates the tool's args, but the record must not trust a malformed one either. */
