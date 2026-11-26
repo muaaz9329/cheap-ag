@@ -192,8 +192,11 @@ export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
 
 /** The model a job implements on: hard takes the hard model, else the medium one; medium the medium one; easy or no hint `implement`. */
-export const tierModel = (r: Route, d?: Difficulty) =>
-  (d === "hard" ? (r.hard ?? r.medium) : d === "medium" ? r.medium : undefined) ?? r.implement;
+export const tierModel = (r: Route, d?: Difficulty) => {
+  if (d === "hard") return r.hard ?? r.medium ?? r.implement;
+  if (d === "medium") return r.medium ?? r.implement;
+  return r.implement;
+};
 
 /** The models config in force: the chosen preset's models (none for a local endpoint) with an explicit `models` role winning over it. */
 export function effectiveModels(
