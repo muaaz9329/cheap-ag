@@ -87,26 +87,7 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
   const links: string[] = [];
   try {
     if (stash) git(path, ["stash", "apply", "--quiet", stash]);
-
-    // untracked dependency dirs are linked below, never copied
-    const untracked = git(root, [
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-      "-z",
-      "--",
-      ".",
-      ...outside(linkDirs),
-    ])
-      .split("\0")
-      .filter(Boolean);
-    // an entry ending in "/" is an untracked nested repository: not part of this repo, so not carried over
-    // (git would refuse to index it, or record it as a gitlink that would then land)
-    for (const file of untracked.filter((f) => !f.endsWith("/"))) {
-      mkdirSync(dirname(join(path, file)), { recursive: true });
-      cpSync(join(root, file), join(path, file), { verbatimSymlinks: true });
-    }
-
+    copyUntracked(root, path, linkDirs);
     for (const dir of linkDirs) {
       const source = join(root, dir);
       const target = join(path, dir);
@@ -116,11 +97,11 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
       link(source, target);
       links.push(target);
     }
-  } catch (err) {
+  } catch (error) {
     discard(root, path, links);
-    throw err;
+    throw error;
   }
-  const linked = links.map((l) => normalisePath(relative(path, l)));
+  const linked = relativeLinks(path, links);
 
   // the carried-over state as a tree object: the job's baseline, without committing anything
   git(path, ["add", "-A", "--", ".", ...outside(notIgnored(path, linked))]);
@@ -128,8 +109,35 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
   return { path, head, stash, base, links, linked };
 }
 
+/** The dependency links as forward-slash paths relative to the worktree at `path`, the form git pathspecs take. */
+function relativeLinks(path: string, links: string[]) {
+  return links.map((linkPath) => normalisePath(relative(path, linkPath)));
+}
+
+/** Copies the checkout's untracked, non-ignored files into the worktree at `path`. */
+function copyUntracked(root: string, path: string, linkDirs: string[]) {
+  // untracked dependency dirs are linked instead, never copied
+  const untracked = git(root, [
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+    "-z",
+    "--",
+    ".",
+    ...outside(linkDirs),
+  ])
+    .split("\0")
+    .filter(Boolean);
+  // an entry ending in "/" is an untracked nested repository: not part of this repo, so not carried over
+  // (git would refuse to index it, or record it as a gitlink that would then land)
+  for (const file of untracked.filter((entry) => !entry.endsWith("/"))) {
+    mkdirSync(dirname(join(path, file)), { recursive: true });
+    cpSync(join(root, file), join(path, file), { verbatimSymlinks: true });
+  }
+}
+
 function discard(root: string, path: string, links: string[]) {
-  for (const l of links) removeLink(l); // unlink first, so nothing can reach through into the real dirs
+  for (const linkPath of links) removeLink(linkPath); // unlink first, so nothing can reach through into the real dirs
   try {
     git(root, ["worktree", "remove", "--force", path]);
   } catch {
@@ -142,23 +150,26 @@ function discard(root: string, path: string, links: string[]) {
 }
 
 /** Pathspecs that keep Cheap Agent's state and the given dependency dirs out of a git operation. */
-const outside = (dirs: string[]) => [".cheapag", ...dirs].map((d) => `:(exclude,top,literal)${d}`);
+function outside(dirs: string[]) {
+  return [".cheapag", ...dirs].map((dir) => `:(exclude,top,literal)${dir}`);
+}
 
 // git 2.55 rejects a pathspec naming an ignored path, even as an exclusion; an already-ignored dir needs no exclusion
-const notIgnored = (dir: string, paths: string[]) =>
-  paths.filter(
-    (p) =>
-      spawnSync("git", [...GIT_ARGS, "check-ignore", "-q", "--", p], { cwd: dir, stdio: "pipe" })
+function notIgnored(dir: string, paths: string[]) {
+  return paths.filter(
+    (path) =>
+      spawnSync("git", [...GIT_ARGS, "check-ignore", "-q", "--", path], { cwd: dir, stdio: "pipe" })
         .status !== 0,
   );
+}
 
-const isDirectory = (path: string) => {
+function isDirectory(path: string) {
   try {
     return statSync(path).isDirectory();
   } catch {
     return false;
   }
-};
+}
 
 /** Everything the job changed relative to its baseline tree, as a binary patch plus per-file stats. */
 export function worktreeDiff(worktree: Worktree) {
@@ -170,22 +181,29 @@ export function worktreeDiff(worktree: Worktree) {
   const stats = git(path, ["diff", "--cached", "--numstat", "-z", "--no-renames", base])
     .split("\0")
     .filter(Boolean);
-  const statuses = new Map<string, string>();
-  const names = git(path, ["diff", "--cached", "--name-status", "-z", "--no-renames", base])
-    .split("\0")
-    .filter(Boolean);
-  for (let i = 0; i < names.length; i += 2) statuses.set(names[i + 1], names[i]);
+  const statuses = stagedStatuses(path, base);
   const changed: Changed[] = stats.map((line) => {
-    const [add, del, file] = line.split("\t");
+    const [added, deleted, file] = line.split("\t");
     // binary files report "-" for both counts
     return {
       status: statuses.get(file) ?? "M",
       path: file,
-      add: Number(add) || 0,
-      del: Number(del) || 0,
+      add: Number(added) || 0,
+      del: Number(deleted) || 0,
     };
   });
   return { patch, changed };
+}
+
+/** Each staged path's status letter (A, M, D…) against `base`; `--name-status -z` alternates status and path. */
+function stagedStatuses(path: string, base: string) {
+  const fields = git(path, ["diff", "--cached", "--name-status", "-z", "--no-renames", base])
+    .split("\0")
+    .filter(Boolean);
+  const statuses = new Map<string, string>();
+  for (let index = 0; index < fields.length; index += 2)
+    statuses.set(fields[index + 1], fields[index]);
+  return statuses;
 }
 
 /** Why the checkout cannot be a job's starting point right now (a merge, rebase… or unresolved conflicts), if it cannot. */
@@ -198,11 +216,15 @@ export function operationInProgress(root: string) {
     REVERT_HEAD: "a revert",
   };
   for (const [marker, name] of Object.entries(markers)) {
-    if (existsSync(git(root, ["rev-parse", "--path-format=absolute", "--git-path", marker]).trim()))
-      return `${name} is in progress`;
+    if (existsSync(gitPath(root, marker))) return `${name} is in progress`;
   }
   // e.g. after a conflicted `git stash pop`: no marker file, but `git stash create` would fail
   if (git(root, ["ls-files", "--unmerged"]).trim()) return "there are unresolved conflicts";
+}
+
+/** The absolute path of `name` inside the repository's git directory, which a worktree keeps apart from `.git`. */
+function gitPath(root: string, name: string) {
+  return git(root, ["rev-parse", "--path-format=absolute", "--git-path", name]).trim();
 }
 
 export function removeWorktree(root: string, worktree: Worktree) {
@@ -210,7 +232,9 @@ export function removeWorktree(root: string, worktree: Worktree) {
 }
 
 /** How long landing waits for another holder. `CHEAPAG_LOCK_TIMEOUT_MS` is a test hook (like CHEAPAG_OPENCODE_URL), not a setting. */
-const lockTimeoutMs = () => Number(process.env.CHEAPAG_LOCK_TIMEOUT_MS) || 10 * 60_000;
+function lockTimeoutMs() {
+  return Number(process.env.CHEAPAG_LOCK_TIMEOUT_MS) || 10 * 60_000;
+}
 
 /** What `.cheapag/land.lock` holds. `token` tells one holder's lock from the next one's (absent in older locks). */
 type Holder = { pid: number; at: string; token?: string };
@@ -222,31 +246,22 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
   // unique per call: parallel groups in one process wait on the lock at once, and must not delete each other's file
   const mine = `${lock}.${process.pid}.${token}`;
   mkdirSync(join(root, ".cheapag"), { recursive: true });
+  const ours = { pid: process.pid, at: new Date().toISOString(), token } satisfies Holder;
   // written whole, then hard-linked into place: the lock never exists without its contents
-  writeFileSync(
-    mine,
-    JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token } satisfies Holder),
-  );
+  writeFileSync(mine, JSON.stringify(ours));
   const timeout = lockTimeoutMs();
   const deadline = Date.now() + timeout;
   try {
-    for (;;) {
-      try {
-        linkSync(mine, lock);
-        break;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      }
+    while (!takeLock(mine, lock)) {
       const holder = readHolder(lock); // gone: released meanwhile, so try again at once
       if (!holder) continue;
-      if (!(holder.pid > 0 && isAlive(holder.pid))) breakStale(lock, holder);
-      else if (Date.now() > deadline) {
-        const waited =
-          timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
-        throw new Error(
-          `timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`,
-        );
-      } else await new Promise((r) => setTimeout(r, 200));
+      const alive = holder.pid > 0 && isAlive(holder.pid);
+      if (!alive) {
+        breakStale(lock, holder);
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error(lockTimeoutMessage(timeout, holder));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
   } finally {
     rmSync(mine, { force: true });
@@ -257,6 +272,22 @@ export async function withLock<T>(root: string, fn: () => T | Promise<T>): Promi
     // only our own: never a lock someone else holds now
     if (readHolder(lock)?.token === token) rmSync(lock, { force: true });
   }
+}
+
+/** Hard-links our file into place as the lock; false when another holder has it. */
+function takeLock(mine: string, lock: string) {
+  try {
+    linkSync(mine, lock);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return false;
+  }
+}
+
+function lockTimeoutMessage(timeout: number, holder: Holder) {
+  const waited = timeout >= 60_000 ? `${Math.round(timeout / 60_000)} min` : `${timeout / 1000} s`;
+  return `timed out after ${waited} waiting for .cheapag/land.lock (held by pid ${holder.pid} since ${holder.at}); try again once it is released`;
 }
 
 /**
@@ -295,7 +326,9 @@ function readHolder(file: string): Holder | undefined {
   }
 }
 
-const literal = (path: string) => `:(literal)${path}`;
+function literal(path: string) {
+  return `:(literal)${path}`;
+}
 
 /**
  * 3-way applies `patch` to the user's working tree, uncommitted and leaving their index alone.
@@ -311,19 +344,10 @@ export function land(
   return withLock(root, () => {
     if (!patch.trim()) return undefined;
     const index = join(root, ".cheapag", "jobs", job, "land.index");
-    copyFileSync(
-      git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim(),
-      index,
-    );
+    copyFileSync(gitPath(root, "index"), index);
     const env = { GIT_INDEX_FILE: index };
     try {
-      // bring exactly the patch's paths into the throwaway index as they are on disk now, untracked files included:
-      // the job's baseline had them (carry-over), so the patch expects them
-      const tracked = new Set(
-        git(root, ["ls-files", "-z", "--", ...paths.map(literal)], env).split("\0"),
-      );
-      const present = paths.filter((p) => tracked.has(p) || existsSync(join(root, p)));
-      if (present.length) git(root, ["add", "-A", "--", ...present.map(literal)], env);
+      stageFromDisk(root, paths, env);
       const check = applyOutput(root, ["apply", "--3way", "--check", "-"], env, patch);
       // shortcut: `apply --3way --check` exits 0 even when it would leave conflict markers, so read its message; upgrade if git changes the wording
       if (check.failed || /with conflicts/.test(check.output))
@@ -338,26 +362,36 @@ export function land(
   });
 }
 
+/**
+ * Brings exactly `paths` into the throwaway index as they are on disk now, untracked files included: the job's
+ * baseline had them (carry-over), so the patch expects them.
+ */
+function stageFromDisk(root: string, paths: string[], env: Record<string, string>) {
+  const listed = git(root, ["ls-files", "-z", "--", ...paths.map(literal)], env);
+  const tracked = new Set(listed.split("\0"));
+  const present = paths.filter((path) => tracked.has(path) || existsSync(join(root, path)));
+  if (present.length) git(root, ["add", "-A", "--", ...present.map(literal)], env);
+}
+
 /** git apply's verdict lives in stderr even when it exits 0. */
 function applyOutput(root: string, args: string[], env: Record<string, string>, patch: string) {
-  const r = spawnSync("git", [...GIT_ARGS, ...args], {
+  const result = spawnSync("git", [...GIT_ARGS, ...args], {
     cwd: root,
     env: { ...process.env, ...env },
     input: patch,
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
   });
-  return { failed: r.status !== 0, output: `${r.stdout}${r.stderr}` };
+  return { failed: result.status !== 0, output: `${result.stdout}${result.stderr}` };
 }
 
 /** The paths a failed landing names as conflicting, from git apply's messages. */
 export function conflictPaths(text: string) {
-  const named = [
-    ...text.matchAll(
-      /^Applied patch to '(.+)' with conflicts\.$|^error: (.+?): (?:does not exist in index|does not match index|already exists in (?:index|working directory)|patch does not apply)$/gm,
-    ),
-  ];
-  return [...new Set(named.map((m) => m[1] ?? m[2]))];
+  // a 3-way merge left markers in the path, or git could not patch it at all
+  const conflictLine =
+    /^Applied patch to '(.+)' with conflicts\.$|^error: (.+?): (?:does not exist in index|does not match index|already exists in (?:index|working directory)|patch does not apply)$/gm;
+  const paths = [...text.matchAll(conflictLine)].map((match) => match[1] ?? match[2]);
+  return [...new Set(paths)];
 }
 
 /**
@@ -373,14 +407,14 @@ export function reapply(worktree: Worktree, patch: string) {
 
 /** Paths whose changes still add conflict marker lines; run after `worktreeDiff`, which stages the worktree. */
 export function leftoverMarkers(worktree: Worktree) {
-  const r = spawnSync("git", [...GIT_ARGS, "diff", "--cached", "--check", worktree.base], {
+  const result = spawnSync("git", [...GIT_ARGS, "diff", "--cached", "--check", worktree.base], {
     cwd: worktree.path,
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
   });
-  return [
-    ...new Set([...r.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm)].map((m) => m[1])),
-  ];
+  const markerLines = result.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm);
+  const paths = [...markerLines].map((match) => match[1]);
+  return [...new Set(paths)];
 }
 
 /**
@@ -395,21 +429,23 @@ export function jobWorktree(
 ): Worktree | undefined {
   const path = join(root, ".cheapag", "worktrees", job);
   if (!lstatOf(path)?.isDirectory()) return undefined;
-  const links = linkDirs.map((d) => join(path, d)).filter((l) => lstatOf(l)?.isSymbolicLink());
+  const links = linkDirs
+    .map((dir) => join(path, dir))
+    .filter((linkPath) => lstatOf(linkPath)?.isSymbolicLink());
   return {
     path,
     head: "",
     stash: null,
     base,
     links,
-    linked: links.map((l) => normalisePath(relative(path, l))),
+    linked: relativeLinks(path, links),
   };
 }
 
-const lstatOf = (path: string) => {
+function lstatOf(path: string) {
   try {
     return lstatSync(path);
   } catch {
     return undefined;
   }
-};
+}
