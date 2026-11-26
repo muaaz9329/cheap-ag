@@ -690,24 +690,38 @@ async function listModels(base: string): Promise<ModelList> {
  */
 async function contextOf(base: string, model: string): Promise<number | undefined> {
   const root = base.replace(/\/v1$/, "");
-  const get = async (url: string) => {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
-      return res.ok ? ((await res.json()) as any) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const props = await get(`${root}/props`);
-  const nCtx = props?.default_generation_settings?.n_ctx;
-  if (Number.isInteger(nCtx) && nCtx > 0)
-    return Math.floor(
-      nCtx / (Number.isInteger(props.total_slots) && props.total_slots > 0 ? props.total_slots : 1),
-    );
-  const lms = await get(`${root}/api/v0/models`);
-  const entry = Array.isArray(lms?.data) ? lms.data.find((m: any) => m?.id === model) : undefined;
-  const loaded = entry?.loaded_context_length ?? entry?.max_context_length;
-  return Number.isInteger(loaded) && loaded > 0 ? loaded : undefined;
+  const props = await getJson(`${root}/props`);
+  const contextSize = field(field(props, "default_generation_settings"), "n_ctx");
+  if (isPositiveInteger(contextSize)) {
+    const slots = field(props, "total_slots");
+    return Math.floor(contextSize / (isPositiveInteger(slots) ? slots : 1));
+  }
+  const studioModels = field(await getJson(`${root}/api/v0/models`), "data");
+  const entry = Array.isArray(studioModels)
+    ? studioModels.find((candidate: unknown) => field(candidate, "id") === model)
+    : undefined;
+  const loaded = field(entry, "loaded_context_length") ?? field(entry, "max_context_length");
+  return isPositiveInteger(loaded) ? loaded : undefined;
+}
+
+/** The JSON body of a GET to `url`; undefined when it fails or answers with an error status. */
+async function getJson(url: string): Promise<unknown> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    return response.ok ? ((await response.json()) as unknown) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `value[key]` when `value` is an object (as `?.` reads it); undefined otherwise. */
+function field(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  return (value as Record<string, unknown>)[key];
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) > 0;
 }
 
 /** Sets one key of the user config, other keys kept; undefined removes it. False (and said) when the file cannot be written. */
