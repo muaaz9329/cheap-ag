@@ -455,10 +455,9 @@ export function capUse(
   const monthly = GO_CAPS[name];
   if (!monthly) return undefined;
   const now = Date.now();
-  const entries = readLedger().filter((e) => e.model === name);
+  const entries = readLedger().filter((entry) => entry.model === name);
   return WINDOWS.map(({ name: window, ms, share }) => {
-    const spent =
-      extra + entries.filter((e) => now - e.at < ms).reduce((sum, e) => sum + e.costUsd, 0);
+    const spent = extra + spentWithin(entries, now, ms);
     return { used: spent / (monthly * share), window, capUsd: monthly * share };
   }).reduce((a, b) => (b.used > a.used ? b : a));
 }
@@ -466,19 +465,27 @@ export function capUse(
 /** Tracked spend per model and window, with the window's cap where Go has one (for `cheapag status`); models unspent this month are left out. */
 export function spendWindows(now = Date.now()) {
   const ledger = readLedger();
-  return [...new Set(ledger.map((e) => e.model))].sort().flatMap((model) => {
+  return [...new Set(ledger.map((entry) => entry.model))].sort().flatMap((model) => {
+    const entries = ledger.filter((entry) => entry.model === model);
     const windows = WINDOWS.map(({ name: window, ms, share }) => ({
       window,
-      spent: ledger
-        .filter((e) => e.model === model && now - e.at < ms)
-        .reduce((sum, e) => sum + e.costUsd, 0),
+      spent: spentWithin(entries, now, ms),
       capUsd: GO_CAPS[model] ? GO_CAPS[model] * share : undefined,
     }));
     return windows.at(-1)!.spent > 0 ? [{ model, windows }] : [];
   });
 }
 
-function readLedger(): { at: number; model: string; costUsd: number }[] {
+type LedgerEntry = { at: number; model: string; costUsd: number };
+
+/** The USD the entries spent in the `ms` before `now`. */
+function spentWithin(entries: LedgerEntry[], now: number, ms: number) {
+  return entries
+    .filter((entry) => now - entry.at < ms)
+    .reduce((sum, entry) => sum + entry.costUsd, 0);
+}
+
+function readLedger(): LedgerEntry[] {
   if (!existsSync(ledgerFile())) return [];
   return readFileSync(ledgerFile(), "utf8")
     .split("\n")
