@@ -139,7 +139,7 @@ const STATUS_SECTIONS: Record<Exclude<JobStatus, "RUNNING">, Section[]> = {
   BUDGET: ["found", "reason", "worktree"],
   PROVIDER: ["found", "reason", "worktree"],
 };
-// ticket 34: a batch block shows these settled jobs' status sections only (OK keeps risks:); every other status renders as today
+// a batch block shows only the status sections of these settled jobs (OK keeps risks:); every other status renders in full
 const COMPACTED = new Set<JobStatus>(["OK", "PARTIAL", "FAIL"]);
 // D6 urgency; CANCELLED is not ranked by the spec and sits with BUDGET/TIMEOUT
 const URGENCY: JobStatus[] = [
@@ -154,14 +154,17 @@ const URGENCY: JobStatus[] = [
   "RUNNING",
   "OK",
 ];
-const rank = (s: JobStatus) =>
-  s === "PROVIDER" || s === "TIMEOUT" || s === "CANCELLED"
-    ? URGENCY.indexOf("BUDGET")
-    : URGENCY.indexOf(s);
+function urgencyRank(status: JobStatus) {
+  if (status === "PROVIDER" || status === "TIMEOUT" || status === "CANCELLED")
+    return URGENCY.indexOf("BUDGET");
+  return URGENCY.indexOf(status);
+}
 
 /** The summary a worker that never reported gets (src/worker.ts). */
 export const NO_SUMMARY = "(worker gave no summary)";
 const BUDGET_TOKENS = 400;
+const CHARS_PER_TOKEN = 4;
+const ERROR_LINES_FLOOR = 12;
 const LINE_MAX = 200;
 
 /** How much of each cuttable section a layout keeps (D9 truncation). */
@@ -192,17 +195,17 @@ export const permissionOptions = (prefix: string) => [
   "refuse",
 ];
 
-/** D5-adjacent: a BLOCKED job paused on a command permission (ticket 69), rendered outside the ordinary job layout. */
-function renderPermission(r: JobRecord) {
-  const p = r.permission!;
-  const [once, always, refuse] = permissionOptions(p.prefix);
+/** D5-adjacent: a BLOCKED job paused on a command permission, rendered outside the ordinary job layout. */
+function renderPermission(record: JobRecord) {
+  const permission = record.permission!;
+  const [once, always, refuse] = permissionOptions(permission.prefix);
   return [
-    `BLOCKED ${r.job} step=${r.steps} permission`,
-    `title: ${oneLine(p.title)}`,
-    `command: ${oneLine(p.command)}`,
-    `why: ${oneLine(p.why)}`,
+    `BLOCKED ${record.job} step=${record.steps} permission`,
+    `title: ${oneLine(permission.title)}`,
+    `command: ${oneLine(permission.command)}`,
+    `why: ${oneLine(permission.why)}`,
     `a) ${once}`,
-    ...(p.always === false ? [] : [`b) ${always}`]),
+    ...(permission.always === false ? [] : [`b) ${always}`]),
     `c) ${refuse}`,
     "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.",
   ]
@@ -216,159 +219,240 @@ export function renderJob(r: JobRecord, budget = BUDGET_TOKENS, compact = false)
   if (r.status === "BLOCKED" && r.permission) return renderPermission(r);
   let cuts = FULL;
   let text = layout(r, cuts, compact);
-  const over = () => text.length / 4 > budget;
-  const cut = (c: Partial<Cuts>) => {
-    if (over()) text = layout(r, (cuts = { ...cuts, ...c }), compact);
+  const overBudget = () => text.length / CHARS_PER_TOKEN > budget;
+  const cut = (smaller: Partial<Cuts>) => {
+    if (!overBudget()) return;
+    cuts = { ...cuts, ...smaller };
+    text = layout(r, cuts, compact);
   };
   cut({ changed: 5 });
   cut({ tried: 1 });
   cut({ risks: 3 });
   cut({ review: 3 });
-  for (let n = r.error?.length ?? 0; n > 12 && over();) cut({ error: --n });
+  let errorLimit = r.error?.length ?? 0;
+  while (errorLimit > ERROR_LINES_FLOOR && overBudget()) {
+    errorLimit -= 1;
+    cut({ error: errorLimit });
+  }
   cut({ summary: 100 });
   return text;
 }
 
-function layout(r: JobRecord, c: Cuts, compact = false) {
-  const status = r.status as Exclude<JobStatus, "RUNNING">;
-  const compacted = compact && COMPACTED.has(status);
-  const has = (s: Section) => STATUS_SECTIONS[status].includes(s);
-  // ticket 34: a compacted batch block drops summary/changed/review/log (OK's risks: survive)
-  const add = r.changed.reduce((n, x) => n + x.add, 0);
-  const del = r.changed.reduce((n, x) => n + x.del, 0);
-  const lines = [
-    [
-      r.status,
-      r.job,
-      `step=${r.steps}`,
-      `files=${r.changed.length}`,
-      `+${add}/-${del}`,
-      r.tests && `tests=${r.tests}`,
-      r.check && `check=${r.check}`,
-      `turns=${r.usage.turns}`,
-      `cost=$${r.usage.costUsd.toFixed(3)}`,
-      r.selfFix && `fix=${r.selfFix}`,
-      r.models.escalated && "esc=1",
-      r.models.final !== r.models.requested && `model=${r.models.final}`,
-      r.redo && "redo=1",
-      r.billing && `billing=${r.billing}`,
-      r.repro && `repro=${r.repro}`,
-      r.test && `test=${r.test}`,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  ];
-  const keep = new Set<string>(); // question/options lines are never elided
+/** One job block at the given cuts: headline, what the worker did, the status's own sections, `log:` last. */
+function layout(record: JobRecord, cuts: Cuts, compact = false) {
+  const sections = sectionsOf(record);
+  const compacted = compact && COMPACTED.has(record.status);
   // a worker with no summary has nothing to put there: `found:` leads instead
-  const lead = !compacted && r.summary === NO_SUMMARY && has("found") && r.found;
-  if (lead) lines.push(...wrap(`found: ${oneLine(r.found!)}`));
-  if (!compacted && r.summary && !lead)
-    lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
+  const foundLeads =
+    !compacted &&
+    record.summary === NO_SUMMARY &&
+    sections.includes("found") &&
+    Boolean(record.found);
+  const questions = sections.includes("question") ? questionLines(record) : [];
+  const lines = [
+    jobHeadline(record),
+    ...workLines(record, cuts, { compacted, foundLeads }),
+    ...questions,
+    ...problemLines(record, cuts, foundLeads),
+    ...followUpLines(record),
+  ];
+  if (record.cleanupError)
+    lines.push(
+      `cleanup error: ${oneLine(record.cleanupError)} (the change landed; only its worktree folder was left behind)`,
+    );
+  if (!compacted) lines.push(`log: .cheapag/jobs/${record.job}/`);
+  const neverElided = new Set(questions); // question/options lines are never elided
+  return lines
+    .map((line) => (neverElided.has(line) ? line.replaceAll("\t", "  ") : fit(line)))
+    .join("\n");
+}
+
+/** The first line: status, job, steps, file counts, then the optional tokens in D3 order. */
+function jobHeadline(record: JobRecord) {
+  const added = record.changed.reduce((total, file) => total + file.add, 0);
+  const deleted = record.changed.reduce((total, file) => total + file.del, 0);
+  const modelChanged = record.models.final !== record.models.requested;
+  return [
+    record.status,
+    record.job,
+    `step=${record.steps}`,
+    `files=${record.changed.length}`,
+    `+${added}/-${deleted}`,
+    record.tests && `tests=${record.tests}`,
+    record.check && `check=${record.check}`,
+    `turns=${record.usage.turns}`,
+    `cost=$${record.usage.costUsd.toFixed(3)}`,
+    record.selfFix && `fix=${record.selfFix}`,
+    record.models.escalated && "esc=1",
+    modelChanged && `model=${record.models.final}`,
+    record.redo && "redo=1",
+    record.billing && `billing=${record.billing}`,
+    record.repro && `repro=${record.repro}`,
+    record.test && `test=${record.test}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** How a job block is shown: compacted in a batch, and whether `found:` took the summary's place. */
+type BlockView = { compacted: boolean; foundLeads: boolean };
+
+/** What the worker did: its summary (or `found:` in its place), changed files, risks, review ranges. */
+function workLines(record: JobRecord, cuts: Cuts, view: BlockView) {
+  // a compacted batch block drops summary/changed/review/log (OK's risks: survive)
+  if (view.compacted) return record.status === "OK" ? riskLines(record.risks, cuts.risks) : [];
+  const lines: string[] = [];
+  if (view.foundLeads) lines.push(...foundLines(record.found!));
+  else if (record.summary) lines.push(`summary: ${clip(oneLine(record.summary), cuts.summary)}`);
   // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
-  if (!compacted && r.changed.length && r.status !== "BLOCKED") {
-    lines.push(
-      "changed:",
-      ...r.changed
-        .slice(0, c.changed)
-        .map(
-          (x) => `  ${x.status} ${x.path}${x.add ? ` +${x.add}` : ""}${x.del ? ` -${x.del}` : ""}`,
-        ),
-    );
-    if (r.changed.length > c.changed) lines.push(`  … +${r.changed.length - c.changed} more`);
+  if (record.changed.length && record.status !== "BLOCKED")
+    lines.push(...changedLines(record.changed, cuts.changed));
+  lines.push(...riskLines(record.risks, cuts.risks));
+  if (record.review.length) {
+    const shown = record.review.slice(0, cuts.review);
+    const ranges = shown.map((range) => `${range.path}:${range.start}-${range.end}`);
+    lines.push(`review: ${ranges.join(", ")}`);
   }
-  if ((!compacted || r.status === "OK") && r.risks.length)
-    lines.push("risks:", ...r.risks.slice(0, c.risks).map((x) => `  - ${clip(oneLine(x), 120)}`));
-  if (!compacted && r.review.length)
-    lines.push(
-      `review: ${r.review
-        .slice(0, c.review)
-        .map((v) => `${v.path}:${v.start}-${v.end}`)
-        .join(", ")}`,
-    );
-  const asked = r.questions ?? (r.question ? [r.question] : []);
-  if (has("question"))
-    asked.forEach((question, n) => {
-      const q = [`question${asked.length > 1 ? ` ${n + 1}` : ""}: ${oneLine(question.text)}`];
-      if (question.options.length)
-        q.push(
-          "options:",
-          ...question.options.slice(0, 4).map((o, i) => `  ${"abcd"[i]}) ${oneLine(o)}`),
-        );
-      q.forEach((l) => keep.add(l));
-      lines.push(...q);
-    });
-  if (has("conflict") && r.conflict?.length)
-    lines.push("conflict:", ...r.conflict.map((x) => `  ${oneLine(x)}`));
-  if (has("error") && r.error?.length) {
-    const e = r.error.slice(0, c.error);
-    if (e.length < r.error.length)
-      e[e.length - 1] = `  … +${r.error.length - e.length + 1} more lines (see log)`;
-    // an env failure carries the reason first, then the ordinary tail (the command and its output)
-    if (r.check === "env")
-      lines.push(`error: environment: the check could not run (${e[0]})`, ...e.slice(1));
-    else lines.push(`error: ${e[0]}`, ...e.slice(1));
+  return lines;
+}
+
+/** A stopped worker's note: wrapped at spaces, never cut. */
+function foundLines(found: string) {
+  return wrap(`found: ${oneLine(found)}`);
+}
+
+const RISK_MAX = 120;
+
+/** The `risks:` list, cut to `limit` risks, each clipped to RISK_MAX chars. */
+function riskLines(risks: string[], limit: number) {
+  if (!risks.length) return [];
+  const shown = risks.slice(0, limit);
+  return ["risks:", ...shown.map((risk) => `  - ${clip(oneLine(risk), RISK_MAX)}`)];
+}
+
+/** The `changed:` list, cut to `limit` files with a count of the rest. */
+function changedLines(changed: Changed[], limit: number) {
+  const lines = ["changed:", ...changed.slice(0, limit).map(changedLine)];
+  if (changed.length > limit) lines.push(`  … +${changed.length - limit} more`);
+  return lines;
+}
+
+/** One changed file: its git status and path, then the added and deleted counts that are not zero. */
+function changedLine(file: Changed) {
+  const added = file.add ? ` +${file.add}` : "";
+  const deleted = file.del ? ` -${file.del}` : "";
+  return `  ${file.status} ${file.path}${added}${deleted}`;
+}
+
+/** Every question asked, numbered when there are several, each with its lettered options. */
+function questionLines(record: JobRecord) {
+  const asked = record.questions ?? (record.question ? [record.question] : []);
+  return asked.flatMap((question, index) => {
+    const number = asked.length > 1 ? ` ${index + 1}` : "";
+    const lines = [`question${number}: ${oneLine(question.text)}`];
+    if (question.options.length) lines.push("options:", ...optionLines(question.options));
+    return lines;
+  });
+}
+
+/** Up to four options, lettered a) to d). */
+function optionLines(options: string[]) {
+  const letters = "abcd";
+  return options
+    .slice(0, letters.length)
+    .map((option, index) => `  ${letters[index]}) ${oneLine(option)}`);
+}
+
+/** The sections a status shows; RUNNING never reaches the layout. */
+function sectionsOf(record: JobRecord) {
+  return STATUS_SECTIONS[record.status as Exclude<JobStatus, "RUNNING">];
+}
+
+/** What went wrong: the conflict, the error tail, the worker's `found:` note, the fixes tried, the reason. */
+function problemLines(record: JobRecord, cuts: Cuts, foundLeads: boolean) {
+  const has = (section: Section) => sectionsOf(record).includes(section);
+  const lines: string[] = [];
+  if (has("conflict") && record.conflict?.length)
+    lines.push("conflict:", ...record.conflict.map((entry) => `  ${oneLine(entry)}`));
+  if (has("error") && record.error?.length)
+    lines.push(...errorLines(record.error, cuts.error, record.check));
+  if (has("found") && record.found && !foundLeads) lines.push(...foundLines(record.found));
+  if (has("tried") && record.tried?.length) {
+    const tried = record.tried.slice(-cuts.tried);
+    lines.push("tried:", ...tried.map((attempt) => `  - ${oneLine(attempt)}`));
   }
-  if (has("found") && r.found && !lead) lines.push(...wrap(`found: ${oneLine(r.found)}`));
-  if (has("tried") && r.tried?.length)
-    lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
-  if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
-  if (r.status === "PROVIDER")
-    lines.push(
-      "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)",
-    );
-  if (has("missing") && r.missing.length)
-    lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
-  if (has("worktree") && r.worktree) lines.push(`worktree: ${r.worktree}/`);
-  if (r.cleanupError)
-    lines.push(
-      `cleanup error: ${oneLine(r.cleanupError)} (the change landed; only its worktree folder was left behind)`,
-    );
-  if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
-  return lines.map((l) => (keep.has(l) ? l.replaceAll("\t", "  ") : fit(l))).join("\n");
+  if (has("reason") && record.reason) lines.push(`reason: ${oneLine(record.reason)}`);
+  return lines;
+}
+
+/** The `error:` tail, cut to `limit` lines with its last line counting the rest. */
+function errorLines(error: string[], limit: number, check: JobRecord["check"]) {
+  const kept = error.slice(0, limit);
+  if (kept.length < error.length)
+    kept[kept.length - 1] = `  … +${error.length - kept.length + 1} more lines (see log)`;
+  const [first, ...rest] = kept;
+  // an env failure carries the reason first, then the ordinary tail (the command and its output)
+  if (check === "env") return [`error: environment: the check could not run (${first})`, ...rest];
+  return [`error: ${first}`, ...rest];
+}
+
+const PROVIDER_NEXT =
+  "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)";
+
+/** What comes next: PROVIDER's question for the user, the missing work, the worktree that holds it. */
+function followUpLines(record: JobRecord) {
+  const has = (section: Section) => sectionsOf(record).includes(section);
+  const lines: string[] = [];
+  if (record.status === "PROVIDER") lines.push(PROVIDER_NEXT);
+  if (has("missing") && record.missing.length)
+    lines.push("missing:", ...record.missing.map((item) => `  - ${oneLine(item)}`));
+  if (has("worktree") && record.worktree) lines.push(`worktree: ${record.worktree}/`);
+  return lines;
 }
 
 /** D7. A research CONSENT renders through `renderConsent`. */
 export function renderResearch(r: ResearchRecord) {
-  const lines = [
-    [
-      r.status,
-      r.job,
-      `files_read=${r.filesRead}`,
-      `turns=${r.usage.turns}`,
-      `cost=$${r.usage.costUsd.toFixed(3)}`,
-      r.models && r.models.final !== r.models.requested && `model=${r.models.final}`,
-      r.partial && "status=partial",
-    ]
-      .filter(Boolean)
-      .join(" "),
-  ];
-  // a scout brief (ticket 23.4): ranked files, the reproduction, dead ends, then the prose
-  if (r.refs.length)
-    lines.push(
-      `files: ${r.refs.map((v) => `${v.path}:${v.start}${v.end !== v.start ? `-${v.end}` : ""}`).join(", ")}`,
-    );
+  const lines = [researchHeadline(r)];
+  // a scout brief: ranked files, the reproduction, dead ends, then the prose
+  if (r.refs.length) lines.push(`files: ${r.refs.map(refText).join(", ")}`);
   if (r.repro) lines.push(`repro: ${oneLine(r.repro)}`);
   if (r.deadEnds) lines.push(`dead ends: ${oneLine(r.deadEnds)}`);
+  const notes = r.answer.trim();
   // prose is word-wrapped, not elided like other long lines
-  if (r.answer.trim())
-    lines.push(
-      "notes:",
-      ...r.answer
-        .trim()
-        .split("\n")
-        .flatMap((l) => wrap(l.trimEnd())),
-    );
+  if (notes) lines.push("notes:", ...notes.split("\n").flatMap((line) => wrap(line.trimEnd())));
   if (r.confidence) lines.push(`confidence: ${r.confidence}`);
   if (r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (r.cleanupError) lines.push(`cleanup error: ${oneLine(r.cleanupError)}`);
   if (r.worktree) lines.push(`worktree: ${r.worktree}/`);
-  const n = r.unlanded.length;
-  if (n)
+  const count = r.unlanded.length;
+  if (count)
     lines.push(
-      `note: ${n} job${n > 1 ? "s" : ""} not yet landed (${r.unlanded.join(", ")}); their changes are not visible to research`,
+      `note: ${count} job${count > 1 ? "s" : ""} not yet landed (${r.unlanded.join(", ")}); their changes are not visible to research`,
     );
   lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map(fit).join("\n");
+}
+
+/** The first line: status, job, files read, turns, cost, then a fallback model and a partial answer. */
+function researchHeadline(record: ResearchRecord) {
+  const { models } = record;
+  return [
+    record.status,
+    record.job,
+    `files_read=${record.filesRead}`,
+    `turns=${record.usage.turns}`,
+    `cost=$${record.usage.costUsd.toFixed(3)}`,
+    models && models.final !== models.requested && `model=${models.final}`,
+    record.partial && "status=partial",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** `path:start`, or `path:start-end` when the range spans lines. */
+function refText(ref: Range) {
+  const end = ref.end !== ref.start ? `-${ref.end}` : "";
+  return `${ref.path}:${ref.start}${end}`;
 }
 
 /**
@@ -376,43 +460,54 @@ export function renderResearch(r: ResearchRecord) {
  * adjacent single lines), then `next:`. The fix job is not a group: it counts in the cost only.
  */
 export function renderBatch(b: BatchRecord, jobs: JobRecord[], fix?: JobRecord) {
-  const sorted = [...jobs].sort((x, y) => rank(x.status) - rank(y.status));
-  const counts = URGENCY.map(
-    (s) => [s, sorted.filter((j) => j.status === s).length] as const,
-  ).filter(([, n]) => n);
-  const head = [
-    [
-      `BATCH ${b.batch} groups=${b.groups.length}`,
-      ...counts.map(([s, n]) => `${s}=${n}`),
-      `landed=${jobs.filter((j) => j.landed).length}`,
-      `integration=${b.integration}`,
-      `cost=$${[...jobs, ...(fix ? [fix] : [])].reduce((n, j) => n + j.usage.costUsd, 0).toFixed(3)}`,
-    ].join(" "),
-  ];
+  const sorted = [...jobs].sort(
+    (left, right) => urgencyRank(left.status) - urgencyRank(right.status),
+  );
+  const head = [batchHeadline(b, jobs, fix)];
   if (b.notes.length) head.push(`note: ${b.notes.join("; ")}`);
   if (b.integrationError?.length)
     head.push(`error: ${b.integrationError[0]}`, ...b.integrationError.slice(1));
   const chunks = fix ? [renderJob(fix)] : [];
-  sorted.forEach((j, i) => {
-    if (j.status === "RUNNING" && sorted[i - 1]?.status === "RUNNING")
-      chunks[chunks.length - 1] += `\n${renderJob(j)}`;
-    else chunks.push(renderJob(j, BUDGET_TOKENS, true));
+  sorted.forEach((job, index) => {
+    if (job.status === "RUNNING" && sorted[index - 1]?.status === "RUNNING")
+      chunks[chunks.length - 1] += `\n${renderJob(job)}`;
+    else chunks.push(renderJob(job, BUDGET_TOKENS, true));
   });
-  const blocked = sorted.find((j) => j.status === "BLOCKED");
-  const next = [
-    blocked && `reply(job="${blocked.job}", ...)`,
-    (b.integration === "running" ||
-      sorted.some((j) => j.status === "BLOCKED" || j.status === "RUNNING")) &&
-      `jobs(action="wait", job="${b.batch}")`,
-  ]
-    .filter(Boolean)
-    .join(" then ");
+  const next = nextStep(b, sorted);
   // only blocks that were compacted have more to show
-  const settled = sorted.filter((j) => COMPACTED.has(j.status)).map((j) => j.job);
+  const settled = sorted.filter((job) => COMPACTED.has(job.status)).map((job) => job.job);
   const full = settled.length ? fit(`full blocks: jobs show ${settled.join(", ")}`) : "";
   return [head.map(fit).join("\n"), chunks.join("\n\n"), full, next && fit(`next: ${next}`)]
     .filter(Boolean)
     .join("\n");
+}
+
+/** The BATCH line: groups, a count per status by urgency, landed, integration, cost (fix included). */
+function batchHeadline(batch: BatchRecord, jobs: JobRecord[], fix?: JobRecord) {
+  const counts = URGENCY.map(
+    (status) => [status, jobs.filter((job) => job.status === status).length] as const,
+  ).filter(([, count]) => count);
+  const billed = [...jobs, ...(fix ? [fix] : [])];
+  const cost = billed.reduce((total, job) => total + job.usage.costUsd, 0);
+  return [
+    `BATCH ${batch.batch} groups=${batch.groups.length}`,
+    ...counts.map(([status, count]) => `${status}=${count}`),
+    `landed=${jobs.filter((job) => job.landed).length}`,
+    `integration=${batch.integration}`,
+    `cost=$${cost.toFixed(3)}`,
+  ].join(" ");
+}
+
+/** Reply to the first BLOCKED job, then wait while anything is open; empty when nothing is. */
+function nextStep(batch: BatchRecord, sorted: JobRecord[]) {
+  const blocked = sorted.find((job) => job.status === "BLOCKED");
+  const open = sorted.some((job) => job.status === "BLOCKED" || job.status === "RUNNING");
+  return [
+    blocked && `reply(job="${blocked.job}", ...)`,
+    (batch.integration === "running" || open) && `jobs(action="wait", job="${batch.batch}")`,
+  ]
+    .filter(Boolean)
+    .join(" then ");
 }
 
 /** D5 CONSENT: no job is created. */
@@ -426,24 +521,34 @@ export const renderConsent = (c: ConsentRecord) =>
     .map(fit)
     .join("\n");
 
-const oneLine = (s: string) => s.trim().replace(/\s*\n\s*/g, " ");
-const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+/** Trimmed, with each newline and the whitespace around it made one space. */
+function oneLine(text: string) {
+  return text.trim().replace(/\s*\n\s*/g, " ");
+}
+
+/** Cut to `max` chars, the last of them an ellipsis. */
+function clip(text: string, max: number) {
+  if (text.length > max) return `${text.slice(0, max - 1)}…`;
+  return text;
+}
 
 /** A line broken at spaces into lines of at most 200 chars (a longer word is left to `fit`). */
 function wrap(line: string) {
-  const out = [""];
+  const lines = [""];
   for (const word of line.replaceAll("\t", "  ").split(" ")) {
-    const last = out[out.length - 1];
-    if (last && last.length + 1 + word.length > LINE_MAX) out.push(word);
-    else out[out.length - 1] = last ? `${last} ${word}` : word;
+    const last = lines[lines.length - 1];
+    if (last && last.length + 1 + word.length > LINE_MAX) lines.push(word);
+    else lines[lines.length - 1] = last ? `${last} ${word}` : word;
   }
-  return out;
+  return lines;
 }
 
 /** D9 line rules: no tabs (2 spaces), at most 200 chars with the middle elided. */
 function fit(line: string) {
-  const l = line.replaceAll("\t", "  ");
-  if (l.length <= LINE_MAX) return l;
+  const untabbed = line.replaceAll("\t", "  ");
+  if (untabbed.length <= LINE_MAX) return untabbed;
   const half = (LINE_MAX - 1) / 2;
-  return `${l.slice(0, Math.ceil(half))}…${l.slice(l.length - Math.floor(half))}`;
+  const head = untabbed.slice(0, Math.ceil(half));
+  const tail = untabbed.slice(untabbed.length - Math.floor(half));
+  return `${head}…${tail}`;
 }
