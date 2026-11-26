@@ -1,5 +1,16 @@
 #!/usr/bin/env node
-// `cheapag login` (or no arguments in a terminal) sets up a provider and Claude Code, `cheapag allow` records the repo's consent, `cheapag model` picks the worker's main and fallback models, `cheapag provider` switches between providers already set up, `cheapag clean` tidies .cheapag/, `cheapag status` reports jobs and spend, `cheapag watch` tails them live, `cheapag hook` toggles or runs the edit guard, `cheapag codex` runs the server with Codex instructions; anything else (including no arguments) runs the MCP server
+// `cheapag login` (or no arguments in a terminal) sets up a provider and Claude Code,
+// `cheapag allow` records the repo's consent,
+// `cheapag model` picks the worker's main and fallback models,
+// `cheapag provider` switches between providers already set up,
+// `cheapag clean` tidies .cheapag/,
+// `cheapag status` reports jobs and spend,
+// `cheapag watch` tails them live,
+// `cheapag hook` toggles or runs the edit guard,
+// `cheapag codex` runs the server with Codex instructions;
+// anything else (including no arguments) runs the MCP server.
+// Each branch imports its module only when it runs: the MCP server starts without the
+// CLI-only modules (login, model, ...), and a CLI command starts without the server.
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
