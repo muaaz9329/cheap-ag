@@ -517,10 +517,7 @@ async function askPrice(
  * only to list the cloud models; the config names the variable, and OpenCode resolves it for every job.
  */
 async function ollamaLogin(out: Output, flag: Choice | undefined): Promise<boolean> {
-  let current: OllamaConfig | undefined;
-  try {
-    current = ollamaConfig();
-  } catch {} // a damaged entry is replaced
+  const current = readSaved(ollamaConfig);
   // with only OLLAMA_API_KEY set, cloud is what the user came for; otherwise this machine is the likely pick
   const cloud = current?.endpoint === "cloud" || (!current && !!process.env[OLLAMA_KEY_ENV]);
   const endpoints = [
@@ -544,48 +541,12 @@ async function localOllamaLogin(
   if (flag)
     out("--preset does not apply to Ollama on this machine: it runs the one model asked for below");
   const keep = current?.endpoint === "local" ? current : undefined;
-  const typed = (
-    (await ask(`Ollama URL [Enter = ${keep?.base_url ?? OLLAMA_LOCAL_URL}]: `)) ||
-    keep?.base_url ||
-    OLLAMA_LOCAL_URL
-  ).replace(/\/+$/, "");
-  // the daemon's own API (/api/tags) is at the root; OpenCode wants the OpenAI-compatible /v1 under it
-  const base = /^https?:\/\/[^/]+$/.test(typed) ? `${typed}/v1` : typed;
-  if (!/^https?:\/\/\S+$/.test(base)) {
-    out(`✗ "${base}" is not an http(s) URL; nothing changed`);
-    return false;
-  }
-  // this machine's daemon is plain http; the same rule as a custom endpoint still keeps a public host on https
-  if (base.startsWith("http:") && !privateHost(base)) {
-    out(`✗ plain http to a public host would send code unencrypted; use https; nothing changed`);
-    return false;
-  }
-  let listed: CatalogModel[];
-  try {
-    listed = await ollamaModels("local", base);
-  } catch (err) {
-    out(`✗ ${(err as Error).message}; nothing changed`);
-    return false;
-  }
-  const preferred = keep && listed.some((m) => m.id === keep.model) ? keep.model : listed[0].id;
-  const model =
-    listed[
-      await select(
-        "Model:",
-        listed.map((m) => ({
-          label: m.id,
-          hint: m.context ? `${Math.round(m.context / 1000)}k context` : undefined,
-        })),
-        Math.max(
-          0,
-          listed.findIndex((m) => m.id === preferred),
-        ),
-      )
-    ].id;
-  const reported =
-    listed.find((m) => m.id === model)?.context ||
-    (keep?.model === model ? keep.context : undefined);
-  const context = reported && reported > 0 ? reported : undefined;
+  const base = await askOllamaUrl(keep, out);
+  if (!base) return false;
+  const listed = await reachOllama(() => ollamaModels("local", base), out);
+  if (!listed) return false;
+  const model = await pickOllamaModel(listed, keep);
+  const context = ollamaContext(listed, model, keep);
   if (!context)
     out(
       "! Ollama reported no context window for this model; set ollama.context later if long jobs are cut off",
@@ -599,6 +560,70 @@ async function localOllamaLogin(
   if (!saveOllama(ollama, out) || !dropLocal(out, "Ollama")) return false;
   out(`✓ Ollama on this machine: ${model} at ${base}, saved in ${userConfigFile()}`);
   return true;
+}
+
+/** The context window Ollama reports for `model`, else the one saved for it; undefined when neither is above 0. */
+function ollamaContext(
+  listed: CatalogModel[],
+  model: string,
+  keep: OllamaConfig | undefined,
+): number | undefined {
+  const reported =
+    listed.find((entry) => entry.id === model)?.context ||
+    (keep?.model === model ? keep.context : undefined);
+  return reported && reported > 0 ? reported : undefined;
+}
+
+/** The daemon's URL, with the OpenAI-compatible /v1 that OpenCode wants; undefined when refused, after saying why. */
+async function askOllamaUrl(
+  keep: OllamaConfig | undefined,
+  out: Output,
+): Promise<string | undefined> {
+  const answer = await ask(`Ollama URL [Enter = ${keep?.base_url ?? OLLAMA_LOCAL_URL}]: `);
+  const typed = (answer || keep?.base_url || OLLAMA_LOCAL_URL).replace(/\/+$/, "");
+  // the daemon's own API (/api/tags) is at the root; OpenCode wants the OpenAI-compatible /v1 under it
+  const base = /^https?:\/\/[^/]+$/.test(typed) ? `${typed}/v1` : typed;
+  // this machine's daemon is plain http; the same rule as a custom endpoint still keeps a public host on https
+  const problem = urlProblem(
+    base,
+    `✗ plain http to a public host would send code unencrypted; use https; nothing changed`,
+  );
+  if (problem) {
+    out(problem);
+    return undefined;
+  }
+  return base;
+}
+
+/** The models `list` gets from Ollama; undefined when it cannot, after saying why. */
+async function reachOllama(
+  list: () => Promise<CatalogModel[]>,
+  out: Output,
+): Promise<CatalogModel[] | undefined> {
+  try {
+    return await list();
+  } catch (error) {
+    out(`✗ ${(error as Error).message}; nothing changed`);
+    return undefined;
+  }
+}
+
+/** The model picked from Ollama's list, starting on the saved one; each row shows the context Ollama reports. */
+async function pickOllamaModel(
+  listed: CatalogModel[],
+  keep: OllamaConfig | undefined,
+): Promise<string> {
+  const preferred =
+    keep && listed.some((entry) => entry.id === keep.model) ? keep.model : listed[0].id;
+  const options = listed.map((entry) => ({
+    label: entry.id,
+    hint: entry.context ? `${Math.round(entry.context / 1000)}k context` : undefined,
+  }));
+  const start = Math.max(
+    0,
+    listed.findIndex((entry) => entry.id === preferred),
+  );
+  return listed[await select("Model:", options, start)].id;
 }
 
 /** Ollama Cloud: the key must already be in the environment (never typed here), then the cloud presets are offered. */
@@ -619,18 +644,13 @@ async function cloudOllamaLogin(
     /\/+$/,
     "",
   );
-  let listed: CatalogModel[];
-  try {
-    listed = await ollamaModels("cloud", base, key);
-  } catch (err) {
-    out(`✗ ${(err as Error).message}; nothing changed`);
-    return false;
-  }
+  const listed = await reachOllama(() => ollamaModels("cloud", base, key), out);
+  if (!listed) return false;
   // the roles name cloud model ids: say what this account cannot see now, instead of failing job after job
   const wanted = [
     ...new Set([...ROLES.ollama.implement, ...ROLES.ollama.research, ROLES.ollama.escalation]),
   ];
-  const missing = wanted.filter((id) => !listed.some((m) => m.id === id));
+  const missing = wanted.filter((id) => !listed.some((entry) => entry.id === id));
   if (missing.length)
     out(
       `! Ollama Cloud does not list ${missing.join(", ")}; if a job fails, set "models" in ${userConfigFile()}`,
