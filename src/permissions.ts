@@ -402,8 +402,10 @@ export function commandPrefix(command: string): string {
   return first ?? command.trim();
 }
 
-const globToRegExp = (pattern: string) =>
-  new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`);
+function globToRegExp(pattern: string) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped.replaceAll("*", ".*")}$`);
+}
 const HARD_DENY_MATCHERS = HARD_DENY.map(globToRegExp);
 /** The command segments OpenCode checks separately, plus the whole line. */
 const commandSegments = (command: string) => [
