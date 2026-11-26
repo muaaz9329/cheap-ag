@@ -163,6 +163,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const HTTP_URL = /^https?:\/\/\S+$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isHttpUrl(value: unknown): value is string {
+  return typeof value === "string" && HTTP_URL.test(value);
+}
+
+function isEnvName(value: unknown): value is string {
+  return typeof value === "string" && ENV_NAME.test(value);
+}
+
+/** Whether a value is a string with something other than whitespace in it. */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
 /** The optional price and token limits a `local` and an `ollama` entry share; `entry` names it in the errors. */
 function parseLimits(entry: "local" | "ollama", raw: Record<string, unknown>, file: string) {
   const { context, output } = raw;
@@ -193,18 +209,15 @@ function parseLimits(entry: "local" | "ollama", raw: Record<string, unknown>, fi
 function parseLocal(local: unknown, file: string): LocalServer {
   if (!isPlainObject(local)) throw new Error(`${file}: local must be an object`);
   const { base_url, model, api_key_file, api_key_env } = local;
-  if (typeof base_url !== "string" || !/^https?:\/\/\S+$/.test(base_url))
+  if (!isHttpUrl(base_url))
     throw new Error(
       `${file}: local.base_url must be an http(s) URL, e.g. http://127.0.0.1:8080/v1`,
     );
-  if (typeof model !== "string" || !model.trim())
+  if (!isNonEmptyString(model))
     throw new Error(`${file}: local.model must be the server's model id`);
   if (api_key_file !== undefined && (typeof api_key_file !== "string" || !isAbsolute(api_key_file)))
     throw new Error(`${file}: local.api_key_file must be an absolute path`);
-  if (
-    api_key_env !== undefined &&
-    (typeof api_key_env !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(api_key_env))
-  )
+  if (api_key_env !== undefined && !isEnvName(api_key_env))
     throw new Error(
       `${file}: local.api_key_env must be an environment variable name, e.g. MY_GATEWAY_KEY`,
     );
@@ -227,21 +240,18 @@ function parseOllama(raw: unknown, file: string): OllamaConfig {
     throw new Error(`${file}: ollama.endpoint must be "local" or "cloud"`);
   const defaults = OLLAMA_URLS[endpoint];
   const base = base_url === undefined ? defaults : base_url;
-  if (typeof base !== "string" || !/^https?:\/\/\S+$/.test(base))
+  if (!isHttpUrl(base))
     throw new Error(`${file}: ollama.base_url must be an http(s) URL, e.g. ${defaults}`);
   if (base.startsWith("http:") && !privateHost(base))
     throw new Error(
       `${file}: ollama.base_url with plain http must be this machine or a private network; use https`,
     );
-  if (endpoint === "local" && (typeof model !== "string" || !model.trim()))
+  if (endpoint === "local" && !isNonEmptyString(model))
     throw new Error(`${file}: ollama.model must be the local server's model id, e.g. "llama3.2"`);
-  if (model !== undefined && (typeof model !== "string" || !model.trim()))
+  if (model !== undefined && !isNonEmptyString(model))
     throw new Error(`${file}: ollama.model must be a model id`);
   const keyEnv = api_key_env ?? (endpoint === "cloud" ? OLLAMA_KEY_ENV : undefined);
-  if (
-    keyEnv !== undefined &&
-    (typeof keyEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv))
-  )
+  if (keyEnv !== undefined && !isEnvName(keyEnv))
     throw new Error(
       `${file}: ollama.api_key_env must be an environment variable name, e.g. ${OLLAMA_KEY_ENV}`,
     );
@@ -402,8 +412,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   }
   if (
     allow_commands !== undefined &&
-    (!Array.isArray(allow_commands) ||
-      allow_commands.some((c) => typeof c !== "string" || !c.trim()))
+    (!Array.isArray(allow_commands) || allow_commands.some((command) => !isNonEmptyString(command)))
   ) {
     throw new Error(`${file}: allow_commands must be a list of commands`);
   }
@@ -452,14 +461,14 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   ) {
     throw new Error(`${file}: guard_lines must be a positive whole number`);
   }
-  if (test_cmd !== undefined && (typeof test_cmd !== "string" || !test_cmd.trim()))
+  if (test_cmd !== undefined && !isNonEmptyString(test_cmd))
     throw new Error(`${file}: test_cmd must be a non-empty string`);
   // null is E4's written default: test_cmd
-  if (integration_cmd != null && (typeof integration_cmd !== "string" || !integration_cmd.trim()))
+  if (integration_cmd != null && !isNonEmptyString(integration_cmd))
     throw new Error(`${file}: integration_cmd must be a non-empty string`);
   let dirs: string[] | undefined;
   if (link_dirs !== undefined) {
-    if (!Array.isArray(link_dirs) || link_dirs.some((d) => typeof d !== "string" || !d.trim()))
+    if (!Array.isArray(link_dirs) || link_dirs.some((dir) => !isNonEmptyString(dir)))
       throw new Error(`${file}: link_dirs must be a list of directory paths`);
     dirs = (link_dirs as string[]).map((dir) => {
       const parts = dir.split(/[\\/]+/).filter(Boolean);
