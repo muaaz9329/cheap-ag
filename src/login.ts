@@ -330,127 +330,185 @@ function migratePreset(provider: Provider["provider"], out: Output) {
  * Asks for the local server: its URL, the model (from the server's own /models list when it gives one), a key file if it
  * needs a key, and the context window (detected from llama.cpp's /props or LM Studio's API when they answer). Saves it as
  * the user config's `local`, other keys kept. The key file is only checked to exist: OpenCode reads it, Cheap Agent never does.
+ * Each question's Enter keeps what is saved for the same URL (and, for the context and price, the same model).
  */
 async function localLogin(out: Output): Promise<boolean> {
-  let current: LocalServer | undefined;
-  try {
-    current = localServer();
-  } catch {} // a damaged entry is replaced
+  const current = readSaved(localServer);
   out(
     "e.g. llama.cpp http://127.0.0.1:8080/v1, Ollama http://127.0.0.1:11434/v1, or a gateway's https://…/v1",
   );
-  let base = (
-    (await ask(`Server URL [Enter = ${current?.base_url ?? LOCAL_URL}]: `)) ||
-    current?.base_url ||
-    LOCAL_URL
-  ).replace(/\/+$/, "");
-  if (!/^https?:\/\/\S+$/.test(base)) {
-    out(`✗ "${base}" is not an http(s) URL; nothing changed`);
-    return false;
+  const server = await askServer(current, out);
+  if (!server) return false;
+  const { base, listed } = server;
+  const keep = current?.base_url === base ? current : undefined;
+  const keySetting = await askKey(keep, out);
+  if (!keySetting) return false;
+  const model = await askModel(listed, keep, out);
+  if (!model) return false;
+  const sameModel = keep?.model === model ? keep : undefined;
+  const contextSetting = await askContext({ base, model, kept: sameModel?.context }, out);
+  if (!contextSetting) return false;
+  const priceSetting = await askPrice(sameModel?.price, out);
+  if (!priceSetting) return false;
+
+  const local: LocalServer = {
+    base_url: base,
+    model,
+    ...keySetting,
+    ...contextSetting,
+    ...priceSetting,
+  };
+  if (!updateUser((user) => ({ ...user, local }), out, "local server not saved")) return false;
+  out(`✓ Custom endpoint: ${model} at ${base}, saved in ${userConfigFile()}`);
+  return true;
+}
+
+/** The saved entry `read` returns; undefined when there is none or it is damaged, since login replaces it. */
+function readSaved<T>(read: () => T | undefined): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
   }
-  if (base.startsWith("http:") && !privateHost(base)) {
-    out(
-      `✗ plain http to a public host would send code and key unencrypted; use https (plain http is only for this machine or a private network); nothing changed`,
-    );
-    return false;
+}
+
+/** Why `base` cannot be used, or undefined: not http(s), or plain http to a public host (`publicHttp` says why). */
+function urlProblem(base: string, publicHttp: string): string | undefined {
+  if (!/^https?:\/\/\S+$/.test(base)) return `✗ "${base}" is not an http(s) URL; nothing changed`;
+  if (base.startsWith("http:") && !privateHost(base)) return publicHttp;
+  return undefined;
+}
+
+type ModelList = string[] | "auth" | "unreachable";
+
+/** The server URL and what its /models lists; undefined when the URL is refused, after saying why. */
+async function askServer(
+  current: LocalServer | undefined,
+  out: Output,
+): Promise<{ base: string; listed: ModelList } | undefined> {
+  const answer = await ask(`Server URL [Enter = ${current?.base_url ?? LOCAL_URL}]: `);
+  let base = (answer || current?.base_url || LOCAL_URL).replace(/\/+$/, "");
+  const problem = urlProblem(
+    base,
+    `✗ plain http to a public host would send code and key unencrypted; use https (plain http is only for this machine or a private network); nothing changed`,
+  );
+  if (problem) {
+    out(problem);
+    return undefined;
   }
   let listed = await listModels(base);
   // most servers serve the OpenAI API under /v1: accept the bare host too
   if (listed === "unreachable" && !base.endsWith("/v1")) {
-    const v1 = await listModels(`${base}/v1`);
-    if (v1 !== "unreachable") [base, listed] = [`${base}/v1`, v1];
+    const listedUnderV1 = await listModels(`${base}/v1`);
+    if (listedUnderV1 !== "unreachable") [base, listed] = [`${base}/v1`, listedUnderV1];
   }
   if (listed === "unreachable")
     out(
       `! ${base}/models did not answer; is the server running? Continuing, the live check will tell.`,
     );
+  return { base, listed };
+}
 
-  const keep = current?.base_url === base ? current : undefined;
+type KeySetting = Pick<LocalServer, "api_key_file" | "api_key_env">;
+
+/** The key: an environment variable name or a key file path, "none" for no key; undefined when refused, after saying why. */
+async function askKey(keep: LocalServer | undefined, out: Output): Promise<KeySetting | undefined> {
   const keptKey = keep?.api_key_env ?? keep?.api_key_file;
-  const keyAnswer = await ask(
+  const answer = await ask(
     `API key, if the endpoint needs one: an environment variable name (e.g. MY_GATEWAY_KEY) or a key file path [Enter = ${keptKey ?? "none"}, "none" to clear]: `,
   );
-  let keyFile = keyAnswer ? undefined : keep?.api_key_file;
-  let keyEnv = keyAnswer ? undefined : keep?.api_key_env;
+  if (!answer) return keptKeySetting(keep);
+  if (answer === "none") return {};
   // upper case only: a key pasted here by mistake (mixed case) must never be saved as a variable name
-  if (/^[A-Z_][A-Z0-9_]{0,63}$/.test(keyAnswer)) {
-    keyEnv = keyAnswer;
+  if (/^[A-Z_][A-Z0-9_]{0,63}$/.test(answer)) {
     // only whether it is set: its value is OpenCode's to read
-    if (!process.env[keyEnv])
+    if (!process.env[answer])
       out(
-        `! ${keyEnv} is not set in this shell; set it where Claude Code starts, or jobs will fail with a key error`,
+        `! ${answer} is not set in this shell; set it where Claude Code starts, or jobs will fail with a key error`,
       );
-  } else if (keyAnswer && keyAnswer !== "none") {
-    keyFile = keyAnswer.replace(/^~(?=$|[\\/])/, homedir());
-    if (!isAbsolute(keyFile) || !existsSync(keyFile)) {
-      // not echoed: a key pasted here by mistake stays off the screen
-      out(
-        "✗ not an environment variable name and no such file: give a variable name, or the absolute path of a file holding only the key; nothing changed",
-      );
-      return false;
-    }
+    return { api_key_env: answer };
   }
+  const keyFile = answer.replace(/^~(?=$|[\\/])/, homedir());
+  if (!isAbsolute(keyFile) || !existsSync(keyFile)) {
+    // not echoed: a key pasted here by mistake stays off the screen
+    out(
+      "✗ not an environment variable name and no such file: give a variable name, or the absolute path of a file holding only the key; nothing changed",
+    );
+    return undefined;
+  }
+  return { api_key_file: keyFile };
+}
 
+/** The key setting saved for this URL, as it was. */
+function keptKeySetting(keep: LocalServer | undefined): KeySetting {
+  return {
+    ...(keep?.api_key_file && { api_key_file: keep.api_key_file }),
+    ...(keep?.api_key_env && { api_key_env: keep.api_key_env }),
+  };
+}
+
+/** The model: picked from the server's list, else typed; undefined when none is given, after saying so. */
+async function askModel(
+  listed: ModelList,
+  keep: LocalServer | undefined,
+  out: Output,
+): Promise<string | undefined> {
   let model: string | undefined;
   if (Array.isArray(listed) && listed.length) {
     const fallback = keep && listed.includes(keep.model) ? keep.model : listed[0];
-    model =
-      listed[
-        await select(
-          "Model:",
-          listed.map((id) => ({ label: id })),
-          listed.indexOf(fallback),
-        )
-      ];
+    const options = listed.map((id) => ({ label: id }));
+    model = listed[await select("Model:", options, listed.indexOf(fallback))];
   } else {
     if (listed === "auth")
       out("The server wants a key to list its models; type the model id instead.");
-    model =
-      (await ask(`Model id, as the server names it${keep ? ` [Enter = ${keep.model}]` : ""}: `)) ||
-      keep?.model;
+    const enterHint = keep ? ` [Enter = ${keep.model}]` : "";
+    model = (await ask(`Model id, as the server names it${enterHint}: `)) || keep?.model;
   }
   if (!model) {
     out("✗ no model given; nothing changed");
-    return false;
+    return undefined;
   }
+  return model;
+}
 
+/** The context window, detected when the server says; undefined when the answer is not a number of tokens. */
+async function askContext(
+  { base, model, kept }: { base: string; model: string; kept: number | undefined },
+  out: Output,
+): Promise<Pick<LocalServer, "context"> | undefined> {
   const detected = await contextOf(base, model);
-  const known = detected ?? (keep?.model === model ? keep.context : undefined);
-  const ctxAnswer = await ask(
+  const known = detected ?? kept;
+  const answer = await ask(
     `Context window in tokens${detected ? " (detected)" : ""} [Enter = ${known ?? "unknown"}]: `,
   );
-  const context = ctxAnswer ? Number(ctxAnswer.replace(/[_,]/g, "").replace(/k$/i, "000")) : known;
+  const context = answer ? Number(answer.replace(/[_,]/g, "").replace(/k$/i, "000")) : known;
   if (context !== undefined && !(Number.isInteger(context) && context > 0)) {
-    out(`✗ "${ctxAnswer}" is not a number of tokens; nothing changed`);
-    return false;
+    out(`✗ "${answer}" is not a number of tokens; nothing changed`);
+    return undefined;
   }
   if (context === undefined)
     out(
       "! Context window unknown: OpenCode cannot compact a long job before the server rejects it. Set local.context later if jobs fail on long sessions.",
     );
+  return { ...(context && { context }) };
+}
 
-  const keptPrice = keep?.model === model ? keep.price : undefined;
-  const priceAnswer = await ask(
-    `Price in USD per million tokens, input/output, for spend tracking and the cost cap [Enter = ${keptPrice ? `${keptPrice.input}/${keptPrice.output}` : "none"}]: `,
+/** The price per million tokens, input/output; undefined when the answer is not two prices, after saying so. */
+async function askPrice(
+  kept: LocalServer["price"],
+  out: Output,
+): Promise<Pick<LocalServer, "price"> | undefined> {
+  const shown = kept ? `${kept.input}/${kept.output}` : "none";
+  const answer = await ask(
+    `Price in USD per million tokens, input/output, for spend tracking and the cost cap [Enter = ${shown}]: `,
   );
-  const priced = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(priceAnswer);
-  if (priceAnswer && !priced) {
-    out(`✗ "${priceAnswer}" is not input/output prices, e.g. 0.27/1.10; nothing changed`);
-    return false;
+  const priced = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(answer);
+  if (answer && !priced) {
+    out(`✗ "${answer}" is not input/output prices, e.g. 0.27/1.10; nothing changed`);
+    return undefined;
   }
-  const price = priced ? { input: Number(priced[1]), output: Number(priced[2]) } : keptPrice;
-
-  const local: LocalServer = {
-    base_url: base,
-    model,
-    ...(keyFile && { api_key_file: keyFile }),
-    ...(keyEnv && { api_key_env: keyEnv }),
-    ...(context && { context }),
-    ...(price && { price }),
-  };
-  if (!updateUser((user) => ({ ...user, local }), out, "local server not saved")) return false;
-  out(`✓ Custom endpoint: ${model} at ${base}, saved in ${userConfigFile()}`);
-  return true;
+  const price = priced ? { input: Number(priced[1]), output: Number(priced[2]) } : kept;
+  return { ...(price && { price }) };
 }
 
 /**
@@ -593,7 +651,7 @@ function saveOllama(ollama: OllamaConfig, out: Output) {
 }
 
 /** The server's model ids from GET /models, "auth" when it wants a key for that, "unreachable" when it does not answer as an OpenAI API. */
-async function listModels(base: string): Promise<string[] | "auth" | "unreachable"> {
+async function listModels(base: string): Promise<ModelList> {
   try {
     const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5_000) });
     if (res.status === 401 || res.status === 403) return "auth";
