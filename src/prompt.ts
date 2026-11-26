@@ -1,9 +1,9 @@
 import { emitKeypressEvents } from "node:readline";
 
 type Option = { label: string; hint?: string };
-type In = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
+type RawInput = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
 
-const WINDOW = 12;
+const MAX_VISIBLE_ROWS = 12;
 
 /**
  * An arrow-key list on a terminal: ↑/↓ move, Enter picks, typing a number jumps to that row, Ctrl-C exits 130.
@@ -14,62 +14,70 @@ export function select(
   question: string,
   options: Option[],
   initial = 0,
-  io: { input?: In; output?: NodeJS.WriteStream } = {},
+  io: { input?: RawInput; output?: NodeJS.WriteStream } = {},
 ): Promise<number> {
-  const input = io.input ?? (process.stdin as In);
+  const input = io.input ?? (process.stdin as RawInput);
   const output = io.output ?? process.stdout;
   return new Promise((resolve, reject) => {
     let index = Math.min(Math.max(initial, 0), options.length - 1);
-    let typed = "";
-    let drawn = 0;
-    const size = Math.min(options.length, WINDOW);
-    const fit = (line: string) => line.slice(0, (output.columns || 100) - 1);
+    let typedNumber = "";
+    let drawnLineCount = 0;
+    const visibleRowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
+    const fitToWidth = (line: string) => line.slice(0, (output.columns || 100) - 1);
     const draw = () => {
-      const top = Math.min(Math.max(index - Math.floor(size / 2), 0), options.length - size);
+      const first = Math.min(
+        Math.max(index - Math.floor(visibleRowCount / 2), 0),
+        options.length - visibleRowCount,
+      );
       const rows = options
-        .slice(top, top + size)
-        .map((o, i) =>
-          fit(
-            `${top + i === index ? "❯" : " "} ${top + i + 1}) ${o.label}${o.hint ? `  ${o.hint}` : ""}`,
+        .slice(first, first + visibleRowCount)
+        .map((option, offset) =>
+          fitToWidth(
+            `${first + offset === index ? "❯" : " "} ${first + offset + 1}) ${option.label}${option.hint ? `  ${option.hint}` : ""}`,
           ),
         );
-      if (drawn) output.write(`\x1b[${drawn}A\x1b[J`);
+      if (drawnLineCount) output.write(`\x1b[${drawnLineCount}A\x1b[J`);
       output.write([question, ...rows].join("\n") + "\n");
-      drawn = rows.length + 1;
+      drawnLineCount = rows.length + 1;
     };
-    const done = () => {
-      input.off("keypress", onKey);
+    const releaseTerminal = () => {
+      input.off("keypress", onKeypress);
       input.setRawMode?.(false);
       input.pause();
       output.write("\x1b[?25h");
     };
-    function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean } = {}) {
+    function onKeypress(
+      character: string | undefined,
+      key: { name?: string; ctrl?: boolean } = {},
+    ) {
       try {
         if (key.ctrl && key.name === "c") {
-          done();
+          releaseTerminal();
           process.exit(130);
         } else if (key.name === "return") {
-          done();
-          output.write(`\x1b[${drawn}A\x1b[J${question} ${options[index].label}\n`);
+          releaseTerminal();
+          output.write(`\x1b[${drawnLineCount}A\x1b[J${question} ${options[index].label}\n`);
           return resolve(index);
         } else if (key.name === "up" || key.name === "down") {
-          typed = "";
+          typedNumber = "";
           index = (index + (key.name === "up" ? -1 : 1) + options.length) % options.length;
-        } else if (str && /^\d$/.test(str)) {
-          typed = Number(typed + str) > options.length ? str : typed + str;
-          if (Number(typed) >= 1 && Number(typed) <= options.length) index = Number(typed) - 1;
+        } else if (character && /^\d$/.test(character)) {
+          typedNumber =
+            Number(typedNumber + character) > options.length ? character : typedNumber + character;
+          if (Number(typedNumber) >= 1 && Number(typedNumber) <= options.length)
+            index = Number(typedNumber) - 1;
         }
         draw();
-      } catch (err) {
-        done();
-        reject(err);
+      } catch (error) {
+        releaseTerminal();
+        reject(error);
       }
     }
     emitKeypressEvents(input);
     input.setRawMode?.(true);
     input.resume();
     output.write("\x1b[?25l");
-    input.on("keypress", onKey);
+    input.on("keypress", onKeypress);
     draw();
   });
 }
