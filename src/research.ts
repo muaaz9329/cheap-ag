@@ -6,6 +6,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { type Event, type ToolPart } from "@opencode-ai/sdk/v2";
 import { isAbsolute, basename, join, relative } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
@@ -15,7 +16,7 @@ import { holdOpencode, type Opencode } from "./opencode.js";
 import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
-import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
+import { chain, modelName, recordSpend, runRouted, type Chain, type Route } from "./routing.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
 import {
   callRoot,
@@ -72,7 +73,6 @@ export async function research(
     return failBlock(
       `this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"`,
     );
-  const { limits } = config;
   const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
 
   const opencode = await ctx.opencode(gate.route);
@@ -90,125 +90,38 @@ export async function research(
   });
 
   const prompt = researchPrompt(input.question, scope, maxWords);
-  const files = new Set<string>();
-  const ran: string[] = []; // the commands the worker actually ran: a claimed reproduction must be one of them
-  const spent = { turns: 0, calls: 0, costUsd: 0 };
-  let text = "";
-  let error: string | undefined;
-  let budget: string | undefined;
-  let providerDown: string | undefined;
-  // set from event callbacks: keep TS from narrowing it to undefined
-  let stopped = undefined as
-    { status: "FAIL" | "BUDGET"; reason: string; cap?: "turns" } | undefined;
-  let partialText = "";
-  let worktree: Worktree | undefined;
+  let run: WorkerRun;
   try {
-    worktree = createWorktree(root, id, config.link_dirs);
-    const { scripts, exact } = projectScripts(worktree.path);
-    const permission = researchRuleset({
-      scripts,
-      exact: [...exact, ...(config.test_cmd ? checkAllows(config.test_cmd) : [])],
-      allowCommands: config.allow_commands,
-    });
-    const halt = new AbortController();
-    const stop = (why: NonNullable<typeof stopped>) => {
-      stopped ??= why;
-      if (why.cap !== "turns") halt.abort(); // a turn cap lets the turn end: partialAnswer() needs a live session (as src/jobs.ts)
-    };
-    const timer = setTimeout(
-      () => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }),
-      limits.max_minutes * 60_000,
-    );
-    const session: Session = await openSession({
-      opencode,
-      directory: worktree.path,
-      model: models.first,
-      agent: RESEARCH_AGENT,
-      permission,
-      signal: halt.signal,
-      onEvent: (event, turns) => {
-        appendFileSync(join(directory, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
-        if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
-          const { tool, state } = event.properties.part;
-          if (state.status === "completed" && tool === "read")
-            files.add(String(state.input.filePath));
-          if (state.status === "completed" && tool === "bash")
-            // oxlint-disable-next-line typescript/no-base-to-string -- safer cast changes the text
-            ran.push(String(state.input.command ?? ""));
-          if (state.status === "completed" || state.status === "error") {
-            ctx.progress(turns, `turn ${turns}: ${tool}`);
-            if (turns >= limits.max_turns)
-              stop({
-                status: "FAIL",
-                reason: `turn cap (${limits.max_turns}) reached`,
-                cap: "turns",
-              });
-          }
-        }
-        if (
-          event.type === "message.updated" &&
-          session.totals().usage.costUsd >= limits.max_cost_usd
-        ) {
-          stop({
-            status: "BUDGET",
-            reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached`,
-          });
-        }
-      },
-    });
-    try {
-      // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
-      ({
-        text,
-        error,
-        budget,
-        provider: providerDown,
-      } = await runRouted(session, prompt, models, ctx.provider.provider));
-      // only a turn cap recovers: the worker read the code, so one no-tool prompt gets what it found (minute/cost caps are about spend)
-      if (stopped?.cap === "turns") partialText = await partialAnswer(session);
-    } finally {
-      clearTimeout(timer);
-      const totals = session.totals();
-      spent.turns = totals.turns;
-      spent.calls = totals.calls;
-      spent.costUsd = totals.usage.costUsd;
-      try {
-        recordSpend(totals.spend); // research draws on the same Go windows as jobs
-      } catch {
-        // the ledger only steers later escalations: never fail an answer over it
-      }
-    }
-  } catch (err) {
-    error = (err as Error).message;
+    run = await runWorker({ root, id, directory, config, opencode, models, prompt, ctx });
   } finally {
     release(); // the session is done: a config change may reboot OpenCode now
   }
 
   const recovered =
-    stopped?.cap === "turns" && partialText
-      ? verifyRepro(parseAnswer(partialText, root, scope, maxWords), ran)
+    run.stopped?.cap === "turns" && run.partialText
+      ? verifyRepro(parseAnswer(run.partialText, root, scope, maxWords), run.ran)
       : undefined;
   const none = (status: Answer["status"]): Answer => ({ status, answer: "", refs: [] });
   let answer: Answer = recovered
     ? { ...recovered, partial: true }
-    : stopped
-      ? none(stopped.status)
-      : providerDown
+    : run.stopped
+      ? none(run.stopped.status)
+      : run.providerDown
         ? none("FAIL")
-        : budget
+        : run.budget
           ? none("BUDGET")
-          : error
+          : run.error
             ? none("FAIL")
-            : (verifyRepro(parseAnswer(text, root, scope, maxWords), ran) ?? none("FAIL"));
+            : (verifyRepro(parseAnswer(run.text, root, scope, maxWords), run.ran) ?? none("FAIL"));
   // a path resolved by basename says so in the notes, so Claude learns the entry was approximate
   if (resolvedPaths.length)
     answer = { ...answer, answer: [...resolvedPaths, answer.answer].filter(Boolean).join("\n") };
   const reason =
-    stopped?.reason ??
-    (providerDown ? `provider down: ${providerDown}` : undefined) ??
-    budget ??
-    (error
-      ? `worker error: ${error}`
+    run.stopped?.reason ??
+    (run.providerDown ? `provider down: ${run.providerDown}` : undefined) ??
+    run.budget ??
+    (run.error
+      ? `worker error: ${run.error}`
       : answer.status === "FAIL"
         ? "the research worker gave no answer"
         : undefined);
@@ -222,10 +135,10 @@ export async function research(
     scope,
     ...answer,
     reason,
-    filesRead: files.size,
+    filesRead: run.files.size,
     unlanded: unlandedJobs(root),
     models: { requested: modelName(models.first), final: modelName(final) },
-    usage: spent,
+    usage: run.spent,
     timing: { startedAt, endedAt: new Date(), ms: Date.now() - startedAt.getTime() },
     cleanupError: undefined as string | undefined,
     worktree: undefined as string | undefined,
@@ -238,19 +151,166 @@ export async function research(
     writeLog(directory, "result.txt", block + "\n");
   };
   save();
-  if (worktree) {
+  if (run.worktree) {
     try {
-      await releaseDirectory(worktree.path); // release before the worktree is removed
-      removeWorktree(root, worktree);
+      await releaseDirectory(run.worktree.path); // release before the worktree is removed
+      removeWorktree(root, run.worktree);
     } catch (err) {
       // Cleanup failure must not replace the worker's answer or its original error.
       record.cleanupError = (err as Error).message;
-      record.worktree = normalisePath(relative(root, worktree.path));
+      record.worktree = normalisePath(relative(root, run.worktree.path));
       save();
     }
   }
   if (answer.status === "ANSWER") gzipEvents(directory);
   return block;
+}
+
+/** A cap that stopped the worker early, and the status it gives the answer. */
+type Stop = { status: "FAIL" | "BUDGET"; reason: string; cap?: "turns" };
+
+/** What one research run needs once its inputs are checked. */
+type WorkerJob = {
+  root: string;
+  id: string;
+  /** The research log folder. */
+  directory: string;
+  config: Config;
+  opencode: Opencode;
+  models: Chain;
+  prompt: string;
+  ctx: Parameters<typeof research>[1];
+};
+
+/** What the worker left behind: its reply or error, the cap that stopped it, and what it read, ran and spent. */
+type WorkerRun = {
+  text: string;
+  error?: string;
+  budget?: string;
+  providerDown?: string;
+  stopped?: Stop;
+  partialText: string;
+  worktree?: Worktree;
+  files: Set<string>;
+  /** The commands the worker actually ran: a claimed reproduction must be one of them. */
+  ran: string[];
+  spent: { turns: number; calls: number; costUsd: number };
+};
+
+/** Runs the worker in a throwaway worktree. Any error is kept in the run, not thrown, so the record still gets written. */
+async function runWorker(job: WorkerJob): Promise<WorkerRun> {
+  const run: WorkerRun = {
+    text: "",
+    partialText: "",
+    files: new Set<string>(),
+    ran: [],
+    spent: { turns: 0, calls: 0, costUsd: 0 },
+  };
+  try {
+    run.worktree = createWorktree(job.root, job.id, job.config.link_dirs);
+    await askWorker(job, run, run.worktree.path);
+  } catch (error) {
+    run.error = (error as Error).message;
+  }
+  return run;
+}
+
+/** Asks the question in a read-only session in `directory`, under the run's caps, and records what the session spent. */
+async function askWorker(job: WorkerJob, run: WorkerRun, directory: string) {
+  const permission = researchPermission(directory, job.config);
+  const caps = startCaps(run, job.config.limits);
+  const watch: EventWatch = { job, run, stop: caps.stop, totals: () => session.totals() };
+  const session: Session = await openSession({
+    opencode: job.opencode,
+    directory,
+    model: job.models.first,
+    agent: RESEARCH_AGENT,
+    permission,
+    signal: caps.signal,
+    onEvent: (event, turns) => watchEvent(watch, event, turns),
+  });
+  try {
+    // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
+    const result = await runRouted(session, job.prompt, job.models, job.ctx.provider.provider);
+    run.text = result.text;
+    run.error = result.error;
+    run.budget = result.budget;
+    run.providerDown = result.provider;
+    // only a turn cap recovers: the worker read the code, so one no-tool prompt gets what it found (minute/cost caps are about spend)
+    if (run.stopped?.cap === "turns") run.partialText = await partialAnswer(session);
+  } finally {
+    clearTimeout(caps.timer);
+    const totals = session.totals();
+    run.spent.turns = totals.turns;
+    run.spent.calls = totals.calls;
+    run.spent.costUsd = totals.usage.costUsd;
+    try {
+      recordSpend(totals.spend); // research draws on the same Go windows as jobs
+    } catch {
+      // the ledger only steers later escalations: never fail an answer over it
+    }
+  }
+}
+
+/** The worker's read-only ruleset, allowing the project's own scripts and its test command. */
+function researchPermission(directory: string, config: Config) {
+  const { scripts, exact } = projectScripts(directory);
+  return researchRuleset({
+    scripts,
+    exact: [...exact, ...(config.test_cmd ? checkAllows(config.test_cmd) : [])],
+    allowCommands: config.allow_commands,
+  });
+}
+
+/** Starts the minute cap. `stop` records the first cap reached; every cap but the turn cap also aborts the session. */
+function startCaps(run: WorkerRun, limits: Config["limits"]) {
+  const halt = new AbortController();
+  const stop = (why: Stop) => {
+    run.stopped ??= why;
+    if (why.cap !== "turns") halt.abort(); // a turn cap lets the turn end: partialAnswer() needs a live session (as src/jobs.ts)
+  };
+  const timer = setTimeout(
+    () => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }),
+    limits.max_minutes * 60_000,
+  );
+  return { signal: halt.signal, stop, timer };
+}
+
+/** What a session event can reach: the job, the run it records into, the caps and the session's totals. */
+type EventWatch = {
+  job: WorkerJob;
+  run: WorkerRun;
+  stop: (why: Stop) => void;
+  totals: () => ReturnType<Session["totals"]>;
+};
+
+/** Handles one session event: it is logged, a finished tool call is progress, and the turn and cost caps are checked. */
+function watchEvent(watch: EventWatch, event: Event, turns: number) {
+  const { job, run, stop } = watch;
+  const { limits } = job.config;
+  appendFileSync(join(job.directory, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+  if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+    const part = event.properties.part;
+    recordToolCall(run, part);
+    if (part.state.status === "completed" || part.state.status === "error") {
+      job.ctx.progress(turns, `turn ${turns}: ${part.tool}`);
+      if (turns >= limits.max_turns)
+        stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached`, cap: "turns" });
+    }
+  }
+  if (event.type === "message.updated" && watch.totals().usage.costUsd >= limits.max_cost_usd) {
+    stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
+  }
+}
+
+/** Records a completed read or bash call: the files read count in the record, the commands run back a repro. */
+function recordToolCall(run: WorkerRun, part: ToolPart) {
+  const { tool, state } = part;
+  if (state.status !== "completed") return;
+  if (tool === "read") run.files.add(String(state.input.filePath));
+  if (tool === "bash")
+    // oxlint-disable-next-line typescript/no-base-to-string -- safer cast changes the text
+    run.ran.push(String(state.input.command ?? ""));
 }
 
 /**
