@@ -267,36 +267,6 @@ function layout(record: JobRecord, cuts: Cuts, compact = false) {
     .join("\n");
 }
 
-/** The `error:` tail, cut to `limit` lines with its last line counting the rest. */
-function errorLines(error: string[], limit: number, check: JobRecord["check"]) {
-  const kept = error.slice(0, limit);
-  if (kept.length < error.length)
-    kept[kept.length - 1] = `  … +${error.length - kept.length + 1} more lines (see log)`;
-  const [first, ...rest] = kept;
-  // an env failure carries the reason first, then the ordinary tail (the command and its output)
-  if (check === "env") return [`error: environment: the check could not run (${first})`, ...rest];
-  return [`error: ${first}`, ...rest];
-}
-
-/** Every question asked, numbered when there are several, each with its lettered options. */
-function questionLines(record: JobRecord) {
-  const asked = record.questions ?? (record.question ? [record.question] : []);
-  return asked.flatMap((question, index) => {
-    const number = asked.length > 1 ? ` ${index + 1}` : "";
-    const lines = [`question${number}: ${oneLine(question.text)}`];
-    if (question.options.length) lines.push("options:", ...optionLines(question.options));
-    return lines;
-  });
-}
-
-/** Up to four options, lettered a) to d). */
-function optionLines(options: string[]) {
-  const letters = "abcd";
-  return options
-    .slice(0, letters.length)
-    .map((option, index) => `  ${letters[index]}) ${oneLine(option)}`);
-}
-
 /** The first line: status, job, steps, file counts, then the optional tokens in D3 order. */
 function jobHeadline(record: JobRecord) {
   const added = record.changed.reduce((total, file) => total + file.add, 0);
@@ -322,42 +292,6 @@ function jobHeadline(record: JobRecord) {
   ]
     .filter(Boolean)
     .join(" ");
-}
-
-/** The sections a status shows; RUNNING never reaches the layout. */
-function sectionsOf(record: JobRecord) {
-  return STATUS_SECTIONS[record.status as Exclude<JobStatus, "RUNNING">];
-}
-
-/** What went wrong: the conflict, the error tail, the worker's `found:` note, the fixes tried, the reason. */
-function problemLines(record: JobRecord, cuts: Cuts, foundLeads: boolean) {
-  const has = (section: Section) => sectionsOf(record).includes(section);
-  const lines: string[] = [];
-  if (has("conflict") && record.conflict?.length)
-    lines.push("conflict:", ...record.conflict.map((entry) => `  ${oneLine(entry)}`));
-  if (has("error") && record.error?.length)
-    lines.push(...errorLines(record.error, cuts.error, record.check));
-  if (has("found") && record.found && !foundLeads) lines.push(...foundLines(record.found));
-  if (has("tried") && record.tried?.length) {
-    const tried = record.tried.slice(-cuts.tried);
-    lines.push("tried:", ...tried.map((attempt) => `  - ${oneLine(attempt)}`));
-  }
-  if (has("reason") && record.reason) lines.push(`reason: ${oneLine(record.reason)}`);
-  return lines;
-}
-
-const PROVIDER_NEXT =
-  "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)";
-
-/** What comes next: PROVIDER's question for the user, the missing work, the worktree that holds it. */
-function followUpLines(record: JobRecord) {
-  const has = (section: Section) => sectionsOf(record).includes(section);
-  const lines: string[] = [];
-  if (record.status === "PROVIDER") lines.push(PROVIDER_NEXT);
-  if (has("missing") && record.missing.length)
-    lines.push("missing:", ...record.missing.map((item) => `  - ${oneLine(item)}`));
-  if (has("worktree") && record.worktree) lines.push(`worktree: ${record.worktree}/`);
-  return lines;
 }
 
 /** How a job block is shown: compacted in a batch, and whether `found:` took the summary's place. */
@@ -408,6 +342,72 @@ function changedLine(file: Changed) {
   const added = file.add ? ` +${file.add}` : "";
   const deleted = file.del ? ` -${file.del}` : "";
   return `  ${file.status} ${file.path}${added}${deleted}`;
+}
+
+/** Every question asked, numbered when there are several, each with its lettered options. */
+function questionLines(record: JobRecord) {
+  const asked = record.questions ?? (record.question ? [record.question] : []);
+  return asked.flatMap((question, index) => {
+    const number = asked.length > 1 ? ` ${index + 1}` : "";
+    const lines = [`question${number}: ${oneLine(question.text)}`];
+    if (question.options.length) lines.push("options:", ...optionLines(question.options));
+    return lines;
+  });
+}
+
+/** Up to four options, lettered a) to d). */
+function optionLines(options: string[]) {
+  const letters = "abcd";
+  return options
+    .slice(0, letters.length)
+    .map((option, index) => `  ${letters[index]}) ${oneLine(option)}`);
+}
+
+/** The sections a status shows; RUNNING never reaches the layout. */
+function sectionsOf(record: JobRecord) {
+  return STATUS_SECTIONS[record.status as Exclude<JobStatus, "RUNNING">];
+}
+
+/** What went wrong: the conflict, the error tail, the worker's `found:` note, the fixes tried, the reason. */
+function problemLines(record: JobRecord, cuts: Cuts, foundLeads: boolean) {
+  const has = (section: Section) => sectionsOf(record).includes(section);
+  const lines: string[] = [];
+  if (has("conflict") && record.conflict?.length)
+    lines.push("conflict:", ...record.conflict.map((entry) => `  ${oneLine(entry)}`));
+  if (has("error") && record.error?.length)
+    lines.push(...errorLines(record.error, cuts.error, record.check));
+  if (has("found") && record.found && !foundLeads) lines.push(...foundLines(record.found));
+  if (has("tried") && record.tried?.length) {
+    const tried = record.tried.slice(-cuts.tried);
+    lines.push("tried:", ...tried.map((attempt) => `  - ${oneLine(attempt)}`));
+  }
+  if (has("reason") && record.reason) lines.push(`reason: ${oneLine(record.reason)}`);
+  return lines;
+}
+
+/** The `error:` tail, cut to `limit` lines with its last line counting the rest. */
+function errorLines(error: string[], limit: number, check: JobRecord["check"]) {
+  const kept = error.slice(0, limit);
+  if (kept.length < error.length)
+    kept[kept.length - 1] = `  … +${error.length - kept.length + 1} more lines (see log)`;
+  const [first, ...rest] = kept;
+  // an env failure carries the reason first, then the ordinary tail (the command and its output)
+  if (check === "env") return [`error: environment: the check could not run (${first})`, ...rest];
+  return [`error: ${first}`, ...rest];
+}
+
+const PROVIDER_NEXT =
+  "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)";
+
+/** What comes next: PROVIDER's question for the user, the missing work, the worktree that holds it. */
+function followUpLines(record: JobRecord) {
+  const has = (section: Section) => sectionsOf(record).includes(section);
+  const lines: string[] = [];
+  if (record.status === "PROVIDER") lines.push(PROVIDER_NEXT);
+  if (has("missing") && record.missing.length)
+    lines.push("missing:", ...record.missing.map((item) => `  - ${oneLine(item)}`));
+  if (has("worktree") && record.worktree) lines.push(`worktree: ${record.worktree}/`);
+  return lines;
 }
 
 /** D7. A research CONSENT renders through `renderConsent`. */
