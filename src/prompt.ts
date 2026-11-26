@@ -4,6 +4,16 @@ type Option = { label: string; hint?: string };
 type RawInput = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
 
 const MAX_VISIBLE_ROWS = 12;
+const DEFAULT_COLUMNS = 100;
+// what a shell reports for a program stopped by Ctrl-C: 128 + SIGINT (2)
+const EXIT_CODE_INTERRUPTED = 130;
+const HIDE_CURSOR = "\x1b[?25l";
+const SHOW_CURSOR = "\x1b[?25h";
+
+/** Moves the cursor up to the first drawn line and clears from there down, so the next write replaces the drawing. */
+function eraseLinesAbove(lineCount: number) {
+  return `\x1b[${lineCount}A\x1b[J`;
+}
 
 /**
  * An arrow-key list on a terminal: ↑/↓ move, Enter picks, typing a number jumps to that row, Ctrl-C exits 130.
@@ -23,7 +33,7 @@ export function select(
     let typedNumber = "";
     let drawnLineCount = 0;
     const visibleRowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
-    const fitToWidth = (line: string) => line.slice(0, (output.columns || 100) - 1);
+    const fitToWidth = (line: string) => line.slice(0, (output.columns || DEFAULT_COLUMNS) - 1);
     const draw = () => {
       const first = Math.min(
         Math.max(index - Math.floor(visibleRowCount / 2), 0),
@@ -36,7 +46,7 @@ export function select(
             `${first + offset === index ? "❯" : " "} ${first + offset + 1}) ${option.label}${option.hint ? `  ${option.hint}` : ""}`,
           ),
         );
-      if (drawnLineCount) output.write(`\x1b[${drawnLineCount}A\x1b[J`);
+      if (drawnLineCount) output.write(eraseLinesAbove(drawnLineCount));
       output.write([question, ...rows].join("\n") + "\n");
       drawnLineCount = rows.length + 1;
     };
@@ -44,7 +54,7 @@ export function select(
       input.off("keypress", onKeypress);
       input.setRawMode?.(false);
       input.pause();
-      output.write("\x1b[?25h");
+      output.write(SHOW_CURSOR);
     };
     function onKeypress(
       character: string | undefined,
@@ -53,10 +63,10 @@ export function select(
       try {
         if (key.ctrl && key.name === "c") {
           releaseTerminal();
-          process.exit(130);
+          process.exit(EXIT_CODE_INTERRUPTED);
         } else if (key.name === "return") {
           releaseTerminal();
-          output.write(`\x1b[${drawnLineCount}A\x1b[J${question} ${options[index].label}\n`);
+          output.write(`${eraseLinesAbove(drawnLineCount)}${question} ${options[index].label}\n`);
           return resolve(index);
         } else if (key.name === "up" || key.name === "down") {
           typedNumber = "";
@@ -76,7 +86,7 @@ export function select(
     emitKeypressEvents(input);
     input.setRawMode?.(true);
     input.resume();
-    output.write("\x1b[?25l");
+    output.write(HIDE_CURSOR);
     input.on("keypress", onKeypress);
     draw();
   });
