@@ -1,4 +1,14 @@
-import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
+import {
+  createOpencodeClient,
+  type AssistantMessage,
+  type Event,
+  type EventPermissionAsked,
+  type EventQuestionAsked,
+  type Part,
+  type PermissionRequest,
+  type SessionStatus,
+  type ToolPart,
+} from "@opencode-ai/sdk/v2";
 import { authHeaders, runningOpencode, type Opencode } from "./opencode.js";
 import { NO_SUMMARY } from "./report.js";
 import {
@@ -15,9 +25,9 @@ import { modelName, type Limit, type WorkerModel } from "./routing.js";
 export const WORKER_AGENT = "cheapag-worker";
 /** How long an aborted prompt may take to go idle before its run is ended anyway. */
 const ABORT_GRACE_MS = 10_000;
-/** The worker is told not to retry a command the user refused, or a variant of it (ticket 69). */
+/** The worker is told not to retry a command the user refused, or a variant of it. */
 const REFUSED_MESSAGE = "the user refused this command; don't retry it or a variant";
-/** At most this many bash commands are put to the user per job; later asks are rejected as today. */
+/** At most this many bash commands are put to the user per job; later asks get the usual rejection. */
 const MAX_PERMISSION_ASKS = 3;
 
 /**
@@ -75,6 +85,38 @@ export type PermissionAsk = {
 /** The user's answer: allow once, always allow the prefix this job (and save it), or refuse. */
 export type PermissionAnswer = "once" | "always" | "reject";
 
+/** One prompt in flight: how to stop it, and what its events have shown so far. */
+type PromptState = {
+  /** The model this prompt runs on, when it is not the session's. */
+  model?: WorkerModel;
+  /** Ends the session (a cap or cancel); none for the prompt after a stop. */
+  signal?: AbortSignal;
+  /** Aborts the prompt in OpenCode, and drops the event stream if it never goes idle. */
+  stop: () => void;
+  /** Text part id → its message and latest text. */
+  texts: Map<string, PartText>;
+  /** Reasoning part id → its message and latest text. */
+  reasonings: Map<string, PartText>;
+  finish?: FinishReport;
+  error?: string;
+  httpStatus?: number;
+  limit?: Limit;
+};
+/** The latest text of a text or reasoning part, and the message it belongs to. */
+type PartText = { messageID: string; text: string };
+/**
+ * What the event loop does once an event is handled: `log` passes it to onEvent, `logged` skips that because it was
+ * passed before a long wait, `stop` ends the prompt because OpenCode did not take a reply.
+ */
+type AfterEvent = "log" | "logged" | "stop";
+/** A permission request with the command it is for, that command's prefix, and the text it is recorded under. */
+type AskedPermission = {
+  request: PermissionRequest;
+  command: string;
+  prefix: string;
+  what: string;
+};
+
 /**
  * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
  * session goes idle; self-fixes and escalation are further `run`s of the same session.
@@ -118,7 +160,7 @@ export async function openSession(opts: {
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
   const toolInputs = new Map<string, Record<string, unknown>>(); // tool call id → its input, to title a bash ask
-  let permissionAsks = 0; // a job asks at most MAX_PERMISSION_ASKS times; later asks are rejected as today
+  let permissionAsks = 0; // a job asks at most MAX_PERMISSION_ASKS times
   const allowedPrefixes = new Set<string>(); // "always allow" prefixes granted this job
   const refusedCommands = new Set<string>(); // the user refused these exact commands; repeats are rejected without asking
 
@@ -145,263 +187,284 @@ export async function openSession(opts: {
     const { stream } = await client.event.subscribe({ directory }, { signal: abort.signal });
     await stream.next();
     try {
-      const texts = new Map<string, { messageID: string; text: string }>(); // text part id → latest text
-      const reasonings = new Map<string, { messageID: string; text: string }>(); // reasoning part id → latest text
-      let idle = false;
-      let finish: FinishReport | undefined;
-      let error: string | undefined;
-      let httpStatus: number | undefined;
-      let limit: Limit | undefined;
-
-      const variant = (model ?? opts.model).variant;
-      const prompted = await client.session.promptAsync({
-        // OpenCode ignores the agent given at session.create, so every bench before 1.3.3 ran OpenCode's built-in build agent; passing ours on each prompt made the worker slower on bug fixes (ticket 63), so prompts carry no agent
-        sessionID,
-        directory,
-        parts: [{ type: "text", text: prompt }],
-        ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
-        ...(variant && { variant }),
-      });
-      if (prompted.error)
-        throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+      const current: PromptState = {
+        model,
+        signal,
+        stop,
+        texts: new Map(),
+        reasonings: new Map(),
+      };
+      await sendPrompt(prompt, model);
       // after the prompt, so an abort can never race ahead of it
-      signal?.addEventListener("abort", stop, { once: true });
-      if (signal?.aborted) stop();
-      interrupt?.addEventListener("abort", stop, { once: true });
-      if (interrupt?.aborted) stop();
-
-      for await (const raw of stream) {
-        const event = raw as Event;
-        const props = event.properties as { sessionID?: string };
-        if (props.sessionID !== sessionID) continue;
-
-        if (event.type === "message.part.updated") {
-          const part = event.properties.part;
-          if (part.type === "tool" && part.state.input && typeof part.state.input === "object")
-            toolInputs.set(part.callID, part.state.input as Record<string, unknown>);
-          if (
-            part.type === "tool" &&
-            (part.state.status === "completed" || part.state.status === "error")
-          ) {
-            // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
-            if (
-              !calls.has(part.callID) &&
-              part.state.status === "error" &&
-              part.state.error.startsWith("The user has specified a rule which prevents")
-            ) {
-              rejections.push({
-                kind: "denied",
-                permission: part.tool,
-                what: describeCall(part.state.input),
-              });
-            }
-            calls.add(part.callID);
-            rounds.add(part.messageID);
-            if (part.tool === "finish" && part.state.status === "completed")
-              finish = asReport(part.state.input);
-          }
-          if (part.type === "text")
-            texts.set(part.id, { messageID: part.messageID, text: part.text });
-          if (part.type === "reasoning")
-            reasonings.set(part.id, { messageID: part.messageID, text: part.text });
-        } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
-          const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
-          // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
-          if (failed) {
-            error ??= describe(failed);
-            httpStatus ??= statusOf(failed);
-          }
-          messages.set(id, {
-            model: `${providerID}/${modelID}`,
-            inputTokens: tokens.input,
-            outputTokens: tokens.output,
-            reasoningTokens: tokens.reasoning,
-            cacheRead: tokens.cache.read,
-            cacheWrite: tokens.cache.write,
-            costUsd: cost,
-          });
-        } else if (event.type === "permission.asked") {
-          const props = event.properties;
-          const what = props.patterns.join(" ") || props.permission;
-          const metadata = props.metadata as Record<string, unknown> | undefined;
-          const command =
-            typeof metadata?.command === "string" && metadata.command.trim()
-              ? metadata.command.trim()
-              : what;
-          const prefix = commandPrefix(command);
-          const reject = async (message: string, record = true): Promise<boolean> => {
-            if (record) rejections.push({ kind: "asked", permission: props.permission, what });
-            const replied = await client.permission
-              .reply({ requestID: props.id, directory, reply: "reject", message })
-              .catch((err: Error) => ({ error: err.message }));
-            if (replied.error) {
-              error ??= `could not reject a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
-              return false;
-            }
-            return true;
-          };
-          const allowOnce = async (): Promise<boolean> => {
-            const replied = await client.permission
-              .reply({ requestID: props.id, directory, reply: "once" })
-              .catch((err: Error) => ({ error: err.message }));
-            if (replied.error) {
-              error ??= `could not answer a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
-              return false;
-            }
-            return true;
-          };
-          if (props.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
-            // not askable: rejected as today
-            if (!(await reject(rejectionMessage(what)))) break;
-          } else if (refusedCommands.has(command)) {
-            // the user already refused this exact command in this job
-            if (!(await reject(REFUSED_MESSAGE, false))) break;
-          } else {
-            const matchesPrefix = command === prefix || command.startsWith(`${prefix} `);
-            if (allowedPrefixes.has(prefix) && matchesPrefix) {
-              if (!(await allowOnce())) break;
-            } else if (permissionAsks >= MAX_PERMISSION_ASKS) {
-              if (!(await reject(rejectionMessage(what)))) break;
-            } else {
-              permissionAsks++;
-              opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
-              const call = props.tool?.callID ? toolInputs.get(props.tool.callID) : undefined;
-              const description =
-                typeof call?.description === "string" && call.description.trim()
-                  ? call.description
-                  : typeof metadata?.description === "string" && metadata.description.trim()
-                    ? metadata.description
-                    : undefined;
-              const stepTitle = opts.step?.title.trim().slice(0, 60);
-              const title =
-                description ??
-                (opts.step
-                  ? `${prefix} for step ${opts.step.label}: ${stepTitle}`
-                  : (command.split(/\s+/)[0] ?? command));
-              const messageID = props.tool?.messageID;
-              const whyText = [...texts.values()]
-                .filter((t) => t.messageID === messageID)
-                .map((t) => t.text)
-                .join(" ")
-                .replace(/\s+/g, " ")
-                .trim();
-              const reasoningText = whyText
-                ? ""
-                : [...reasonings.values()]
-                    .filter((t) => t.messageID === messageID)
-                    .map((t) => t.text)
-                    .join(" ")
-                    .replace(/\s+/g, " ")
-                    .trim();
-              const why = (whyText || reasoningText).slice(0, 200) || "the worker gave no reason";
-              const stopped = new Promise<undefined>((resolve) =>
-                signal?.aborted
-                  ? resolve(undefined)
-                  : signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
-              );
-              const answer = await Promise.race([
-                opts.onPermission({
-                  permission: props.permission,
-                  command,
-                  title,
-                  why,
-                  prefix,
-                  always: canAlwaysAllow(prefix),
-                }),
-                stopped,
-              ]);
-              if (answer === undefined) {
-                if (!(await reject(rejectionMessage(what), false))) break;
-              } else if (answer === "once") {
-                if (!(await allowOnce())) break;
-              } else if (answer === "always") {
-                allowedPrefixes.add(prefix);
-                if (!(await allowOnce())) break;
-              } else {
-                refusedCommands.add(command);
-                if (!(await reject(REFUSED_MESSAGE, false))) break;
-              }
-              continue;
-            }
-          }
-        } else if (event.type === "question.asked") {
-          opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
-          const questions = event.properties.questions.map((q) => ({
-            question: q.question,
-            options: q.options.map((o) => o.label),
-          }));
-          const requestID = event.properties.id;
-          // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
-          const stopped = new Promise<undefined>((resolve) =>
-            signal?.aborted
-              ? resolve(undefined)
-              : signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
-          );
-          // a question asked after a stop is never put to Claude: the job is ending, not blocked
-          const answers =
-            opts.onQuestion && questions.length && !signal?.aborted
-              ? await Promise.race([opts.onQuestion(questions), stopped])
-              : undefined;
-          // nowhere to put the question (a parallel group until early return exists, or the login check): it is rejected, and said so
-          if (!opts.onQuestion && questions.length)
-            rejections.push({
-              kind: "asked",
-              permission: "question",
-              what: questions.map((q) => q.question).join(" / "),
-            });
-          const replied = await (
-            answers === undefined
-              ? client.question.reject({ requestID, directory })
-              : client.question.reply({ requestID, directory, answers: answers.map((a) => [a]) })
-          ).catch((err: Error) => ({ error: err.message }));
-          // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
-          if (replied.error) {
-            error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
-            break;
-          }
-          continue;
-        } else if (event.type === "session.error") {
-          error = describe(event.properties.error);
-          httpStatus = statusOf(event.properties.error);
-        } else if (
-          event.type === "session.status" &&
-          event.properties.status.type === "retry" &&
-          !limit &&
-          isLimit(event.properties.status, (model ?? opts.model).providerID)
-        ) {
-          // a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours. Stop now, so the
-          // job can fall back; this aborts the session directly, not through the job's stop signal (which means a cap)
-          const { action, message, next } = event.properties.status;
-          limit = {
-            model: modelName(model ?? opts.model),
-            reason: action?.reason,
-            message: action?.message ?? message,
-            next,
-          };
-          stop();
-        }
-        opts.onEvent(event, rounds.size);
-        if (event.type === "session.idle") {
-          idle = true;
-          break;
-        }
-      }
-      if (!idle) error ??= "worker event stream ended before the session went idle";
-      // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
-      const last = [...texts.values()].at(-1)?.messageID;
-      const text = [...texts.values()]
-        .filter((t) => t.messageID === last)
-        .map((t) => t.text)
-        .join("\n");
+      stopOnAbort(signal, stop);
+      stopOnAbort(interrupt, stop);
+      await readEvents(stream, current);
       // an interrupted prompt ends on OpenCode's abort error; that is the hand-over, not a worker failure
-      if (interrupt?.aborted && !signal?.aborted) return { finish, text, interrupted: true };
-      return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
+      const interrupted = Boolean(interrupt?.aborted) && !signal?.aborted;
+      return promptResult(current, interrupted);
     } finally {
       signal?.removeEventListener("abort", stop);
       interrupt?.removeEventListener("abort", stop);
       clearTimeout(backstop);
       abort.abort();
     }
+  }
+
+  /** Sends the prompt, on `model` when one is given, without waiting for the worker to answer it. */
+  async function sendPrompt(prompt: string, model: WorkerModel | undefined) {
+    const variant = (model ?? opts.model).variant;
+    const prompted = await client.session.promptAsync({
+      // prompts carry no agent: OpenCode ignores the one given at session.create, and passing ours on each prompt made the worker slower on bug fixes
+      sessionID,
+      directory,
+      parts: [{ type: "text", text: prompt }],
+      ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
+      ...(variant && { variant }),
+    });
+    if (prompted.error)
+      throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+  }
+
+  /** Reads this session's events into `current` until it goes idle, a reply fails or the stream ends. */
+  async function readEvents(stream: AsyncIterable<unknown>, current: PromptState) {
+    for await (const raw of stream) {
+      const event = raw as Event;
+      const properties = event.properties as { sessionID?: string };
+      if (properties.sessionID !== sessionID) continue;
+      let after: AfterEvent = "log";
+      if (event.type === "permission.asked") after = await answerPermission(event, current);
+      else if (event.type === "question.asked") after = await answerQuestion(event, current);
+      else recordEvent(event, current);
+      if (after === "stop") break;
+      if (after === "logged") continue;
+      opts.onEvent(event, rounds.size);
+      if (event.type === "session.idle") return;
+    }
+    current.error ??= "worker event stream ended before the session went idle";
+  }
+
+  /**
+   * Answers a permission request: the usual rejection when the user cannot be asked about it, a refusal for a command
+   * the user already refused, an allow for a prefix the user always allows, else whatever the user answers.
+   */
+  async function answerPermission(
+    event: EventPermissionAsked,
+    current: PromptState,
+  ): Promise<AfterEvent> {
+    const asked = askedPermission(event.properties);
+    const { request, command, prefix } = asked;
+    if (request.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
+      // not askable: the usual rejection
+      return (await rejectUnaskable(asked, current)) ? "log" : "stop";
+    }
+    if (refusedCommands.has(command)) {
+      // the user already refused this exact command in this job
+      return (await rejectPermission(request, REFUSED_MESSAGE, current)) ? "log" : "stop";
+    }
+    const matchesPrefix = command === prefix || command.startsWith(`${prefix} `);
+    if (allowedPrefixes.has(prefix) && matchesPrefix) {
+      return (await allowPermissionOnce(request, current)) ? "log" : "stop";
+    }
+    if (permissionAsks >= MAX_PERMISSION_ASKS) {
+      return (await rejectUnaskable(asked, current)) ? "log" : "stop";
+    }
+    permissionAsks++;
+    opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
+    const ask: PermissionAsk = {
+      permission: request.permission,
+      command,
+      title: askTitle(request, command, prefix),
+      why: askReason(current, request.tool?.messageID),
+      prefix,
+      always: canAlwaysAllow(prefix),
+    };
+    const stopped = untilAborted(current.signal);
+    const answer = await Promise.race([opts.onPermission(ask), stopped]);
+    return (await applyAnswer(answer, asked, current)) ? "logged" : "stop";
+  }
+
+  /** Applies the user's answer (undefined: the session stopped first); false when OpenCode did not take the reply. */
+  function applyAnswer(
+    answer: PermissionAnswer | undefined,
+    asked: AskedPermission,
+    current: PromptState,
+  ): Promise<boolean> {
+    const { request, command, prefix, what } = asked;
+    if (answer === undefined) return rejectPermission(request, rejectionMessage(what), current);
+    if (answer === "once") return allowPermissionOnce(request, current);
+    if (answer === "always") {
+      allowedPrefixes.add(prefix);
+      return allowPermissionOnce(request, current);
+    }
+    refusedCommands.add(command);
+    return rejectPermission(request, REFUSED_MESSAGE, current);
+  }
+
+  /** The usual rejection, recorded: for a request the user cannot be asked about, or one past the ask limit. */
+  function rejectUnaskable(asked: AskedPermission, current: PromptState): Promise<boolean> {
+    rejections.push({ kind: "asked", permission: asked.request.permission, what: asked.what });
+    return rejectPermission(asked.request, rejectionMessage(asked.what), current);
+  }
+
+  /** Rejects a permission request with `message`; false, with the prompt's error set, when OpenCode did not take it. */
+  async function rejectPermission(
+    request: PermissionRequest,
+    message: string,
+    current: PromptState,
+  ): Promise<boolean> {
+    const replied = await client.permission
+      .reply({ requestID: request.id, directory, reply: "reject", message })
+      .catch((error: Error) => ({ error: error.message }));
+    if (!replied.error) return true;
+    const failure = JSON.stringify(replied.error);
+    current.error ??= `could not reject a ${request.permission} permission request: ${failure}`;
+    return false;
+  }
+
+  /** Allows a permission request once; false, with the prompt's error set, when OpenCode did not take it. */
+  async function allowPermissionOnce(
+    request: PermissionRequest,
+    current: PromptState,
+  ): Promise<boolean> {
+    const replied = await client.permission
+      .reply({ requestID: request.id, directory, reply: "once" })
+      .catch((error: Error) => ({ error: error.message }));
+    if (!replied.error) return true;
+    const failure = JSON.stringify(replied.error);
+    current.error ??= `could not answer a ${request.permission} permission request: ${failure}`;
+    return false;
+  }
+
+  /** An ask's title: the bash call's own description, else the request's, else one naming the plan step, else the program. */
+  function askTitle(request: PermissionRequest, command: string, prefix: string): string {
+    const callID = request.tool?.callID;
+    const call = callID ? toolInputs.get(callID) : undefined;
+    const metadata = request.metadata as Record<string, unknown> | undefined;
+    const description = nonBlank(call?.description) ?? nonBlank(metadata?.description);
+    if (description !== undefined) return description;
+    if (!opts.step) return command.split(/\s+/)[0] ?? command;
+    const stepTitle = opts.step.title.trim().slice(0, 60);
+    return `${prefix} for step ${opts.step.label}: ${stepTitle}`;
+  }
+
+  /** Puts the worker's questions to Claude, or rejects them when they have nowhere to go or the session stopped. */
+  async function answerQuestion(
+    event: EventQuestionAsked,
+    current: PromptState,
+  ): Promise<AfterEvent> {
+    opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
+    const questions = event.properties.questions.map((asked) => ({
+      question: asked.question,
+      options: asked.options.map((option) => option.label),
+    }));
+    const requestID = event.properties.id;
+    const { signal } = current;
+    // a stop (cap or cancel) while waiting ends the wait: the question is rejected and the session aborted
+    const stopped = untilAborted(signal);
+    // a question asked after a stop is never put to Claude: the job is ending, not blocked
+    const answers =
+      opts.onQuestion && questions.length && !signal?.aborted
+        ? await Promise.race([opts.onQuestion(questions), stopped])
+        : undefined;
+    // nowhere to put the question (a parallel group until early return exists, or the login check): it is rejected, and said so
+    if (!opts.onQuestion && questions.length) {
+      const what = questions.map(({ question }) => question).join(" / ");
+      rejections.push({ kind: "asked", permission: "question", what });
+    }
+    const replied = await (
+      answers === undefined
+        ? client.question.reject({ requestID, directory })
+        : client.question.reply({
+            requestID,
+            directory,
+            answers: answers.map((answer) => [answer]),
+          })
+    ).catch((error: Error) => ({ error: error.message }));
+    // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
+    if (!replied.error) return "logged";
+    current.error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
+    return "stop";
+  }
+
+  /** Records what a worker event shows: tool calls, texts, usage, errors and provider limits. */
+  function recordEvent(event: Event, current: PromptState) {
+    if (event.type === "message.part.updated") {
+      recordPart(event.properties.part, current);
+    } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
+      recordMessage(event.properties.info, current);
+    } else if (event.type === "session.error") {
+      current.error = errorMessage(event.properties.error);
+      current.httpStatus = httpStatusOf(event.properties.error);
+    } else if (event.type === "session.status") {
+      recordStatus(event.properties.status, current);
+    }
+  }
+
+  /** Records a message part: a tool call, or the latest text of a text or reasoning part. */
+  function recordPart(part: Part, current: PromptState) {
+    if (part.type === "tool") recordToolCall(part, current);
+    else if (part.type === "text")
+      current.texts.set(part.id, { messageID: part.messageID, text: part.text });
+    else if (part.type === "reasoning")
+      current.reasonings.set(part.id, { messageID: part.messageID, text: part.text });
+  }
+
+  /** Records a tool call's input (to title a bash ask); once it has finished, its round, a denial or the finish report. */
+  function recordToolCall(part: ToolPart, current: PromptState) {
+    const { state } = part;
+    if (state.input && typeof state.input === "object")
+      toolInputs.set(part.callID, state.input as Record<string, unknown>);
+    if (state.status !== "completed" && state.status !== "error") return;
+    // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
+    if (
+      !calls.has(part.callID) &&
+      state.status === "error" &&
+      state.error.startsWith("The user has specified a rule which prevents")
+    ) {
+      rejections.push({ kind: "denied", permission: part.tool, what: describeCall(state.input) });
+    }
+    calls.add(part.callID);
+    rounds.add(part.messageID);
+    if (part.tool === "finish" && state.status === "completed")
+      current.finish = asReport(state.input);
+  }
+
+  /** Records an assistant message's model and running usage, and its failure unless the prompt already has one. */
+  function recordMessage(info: AssistantMessage, current: PromptState) {
+    const { id, cost, tokens, error: failed, providerID, modelID } = info;
+    // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
+    if (failed) {
+      current.error ??= errorMessage(failed);
+      current.httpStatus ??= httpStatusOf(failed);
+    }
+    messages.set(id, {
+      model: `${providerID}/${modelID}`,
+      inputTokens: tokens.input,
+      outputTokens: tokens.output,
+      reasoningTokens: tokens.reasoning,
+      cacheRead: tokens.cache.read,
+      cacheWrite: tokens.cache.write,
+      costUsd: cost,
+    });
+  }
+
+  /**
+   * A retry that means a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours.
+   * Stop now, so the job can fall back; this aborts the session directly, not through the job's stop signal (which
+   * means a cap).
+   */
+  function recordStatus(status: SessionStatus, current: PromptState) {
+    if (status.type !== "retry" || current.limit) return;
+    const model = current.model ?? opts.model;
+    if (!isLimit(status, model.providerID)) return;
+    const { action, message, next } = status;
+    current.limit = {
+      model: modelName(model),
+      reason: action?.reason,
+      message: action?.message ?? message,
+      next,
+    };
+    current.stop();
   }
 
   function totals(): SessionTotals {
@@ -414,9 +477,9 @@ export async function openSession(opts: {
       costUsd: 0,
     };
     const spend: Record<string, number> = {};
-    for (const m of messages.values()) {
-      for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
-      spend[m.model] = (spend[m.model] ?? 0) + m.costUsd;
+    for (const message of messages.values()) {
+      for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += message[key];
+      spend[message.model] = (spend[message.model] ?? 0) + message.costUsd;
     }
     return {
       sessionID,
@@ -487,20 +550,88 @@ export async function runSession(
   return { ...session.totals(), ...result };
 }
 
+/** A permission request with the command it is for (its patterns, when it names none), the prefix, and record text. */
+function askedPermission(request: PermissionRequest): AskedPermission {
+  const what = request.patterns.join(" ") || request.permission;
+  const metadata = request.metadata as Record<string, unknown> | undefined;
+  const command = nonBlank(metadata?.command)?.trim() ?? what;
+  return { request, command, prefix: commandPrefix(command), what };
+}
+
+/** Why the worker asks: the asking message's text, else its reasoning, cut to 200 characters; else a placeholder. */
+function askReason(current: PromptState, messageID: string | undefined): string {
+  const reason =
+    messageText(current.texts, messageID) || messageText(current.reasonings, messageID);
+  return reason.slice(0, 200) || "the worker gave no reason";
+}
+
+/** The parts of one message joined on one line, runs of whitespace made single spaces. */
+function messageText(parts: Map<string, PartText>, messageID: string | undefined): string {
+  return [...parts.values()]
+    .filter((part) => part.messageID === messageID)
+    .map((part) => part.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Calls `stop` when `signal` aborts, at once if it already has. */
+function stopOnAbort(signal: AbortSignal | undefined, stop: () => void) {
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+}
+
+/** What a prompt produced; an interrupted one leaves out its error, which is only OpenCode's abort. */
+function promptResult(current: PromptState, interrupted: boolean): RunResult {
+  const text = lastMessageText(current.texts);
+  const { finish, error, httpStatus, limit } = current;
+  if (interrupted) return { finish, text, interrupted: true };
+  return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
+}
+
+/** The last message's text: the fallback block is read from it alone, so a stale one from earlier cannot win. */
+function lastMessageText(texts: Map<string, PartText>): string {
+  const last = [...texts.values()].at(-1)?.messageID;
+  return [...texts.values()]
+    .filter((part) => part.messageID === last)
+    .map((part) => part.text)
+    .join("\n");
+}
+
+/** Resolves with undefined when `signal` aborts, at once if it already has; without a signal, never. */
+function untilAborted(signal: AbortSignal | undefined): Promise<undefined> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) resolve(undefined);
+    else signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
+}
+
 /** OpenCode validates the tool's args, but the record must not trust a malformed one either. */
 function asReport(input: Record<string, unknown>): FinishReport {
-  const list = (v: unknown) =>
-    Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : [];
+  const repro = nonBlank(input.repro)?.trim();
+  const disagree = nonBlank(input.disagree)?.trim();
   return {
     // oxlint-disable-next-line typescript/no-base-to-string -- a safer cast changes the report text
     summary: String(input.summary ?? ""),
-    risks: list(input.risks),
-    review: list(input.review),
-    missing: list(input.missing),
-    ...(typeof input.repro === "string" && input.repro.trim() && { repro: input.repro.trim() }),
-    ...(typeof input.disagree === "string" &&
-      input.disagree.trim() && { disagree: input.disagree.trim() }),
+    risks: asList(input.risks),
+    review: asList(input.review),
+    missing: asList(input.missing),
+    ...(repro && { repro }),
+    ...(disagree && { disagree }),
   };
+}
+
+/** A report list from a tool argument: each item of an array as text, a lone non-empty string, else nothing. */
+function asList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value) return [value];
+  return [];
+}
+
+/** `value` as it is when it is a string with some non-space text; else undefined. */
+function nonBlank(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  return undefined;
 }
 
 /**
@@ -523,14 +654,16 @@ function describeCall(input: Record<string, unknown>) {
   ).slice(0, 200);
 }
 
-function describe(err: unknown) {
-  const e = err as { name?: string; data?: { message?: string } } | undefined;
-  return e?.data?.message ?? e?.name ?? "unknown worker error";
+/** The message of an OpenCode error, else its name. */
+function errorMessage(error: unknown) {
+  const failure = error as { name?: string; data?: { message?: string } } | undefined;
+  return failure?.data?.message ?? failure?.name ?? "unknown worker error";
 }
 
 /** The HTTP status of a provider error (APIError), e.g. OpenRouter's 402 for insufficient credits. */
-const statusOf = (err: unknown) =>
-  (err as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
+function httpStatusOf(error: unknown) {
+  return (error as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
+}
 
 const NO_REPORT: FinishReport = {
   summary: NO_SUMMARY,
@@ -545,28 +678,30 @@ export function finishReport(result: Pick<SessionResult, "finish" | "text">): Fi
   const block = [...result.text.matchAll(/```cheapag-result\s*\n([\s\S]*?)```/g)].at(-1)?.[1];
   if (!block) return NO_REPORT;
   const report: FinishReport = { summary: "", risks: [], review: [], missing: [] };
-  let list: "risks" | "review" | "missing" | undefined;
+  let list: ReportList | undefined;
   for (const line of block.split("\n")) {
-    const kv = line.match(/^(summary|risks|review|missing|repro|disagree):\s*(.*)$/);
-    if (kv) {
-      const [, key, value] = kv;
-      if (key === "summary" || key === "repro" || key === "disagree") {
-        if (value.trim()) report[key] = value.trim();
-        list = undefined;
-      } else {
-        list = key as typeof list;
-        // inline values: "review: a.ts:1-2, b.ts:3-4"
-        if (value.trim())
-          report[list!].push(
-            ...value
-              .split(",")
-              .map((v) => v.trim())
-              .filter(Boolean),
-          );
-      }
-    } else if (list && /^\s*-\s+/.test(line)) {
-      report[list].push(line.replace(/^\s*-\s+/, "").trim());
-    }
+    const field = line.match(/^(summary|risks|review|missing|repro|disagree):\s*(.*)$/);
+    if (field) list = readField(report, field[1] as keyof FinishReport, field[2]);
+    else if (list && /^\s*-\s+/.test(line)) report[list].push(line.replace(/^\s*-\s+/, "").trim());
   }
   return { ...report, summary: report.summary || NO_REPORT.summary };
+}
+
+/** The report fields a result block writes as lists. */
+type ReportList = "risks" | "review" | "missing";
+
+/** Writes one `key: value` line of a result block into `report`; returns the list later `- item` lines add to. */
+function readField(
+  report: FinishReport,
+  key: keyof FinishReport,
+  value: string,
+): ReportList | undefined {
+  if (key === "summary" || key === "repro" || key === "disagree") {
+    if (value.trim()) report[key] = value.trim();
+    return undefined;
+  }
+  // inline values: "review: a.ts:1-2, b.ts:3-4"
+  const items = value.split(",").map((item) => item.trim());
+  if (value.trim()) report[key].push(...items.filter(Boolean));
+  return key;
 }
