@@ -255,7 +255,7 @@ function updateUser(
 }
 
 /** The preset the user's config holds: its saved name, else what its `models` match (Enter keeps it); a damaged file counts as none. */
-function currentPreset(provider: Provider["provider"]): Preset | "custom" | undefined {
+function currentPreset(provider: ProviderId): Preset | "custom" | undefined {
   try {
     const { preset, models } = readUser();
     if (preset !== undefined) return preset as Preset;
@@ -271,10 +271,7 @@ const CHOICE_HINTS: Partial<Record<Choice, string>> = {
 };
 
 /** The worker-models choice: `--preset` when given (login has checked it), else asked, starting on the provider's current preset. */
-async function askPreset(
-  provider: Provider["provider"],
-  flag: Choice | undefined,
-): Promise<Choice> {
+async function askPreset(provider: ProviderId, flag: Choice | undefined): Promise<Choice> {
   if (flag !== undefined) return flag;
   const preset = currentPreset(provider) ?? "balanced";
   return CHOICES[
@@ -287,7 +284,7 @@ async function askPreset(
 }
 
 /** Writes the preset name as the user config's `preset`, other keys kept; an old equal `models` is dropped, custom writes nothing. */
-function savePreset(provider: Provider["provider"], choice: Choice, out: Output) {
+function savePreset(provider: ProviderId, choice: Choice, out: Output) {
   // login asks a local endpoint for its model instead; this keeps the narrowing below honest
   if (provider === "local") throw new Error("a custom endpoint has no presets");
   const file = userConfigFile();
@@ -315,7 +312,7 @@ function savePreset(provider: Provider["provider"], choice: Choice, out: Output)
 }
 
 /** Rewrites an old user config whose `models` exactly match a current preset to that preset's name; anything else is left alone. */
-function migratePreset(provider: Provider["provider"], out: Output) {
+function migratePreset(provider: ProviderId, out: Output) {
   if (provider === "local") return;
   try {
     const config = readUser();
