@@ -82,22 +82,29 @@ export function cleanup(
   }
   if (removedTree) git(root, ["worktree", "prune"]);
 
-  for (const id of entries(jobsDir, LOG_ID)) {
-    const j = readJob(sweep, id);
-    if (j.live) out.kept.push(`job ${id}: ${j.status} job in flight`);
-    // the record explains its worktree: it stays while the worktree does
-    else if (realDir(join(treesDir, id))) out.kept.push(`job ${id}: its worktree is kept`);
-    else if (!isOld(sweep, j.since, retention.job_log_days))
-      out.kept.push(
-        `job ${id}: ${ageInDays(sweep, j.since)}d old, kept ${retention.job_log_days}d`,
-      );
-    else {
-      rmSync(join(jobsDir, id), { recursive: true, force: true });
-      out.removed.push(`job ${id}: ${opts.all ? "--all" : `${ageInDays(sweep, j.since)}d old`}`);
-    }
-  }
+  sweepJobLogs(sweep);
   sweepBatches(sweep, join(state, "batches"));
   return out;
+}
+
+/** Removes job and research log folders past `job_log_days`, unless in flight or explaining a kept worktree. */
+function sweepJobLogs(sweep: Sweep) {
+  const limit = sweep.retention.job_log_days;
+  for (const id of entries(sweep.jobsDir, LOG_ID)) {
+    const job = readJob(sweep, id);
+    if (job.live) {
+      sweep.out.kept.push(`job ${id}: ${job.status} job in flight`);
+    } else if (realDir(join(sweep.treesDir, id))) {
+      // the record explains its worktree: it stays while the worktree does
+      sweep.out.kept.push(`job ${id}: its worktree is kept`);
+    } else if (!isOld(sweep, job.since, limit)) {
+      sweep.out.kept.push(`job ${id}: ${ageInDays(sweep, job.since)}d old, kept ${limit}d`);
+    } else {
+      rmSync(join(sweep.jobsDir, id), { recursive: true, force: true });
+      const reason = sweep.all ? "--all" : `${ageInDays(sweep, job.since)}d old`;
+      sweep.out.removed.push(`job ${id}: ${reason}`);
+    }
+  }
 }
 
 /** A batch record goes with its last job folder; one that never got a job (a crashed start) goes by age. */
