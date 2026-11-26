@@ -231,12 +231,11 @@ function configuredModels(root: string, provider: Provider["provider"]) {
   }
 }
 
-export const describe = (c: Consent) =>
-  c.mode === "all"
-    ? "all models"
-    : c.mode === "zdr-only"
-      ? "zero-retention only"
-      : `models ${c.models!.join(", ")}`;
+export const describe = (c: Consent) => {
+  if (c.mode === "all") return "all models";
+  if (c.mode === "zdr-only") return "zero-retention only";
+  return `models ${c.models!.join(", ")}`;
+};
 
 /** Spec D5's CONSENT block: who would receive the code, their known retention, and how the user approves. */
 function consentBlock(root: string, provider: Provider["provider"], full: Route) {
