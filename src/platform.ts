@@ -83,10 +83,12 @@ function findExact(directory: string, names: string[]) {
   return undefined;
 }
 
-/** Like `findExact`, but a name matches whatever its case on disk; an unreadable directory has no match. */
+/**
+ * Like `findExact`, but reads the directory so a name matches whatever its case on disk, as Windows filesystems are
+ * case-insensitive. An unreadable directory has no match.
+ */
 function findIgnoringCase(directory: string, names: string[]) {
   for (const name of names) {
-    // Windows filesystems are case-insensitive; read the dir so a case difference still matches
     let entries: string[];
     try {
       entries = readdirSync(directory);
