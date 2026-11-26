@@ -136,26 +136,39 @@ function writeMarketplaceManifest(marketplace: string) {
   );
 }
 
+/** Runs `claude plugin <args>`; undefined when claude is not on the PATH. */
+function claudePlugin(args: string[]) {
+  return runCli("claude", ["plugin", ...args], { encoding: "utf8" });
+}
+
+/** Whether the output of `claude plugin <args>` names `name`. */
+function claudePluginListIncludes(args: string[], name: string) {
+  return (claudePlugin(args)?.stdout ?? "").includes(name);
+}
+
+const PLUGIN_ID = `cheapag@${MARKETPLACE}`;
+
+/** The `claude plugin` steps that add the marketplace and the plugin, or update the ones already there. */
+function pluginSteps(marketplace: string) {
+  const marketplaceStep = claudePluginListIncludes(["marketplace", "list"], MARKETPLACE)
+    ? ["marketplace", "update", MARKETPLACE]
+    : ["marketplace", "add", marketplace];
+  const pluginStep = claudePluginListIncludes(["list"], PLUGIN_ID)
+    ? ["update", PLUGIN_ID]
+    : ["install", PLUGIN_ID];
+  return [marketplaceStep, pluginStep];
+}
+
 /** Generates the plugin and adds it to Claude Code (or updates it); prints the manual commands when a step fails. */
 export function installPlugin(
   out: (line?: string) => void,
   { update = false }: { update?: boolean } = {},
 ): boolean {
   const marketplace = writePlugin(realpathSync(process.argv[1]), stableNode());
-  const claude = (...args: string[]) => runCli("claude", ["plugin", ...args], { encoding: "utf8" });
-  const listed = (args: string[], name: string) => (claude(...args)?.stdout ?? "").includes(name);
-  const steps = [
-    listed(["marketplace", "list"], MARKETPLACE)
-      ? ["marketplace", "update", MARKETPLACE]
-      : ["marketplace", "add", marketplace],
-    listed(["list"], `cheapag@${MARKETPLACE}`)
-      ? ["update", `cheapag@${MARKETPLACE}`]
-      : ["install", `cheapag@${MARKETPLACE}`],
-  ];
-  for (const step of steps) {
-    const r = claude(...step);
-    if (!r || r.status !== 0) {
-      out(`✗ claude plugin ${step.join(" ")} failed (${firstLine(r)}). Run these yourself:`);
+  for (const step of pluginSteps(marketplace)) {
+    const run = claudePlugin(step);
+    if (!run || run.status !== 0) {
+      out(`✗ claude plugin ${step.join(" ")} failed (${firstLine(run)}). Run these yourself:`);
       out(
         `  claude plugin marketplace add ${marketplace}\n  claude plugin install cheapag@${MARKETPLACE}`,
       );
