@@ -2,7 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { providerLabel, type Provider } from "./credentials.js";
 import { failBlock, renderConsent } from "./report.js";
-import { loadConfig, localServer, ollamaEndpoint, ollamaIsLocal } from "./config.js";
+import {
+  loadConfig,
+  localServer,
+  ollamaEndpoint,
+  ollamaIsLocal,
+  type LocalServer,
+  type OllamaConfig,
+} from "./config.js";
 import {
   effectiveModels,
   foreignModels,
@@ -244,42 +251,63 @@ function consentBlock(root: string, provider: Provider["provider"], full: Route)
   const main = routeModels({ ...full, fallbacks: [], researchFallbacks: [] }).map((m) => m.id);
   const extra = models.map((m) => m.id).filter((id) => !main.includes(id));
   const ids = main.join(", ") + (extra.length ? ` (+fallbacks ${extra.join(", ")})` : "");
-  const local = provider === "local" ? localServer() : undefined;
-  let ollama: ReturnType<typeof ollamaEndpoint>;
-  try {
-    ollama = provider === "ollama" ? ollamaEndpoint() : undefined;
-  } catch {} // a damaged entry is reported by the config load, not as a consent line
-  const retentionLine =
-    provider === "openrouter"
-      ? `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`
-      : ollama
-        ? ollama.endpoint === "local"
-          ? "nothing leaves this machine: your own Ollama keeps what it is set up to keep"
-          : "Ollama Cloud's terms (ollama.com); retention is not stated here"
-        : local
-          ? `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`
-          : models
-              .map(
-                (m) =>
-                  `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`,
-              )
-              .join("; ");
-  const recipient = ollama
-    ? ollama.endpoint === "local"
-      ? `your local Ollama at ${ollama.base_url}`
-      : "Ollama Cloud (ollama.com)"
-    : local
-      ? `custom endpoint at ${local.base_url}`
-      : providerLabel(provider);
+  const endpoints = {
+    local: provider === "local" ? localServer() : undefined,
+    ollama: provider === "ollama" ? configuredOllama() : undefined,
+  };
+  const recipient = recipientName(provider, endpoints);
   return renderConsent({
     repo: basename(root),
     send: `code from this repo → ${recipient}: ${ids}`,
-    retention: retentionLine,
-    // the caller passed the root, so "this root" names it; a path here would push the line past the 200-char cap
-    approve: sessionRepo(root)
-      ? "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself"
-      : "ask the user to run npx cheap-agent allow in a terminal in this root (/cheapag:allow approves the session's repo); add --zdr-only or --models a,b to narrow it; never approve yourself",
+    retention: retentionLine(provider, models, endpoints),
+    approve: sessionRepo(root) ? APPROVE_IN_SESSION : APPROVE_IN_TERMINAL,
   });
+}
+
+const APPROVE_IN_SESSION =
+  "ask the user to run /cheapag:allow in Claude Code, or npx cheap-agent allow in a terminal (Codex); add --zdr-only to limit it to zero-retention models, or --models a,b; never approve yourself";
+// the caller passed the root, so "this root" names it; a path here would push the line past the 200-char cap
+const APPROVE_IN_TERMINAL =
+  "ask the user to run npx cheap-agent allow in a terminal in this root (/cheapag:allow approves the session's repo); add --zdr-only or --models a,b to narrow it; never approve yourself";
+
+/** The config-based endpoint the provider sends to, if it is one; at most one is set. */
+type Endpoints = { local: LocalServer | undefined; ollama: OllamaConfig | undefined };
+
+/** The Ollama endpoint, or none when its entry is damaged. */
+function configuredOllama() {
+  try {
+    return ollamaEndpoint();
+  } catch {
+    return undefined; // a damaged entry is reported by the config load, not as a consent line
+  }
+}
+
+/** Who receives the code: this machine's Ollama, Ollama Cloud, the custom endpoint, or the provider itself. */
+function recipientName(provider: Provider["provider"], endpoints: Endpoints) {
+  const { local, ollama } = endpoints;
+  if (ollama?.endpoint === "local") return `your local Ollama at ${ollama.base_url}`;
+  if (ollama) return "Ollama Cloud (ollama.com)";
+  if (local) return `custom endpoint at ${local.base_url}`;
+  return providerLabel(provider);
+}
+
+/** What is known about how long the recipient keeps the code (A21's facts, never guessed). */
+function retentionLine(
+  provider: Provider["provider"],
+  models: WorkerModel[],
+  endpoints: Endpoints,
+) {
+  const { local, ollama } = endpoints;
+  if (provider === "openrouter")
+    return `depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter's zero-data-retention routing (zdr)`;
+  if (ollama?.endpoint === "local")
+    return "nothing leaves this machine: your own Ollama keeps what it is set up to keep";
+  if (ollama) return "Ollama Cloud's terms (ollama.com); retention is not stated here";
+  if (local)
+    return `up to the endpoint: your own server keeps what it is set up to keep; a gateway or vendor keeps what its terms say`;
+  return models
+    .map((m) => `${m.id} = ${retention(provider, m) === "zero" ? "zero retention" : "not stated"}`)
+    .join("; ");
 }
 
 /** Whether `root` is the repo the server (the session) runs in, which is the one /cheapag:allow approves. */
