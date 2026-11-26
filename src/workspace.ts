@@ -181,12 +181,7 @@ export function worktreeDiff(worktree: Worktree) {
   const stats = git(path, ["diff", "--cached", "--numstat", "-z", "--no-renames", base])
     .split("\0")
     .filter(Boolean);
-  const statuses = new Map<string, string>();
-  const names = git(path, ["diff", "--cached", "--name-status", "-z", "--no-renames", base])
-    .split("\0")
-    .filter(Boolean);
-  for (let index = 0; index < names.length; index += 2)
-    statuses.set(names[index + 1], names[index]);
+  const statuses = stagedStatuses(path, base);
   const changed: Changed[] = stats.map((line) => {
     const [added, deleted, file] = line.split("\t");
     // binary files report "-" for both counts
@@ -198,6 +193,17 @@ export function worktreeDiff(worktree: Worktree) {
     };
   });
   return { patch, changed };
+}
+
+/** Each staged path's status letter (A, M, D…) against `base`; `--name-status -z` alternates status and path. */
+function stagedStatuses(path: string, base: string) {
+  const fields = git(path, ["diff", "--cached", "--name-status", "-z", "--no-renames", base])
+    .split("\0")
+    .filter(Boolean);
+  const statuses = new Map<string, string>();
+  for (let index = 0; index < fields.length; index += 2)
+    statuses.set(fields[index + 1], fields[index]);
+  return statuses;
 }
 
 /** Why the checkout cannot be a job's starting point right now (a merge, rebase… or unresolved conflicts), if it cannot. */
