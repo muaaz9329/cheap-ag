@@ -1,19 +1,30 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { callText, hermeticHome, serverEntry, startServer, tempRepo } from "./harness.js";
-import { cleanup, startPeriodicCleanup } from "../src/cleanup.js";
+import {
+  cleanProject,
+  cleanup,
+  gitignoreHint,
+  startPeriodicCleanup,
+  type Cleaned,
+} from "../src/cleanup.js";
 import { loadConfig } from "../src/config.js";
+import * as platform from "../src/platform.js";
+import * as workspace from "../src/workspace.js";
 import { createWorktree } from "../src/workspace.js";
 
 const DAY = 86_400_000;
@@ -317,4 +328,409 @@ test("periodic cleanup: a failing run is logged to stderr in one line and the ti
   stderr.mockClear();
   stale();
   await vi.waitFor(() => expect(stderr).toHaveBeenCalled()); // the next tick still runs
+});
+
+const RETENTION = { unlanded_worktree_days: 2, job_log_days: 7 };
+
+/** A folder that must outlive any cleanup, for symlinks that point out of the repo. */
+function outsideFolder() {
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-outside-")));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "keep.txt"), "x");
+  return dir;
+}
+
+const PASSES = ["worktree", "job", "batch"];
+
+/** The pass a report line comes from: worktrees, then job logs, then batches. */
+function passOf(line: string) {
+  return PASSES.indexOf(/(worktree|job|batch) /.exec(line)![1]);
+}
+
+/**
+ * Report lines sorted within each pass, after checking the passes come in their fixed order:
+ * within a pass the order is readdir's, which differs by filesystem (APFS sorts, ext4 hashes).
+ */
+function sortWithinPasses(lines: string[]) {
+  const passes = lines.map(passOf);
+  expect(passes).toEqual([...passes].sort((a, b) => a - b));
+  return [...lines].sort().sort((a, b) => passOf(a) - passOf(b));
+}
+
+/** A cleanup result with both lists sorted within their passes. */
+function withinPasses(cleaned: Cleaned) {
+  return { removed: sortWithinPasses(cleaned.removed), kept: sortWithinPasses(cleaned.kept) };
+}
+
+/** `cheapag clean` stdout sorted within passes, after checking it is the header, then removed lines, then kept lines. */
+function stdoutWithinPasses(stdout: string) {
+  const lines = stdout.split("\n");
+  const removed = lines.filter((line) => line.startsWith("  removed "));
+  const kept = lines.filter((line) => line.startsWith("  kept "));
+  expect(lines).toEqual([lines[0], ...removed, ...kept, ""]);
+  return [lines[0], ...sortWithinPasses(removed), ...sortWithinPasses(kept), ""].join("\n");
+}
+
+test("cleanup: every age rule, keep rule and reason, in the order it reports them, then --all", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const now = Date.now();
+  const state = join(repo.dir, ".cheapag");
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+  const touch = (path: string, ms: number) =>
+    utimesSync(path, new Date(now - ms), new Date(now - ms));
+  const record = (id: string, fields: object) => {
+    const dir = join(state, "jobs", id);
+    mkdirSync(dir, { recursive: true });
+    const name = id.startsWith("r") ? "research.json" : "result.json";
+    writeFileSync(join(dir, name), JSON.stringify(fields));
+    return dir;
+  };
+  const ended = (status: string, ms: number) => ({
+    status,
+    pid: deadPid,
+    timing: { startedAt: ago(ms), endedAt: ago(ms) },
+  });
+  const inFlight = (status: string, ms: number, pid?: number) => ({
+    status,
+    pid,
+    timing: { startedAt: ago(ms), endedAt: null },
+  });
+  mkdirSync(join(repo.dir, "node_modules", "dep"), { recursive: true });
+  writeFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "module.exports = 42;\n");
+
+  const worktree = (id: string, fields: object) => {
+    createWorktree(repo.dir, id, ["node_modules"]);
+    record(id, fields);
+  };
+  worktree("jwold", ended("FAIL", 3 * DAY));
+  worktree("jwedg", ended("FAIL", 2 * DAY)); // exactly the limit
+  worktree("jwnew", ended("FAIL", 2 * DAY - 1));
+  worktree("jwrun", inFlight("RUNNING", 60 * DAY, process.pid));
+  worktree("rwold", ended("ANSWER", 5 * DAY)); // a research worktree left by a crash
+  const bare = join(state, "worktrees", "jbare"); // no job folder: ages by its own mtime
+  mkdirSync(bare);
+  touch(bare, 4 * DAY);
+  const untimedTree = join(state, "worktrees", "jwunt"); // no time on its record: its job folder's mtime first
+  mkdirSync(untimedTree);
+  touch(untimedTree, 1 * DAY);
+  touch(record("jwunt", { status: "FAIL" }), 5 * DAY);
+  const outside = outsideFolder();
+  symlinkSync(outside, join(state, "worktrees", "jlink"), "junction");
+  mkdirSync(join(state, "worktrees", "other"));
+
+  record("jdead", inFlight("RUNNING", 10 * DAY, deadPid));
+  record("jnopd", inFlight("BLOCKED", 8 * DAY, 0));
+  record("jblk1", inFlight("BLOCKED", 60 * DAY, process.pid));
+  record("jedge", ended("OK", 7 * DAY));
+  record("jjust", ended("OK", 7 * DAY - 1));
+  record("jlink", ended("OK", 8 * DAY)); // its worktree entry is a symlink, so it does not count
+  record("jlong", { status: "OK", timing: { startedAt: ago(30 * DAY), endedAt: ago(1 * DAY) } });
+  const unreadable = join(state, "jobs", "jbadr");
+  mkdirSync(unreadable);
+  writeFileSync(join(unreadable, "result.json"), "{");
+  touch(unreadable, 10 * DAY);
+  mkdirSync(join(state, "jobs", "jstrt"));
+  touch(record("jnotm", { status: "OK" }), 9 * DAY);
+  record("rlog1", ended("ANSWER", 8 * DAY));
+  record("rlog2", ended("ANSWER", 1 * DAY));
+  mkdirSync(join(state, "jobs", "notid"));
+
+  const batches = join(state, "batches");
+  mkdirSync(batches);
+  const batch = (name: string, body: string, ms: number) => {
+    writeFileSync(join(batches, name), body);
+    touch(join(batches, name), ms);
+  };
+  batch("bgone.json", JSON.stringify({ jobs: ["jedge"] }), 0);
+  batch("bkeep.json", JSON.stringify({ jobs: ["jedge", "jjust"] }), 30 * DAY);
+  batch("bjunk.json", JSON.stringify({ jobs: ["../jobs/jjust"] }), 0);
+  batch("bnew0.json", JSON.stringify({ jobs: [] }), 0);
+  batch("bdead.json", JSON.stringify({ jobs: [] }), 8 * DAY);
+  batch("bbadj.json", "{", 8 * DAY);
+  batch("bnull.json", "null", 8 * DAY);
+  batch("notbatch.json", "{}", 30 * DAY);
+
+  const first = cleanup(repo.dir, RETENTION, ["node_modules"], { now });
+  expect(withinPasses(first)).toEqual(
+    withinPasses({
+      removed: [
+        "worktree jbare: unlanded, 4d old",
+        "worktree jwedg: unlanded, 2d old",
+        "worktree jwold: unlanded, 3d old",
+        "worktree jwunt: unlanded, 5d old",
+        "worktree rwold: unlanded, 5d old",
+        "job jbadr: 10d old",
+        "job jdead: 10d old",
+        "job jedge: 7d old",
+        "job jlink: 8d old",
+        "job jnopd: 8d old",
+        "job jnotm: 9d old",
+        "job rlog1: 8d old",
+        "batch bbadj: 8d old",
+        "batch bdead: 8d old",
+        "batch bgone: its jobs are gone",
+        "batch bjunk: its jobs are gone",
+        "batch bnull: 8d old",
+      ],
+      kept: [
+        "worktree jwnew: 1d old, kept 2d",
+        "worktree jwrun: RUNNING job in flight",
+        "job jblk1: BLOCKED job in flight",
+        "job jjust: 6d old, kept 7d",
+        "job jlong: 1d old, kept 7d",
+        "job jstrt: STARTING job in flight",
+        "job jwedg: 2d old, kept 7d",
+        "job jwnew: its worktree is kept",
+        "job jwold: 3d old, kept 7d",
+        "job jwrun: RUNNING job in flight",
+        "job jwunt: 5d old, kept 7d",
+        "job rlog2: 1d old, kept 7d",
+        "job rwold: 5d old, kept 7d",
+      ],
+    }),
+  );
+  const exists = (path: string) => existsSync(join(state, path));
+  for (const id of ["jbare", "jwedg", "jwold", "jwunt", "rwold"])
+    expect(exists(`worktrees/${id}`)).toBe(false);
+  for (const id of ["jbadr", "jdead", "jedge", "jlink", "jnopd", "jnotm", "rlog1"])
+    expect(exists(`jobs/${id}`)).toBe(false);
+  for (const id of ["bbadj", "bdead", "bgone", "bjunk", "bnull"])
+    expect(exists(`batches/${id}.json`)).toBe(false);
+  expect(exists("worktrees/jwnew/node_modules") && exists("worktrees/jwrun/node_modules")).toBe(
+    true,
+  );
+  expect(lstatSync(join(state, "worktrees", "jlink")).isSymbolicLink()).toBe(true);
+  expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+  expect(exists("worktrees/other") && exists("jobs/notid")).toBe(true);
+  expect(exists("batches/bkeep.json") && exists("batches/bnew0.json")).toBe(true);
+  expect(exists("batches/notbatch.json")).toBe(true);
+  expect(readFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "utf8")).toBe(
+    "module.exports = 42;\n",
+  );
+  const listed = repo.git("worktree", "list", "--porcelain");
+  expect(listed).not.toMatch(/jwold|jwedg|rwold/);
+  expect(listed).toMatch(/jwnew/);
+  expect(listed).toMatch(/jwrun/);
+
+  // a batch whose jobs are gone says so even under --all
+  const all = cleanup(repo.dir, RETENTION, ["node_modules"], { all: true, now });
+  expect(withinPasses(all)).toEqual(
+    withinPasses({
+      removed: [
+        "worktree jwnew: --all",
+        "job jjust: --all",
+        "job jlong: --all",
+        "job jwedg: --all",
+        "job jwnew: --all",
+        "job jwold: --all",
+        "job jwunt: --all",
+        "job rlog2: --all",
+        "job rwold: --all",
+        "batch bkeep: its jobs are gone",
+        "batch bnew0: --all",
+      ],
+      kept: [
+        "worktree jwrun: RUNNING job in flight",
+        "job jblk1: BLOCKED job in flight",
+        "job jstrt: STARTING job in flight",
+        "job jwrun: RUNNING job in flight",
+      ],
+    }),
+  );
+  expect(readFileSync(join(repo.dir, "node_modules", "dep", "index.js"), "utf8")).toBe(
+    "module.exports = 42;\n",
+  );
+  expect(repo.git("worktree", "list", "--porcelain")).not.toMatch(/jwnew/);
+});
+
+test("cleanup never follows a symlinked .cheapag, jobs or batches folder, and reports nothing without state", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  expect(cleanup(repo.dir, RETENTION, [], { all: true })).toEqual({ removed: [], kept: [] });
+
+  const outside = outsideFolder();
+  mkdirSync(join(outside, "jobs", "jold1"), { recursive: true });
+  writeFileSync(join(outside, "batches.json"), "{}");
+  symlinkSync(outside, join(repo.dir, ".cheapag"), "junction");
+  expect(cleanup(repo.dir, RETENTION, [], { all: true })).toEqual({ removed: [], kept: [] });
+  expect(existsSync(join(outside, "jobs", "jold1"))).toBe(true);
+  rmSync(join(repo.dir, ".cheapag"));
+
+  mkdirSync(join(repo.dir, ".cheapag"));
+  symlinkSync(join(outside, "jobs"), join(repo.dir, ".cheapag", "jobs"), "junction");
+  mkdirSync(join(outside, "batches"));
+  writeFileSync(join(outside, "batches", "bdead.json"), "{}");
+  symlinkSync(join(outside, "batches"), join(repo.dir, ".cheapag", "batches"), "junction");
+  expect(cleanup(repo.dir, RETENTION, [], { all: true })).toEqual({ removed: [], kept: [] });
+  expect(existsSync(join(outside, "jobs", "jold1"))).toBe(true);
+  expect(existsSync(join(outside, "batches", "bdead.json"))).toBe(true);
+});
+
+test("a stale worktree loses its dependency links first, then git removes it; one prune after all of them", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
+  mkdirSync(join(repo.dir, "node_modules"));
+  mkdirSync(join(repo.dir, "vendor"));
+  createWorktree(repo.dir, "jold1", ["node_modules", "vendor"]);
+  createWorktree(repo.dir, "jold2", ["node_modules", "vendor"]);
+  const calls: string[] = [];
+  const shown = (path: string) => relative(repo.dir, path).replaceAll("\\", "/") || ".";
+  const realRemoveLink = platform.removeLink;
+  vi.spyOn(platform, "removeLink").mockImplementation((path) => {
+    calls.push(`unlink ${shown(path)}`);
+    realRemoveLink(path);
+  });
+  const realGit = workspace.git;
+  vi.spyOn(workspace, "git").mockImplementation((cwd, args, env) => {
+    calls.push(
+      `git in ${shown(cwd)}: ${args.map((arg) => (isAbsolute(arg) ? shown(arg) : arg)).join(" ")}`,
+    );
+    return realGit(cwd, args, env);
+  });
+  const result = cleanup(repo.dir, RETENTION, ["node_modules", "vendor"], { all: true });
+  expect(withinPasses(result)).toEqual(
+    withinPasses({ removed: ["worktree jold1: --all", "worktree jold2: --all"], kept: [] }),
+  );
+  // prune comes last, once; which worktree goes first is readdir order
+  expect(calls.pop()).toBe("git in .: worktree prune");
+  const byWorktree = (a: string[], b: string[]) => a[2].localeCompare(b[2]);
+  expect([calls.slice(0, 3), calls.slice(3)].sort(byWorktree)).toEqual([
+    [
+      "unlink .cheapag/worktrees/jold1/node_modules",
+      "unlink .cheapag/worktrees/jold1/vendor",
+      "git in .: worktree remove --force .cheapag/worktrees/jold1",
+    ],
+    [
+      "unlink .cheapag/worktrees/jold2/node_modules",
+      "unlink .cheapag/worktrees/jold2/vendor",
+      "git in .: worktree remove --force .cheapag/worktrees/jold2",
+    ],
+  ]);
+  expect(existsSync(join(repo.dir, "node_modules")) && existsSync(join(repo.dir, "vendor"))).toBe(
+    true,
+  );
+});
+
+test("outside a git repository, the failed worktree prune stops cleanup before the job logs", () => {
+  const root = mkdtempSync(join(tmpdir(), "cheapag-notrepo-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const tree = join(root, ".cheapag", "worktrees", "jold1");
+  mkdirSync(tree, { recursive: true });
+  const log = join(root, ".cheapag", "jobs", "jold2");
+  mkdirSync(log, { recursive: true });
+  utimesSync(log, new Date(0), new Date(0));
+  expect(() => cleanup(root, RETENTION, [], { all: true })).toThrow(/worktree prune/);
+  expect(existsSync(tree)).toBe(false);
+  expect(existsSync(log)).toBe(true);
+  // no worktree removed, so no prune: the job pass runs
+  expect(cleanup(root, RETENTION, [], { all: true })).toEqual({
+    removed: ["job jold2: --all"],
+    kept: [],
+  });
+});
+
+test("cheapag clean prints exactly what went and what stayed, from any folder in the repo", () => {
+  const { repo, env, job, clean, failed } = repoWithState();
+  job("jold1", "FAIL", 8, { worktree: true });
+  job("jnew1", "FAIL", 1, { worktree: true });
+  job("jlog2", "OK", 3);
+  job("jrun1", "RUNNING", 60, { pid: process.pid });
+  const batches = join(repo.dir, ".cheapag", "batches");
+  mkdirSync(batches);
+  writeFileSync(join(batches, "bdone.json"), JSON.stringify({ jobs: ["jold1"] }));
+  expect(stdoutWithinPasses(clean())).toBe(
+    stdoutWithinPasses(
+      [
+        "✓ removed 3, kept 4",
+        "  removed worktree jold1: unlanded, 8d old",
+        "  removed job jold1: 8d old",
+        "  removed batch bdone: its jobs are gone",
+        "  kept worktree jnew1: 1d old, kept 2d",
+        "  kept job jlog2: 3d old, kept 7d",
+        "  kept job jnew1: its worktree is kept",
+        "  kept job jrun1: RUNNING job in flight",
+        "",
+      ].join("\n"),
+    ),
+  );
+
+  const sub = join(repo.dir, "sub");
+  mkdirSync(sub);
+  const run = (cwd: string, ...args: string[]) =>
+    spawnSync(process.execPath, [serverEntry, "clean", ...args], { cwd, env, encoding: "utf8" });
+  const all = run(sub, "--all");
+  expect([all.status, stdoutWithinPasses(all.stdout), all.stderr]).toEqual([
+    0,
+    stdoutWithinPasses(
+      [
+        "✓ removed 3, kept 1",
+        "  removed worktree jnew1: --all",
+        "  removed job jlog2: --all",
+        "  removed job jnew1: --all",
+        "  kept job jrun1: RUNNING job in flight",
+        "",
+      ].join("\n"),
+    ),
+    "",
+  ]);
+  expect(clean()).toBe("✓ removed 0, kept 1\n  kept job jrun1: RUNNING job in flight\n");
+
+  const usage = "✗ usage: cheapag clean [--all]   (--all: remove everything not in flight)\n";
+  expect(failed("--all", "--all")).toBe(usage);
+  expect(failed("all")).toBe(usage);
+
+  const notRepo = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-notrepo-")));
+  onTestFinished(() => rmSync(notRepo, { recursive: true, force: true }));
+  const outside = run(notRepo);
+  expect([outside.status, outside.stdout]).toEqual([
+    1,
+    `✗ ${notRepo} is not inside a git repository\n`,
+  ]);
+});
+
+test("cleanProject cleans the repo containing cwd with its cheapag.json retention", () => {
+  const { repo, env, job } = repoWithState();
+  for (const [key, value] of Object.entries(env))
+    if (key.startsWith("XDG_")) vi.stubEnv(key, value);
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+  job("jlog1", "OK", 1);
+  job("jlog2", "OK", 3);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ retention: { job_log_days: 2 } }));
+  mkdirSync(join(repo.dir, "sub"));
+  expect(cleanProject(join(repo.dir, "sub"))).toEqual({
+    removed: ["job jlog2: 3d old"],
+    kept: ["job jlog1: 1d old, kept 2d"],
+  });
+  expect(cleanProject(repo.dir, true)).toEqual({ removed: ["job jlog1: --all"], kept: [] });
+});
+
+test("startPeriodicCleanup returns an unref'ed timer, so it never keeps the process alive", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const timer = startPeriodicCleanup(
+    repo.dir,
+    { retention: RETENTION, link_dirs: [] } as never,
+    60_000,
+  );
+  onTestFinished(() => clearInterval(timer));
+  expect(timer.hasRef()).toBe(false);
+});
+
+test("gitignoreHint: the hint only when the repo does not ignore .cheapag/, nothing outside a repo", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  expect(gitignoreHint(repo.dir)).toBeUndefined();
+  writeFileSync(join(repo.dir, ".git", "info", "exclude"), "");
+  expect(gitignoreHint(repo.dir)).toBe(
+    "hint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed",
+  );
+  const root = mkdtempSync(join(tmpdir(), "cheapag-notrepo-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  expect(gitignoreHint(root)).toBeUndefined();
 });
