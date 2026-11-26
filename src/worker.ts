@@ -1,4 +1,11 @@
-import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
+import {
+  createOpencodeClient,
+  type AssistantMessage,
+  type Event,
+  type Part,
+  type SessionStatus,
+  type ToolPart,
+} from "@opencode-ai/sdk/v2";
 import { authHeaders, runningOpencode, type Opencode } from "./opencode.js";
 import { NO_SUMMARY } from "./report.js";
 import {
@@ -196,52 +203,7 @@ export async function openSession(opts: {
         const props = event.properties as { sessionID?: string };
         if (props.sessionID !== sessionID) continue;
 
-        if (event.type === "message.part.updated") {
-          const part = event.properties.part;
-          if (part.type === "tool" && part.state.input && typeof part.state.input === "object")
-            toolInputs.set(part.callID, part.state.input as Record<string, unknown>);
-          if (
-            part.type === "tool" &&
-            (part.state.status === "completed" || part.state.status === "error")
-          ) {
-            // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
-            if (
-              !calls.has(part.callID) &&
-              part.state.status === "error" &&
-              part.state.error.startsWith("The user has specified a rule which prevents")
-            ) {
-              rejections.push({
-                kind: "denied",
-                permission: part.tool,
-                what: describeCall(part.state.input),
-              });
-            }
-            calls.add(part.callID);
-            rounds.add(part.messageID);
-            if (part.tool === "finish" && part.state.status === "completed")
-              current.finish = asReport(part.state.input);
-          }
-          if (part.type === "text")
-            current.texts.set(part.id, { messageID: part.messageID, text: part.text });
-          if (part.type === "reasoning")
-            current.reasonings.set(part.id, { messageID: part.messageID, text: part.text });
-        } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
-          const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
-          // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
-          if (failed) {
-            current.error ??= errorMessage(failed);
-            current.httpStatus ??= httpStatusOf(failed);
-          }
-          messages.set(id, {
-            model: `${providerID}/${modelID}`,
-            inputTokens: tokens.input,
-            outputTokens: tokens.output,
-            reasoningTokens: tokens.reasoning,
-            cacheRead: tokens.cache.read,
-            cacheWrite: tokens.cache.write,
-            costUsd: cost,
-          });
-        } else if (event.type === "permission.asked") {
+        if (event.type === "permission.asked") {
           const props = event.properties;
           const what = props.patterns.join(" ") || props.permission;
           const metadata = props.metadata as Record<string, unknown> | undefined;
@@ -373,25 +335,8 @@ export async function openSession(opts: {
             break;
           }
           continue;
-        } else if (event.type === "session.error") {
-          current.error = errorMessage(event.properties.error);
-          current.httpStatus = httpStatusOf(event.properties.error);
-        } else if (
-          event.type === "session.status" &&
-          event.properties.status.type === "retry" &&
-          !current.limit &&
-          isLimit(event.properties.status, (model ?? opts.model).providerID)
-        ) {
-          // a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours. Stop now, so the
-          // job can fall back; this aborts the session directly, not through the job's stop signal (which means a cap)
-          const { action, message, next } = event.properties.status;
-          current.limit = {
-            model: modelName(model ?? opts.model),
-            reason: action?.reason,
-            message: action?.message ?? message,
-            next,
-          };
-          stop();
+        } else {
+          recordEvent(event, current);
         }
         opts.onEvent(event, rounds.size);
         if (event.type === "session.idle") {
@@ -416,6 +361,87 @@ export async function openSession(opts: {
       clearTimeout(backstop);
       abort.abort();
     }
+  }
+
+  /** Records what a worker event shows: tool calls, texts, usage, errors and provider limits. */
+  function recordEvent(event: Event, current: PromptState) {
+    if (event.type === "message.part.updated") {
+      recordPart(event.properties.part, current);
+    } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
+      recordMessage(event.properties.info, current);
+    } else if (event.type === "session.error") {
+      current.error = errorMessage(event.properties.error);
+      current.httpStatus = httpStatusOf(event.properties.error);
+    } else if (event.type === "session.status") {
+      recordStatus(event.properties.status, current);
+    }
+  }
+
+  /** Records a message part: a tool call, or the latest text of a text or reasoning part. */
+  function recordPart(part: Part, current: PromptState) {
+    if (part.type === "tool") recordToolCall(part, current);
+    else if (part.type === "text")
+      current.texts.set(part.id, { messageID: part.messageID, text: part.text });
+    else if (part.type === "reasoning")
+      current.reasonings.set(part.id, { messageID: part.messageID, text: part.text });
+  }
+
+  /** Records a tool call's input (to title a bash ask); once it has finished, its round, a denial or the finish report. */
+  function recordToolCall(part: ToolPart, current: PromptState) {
+    const { state } = part;
+    if (state.input && typeof state.input === "object")
+      toolInputs.set(part.callID, state.input as Record<string, unknown>);
+    if (state.status !== "completed" && state.status !== "error") return;
+    // shortcut: OpenCode 1.19's wording for a call its ruleset denied; update if a new pin rewords it
+    if (
+      !calls.has(part.callID) &&
+      state.status === "error" &&
+      state.error.startsWith("The user has specified a rule which prevents")
+    ) {
+      rejections.push({ kind: "denied", permission: part.tool, what: describeCall(state.input) });
+    }
+    calls.add(part.callID);
+    rounds.add(part.messageID);
+    if (part.tool === "finish" && state.status === "completed")
+      current.finish = asReport(state.input);
+  }
+
+  /** Records an assistant message's model and running usage, and its failure unless the prompt already has one. */
+  function recordMessage(info: AssistantMessage, current: PromptState) {
+    const { id, cost, tokens, error: failed, providerID, modelID } = info;
+    // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
+    if (failed) {
+      current.error ??= errorMessage(failed);
+      current.httpStatus ??= httpStatusOf(failed);
+    }
+    messages.set(id, {
+      model: `${providerID}/${modelID}`,
+      inputTokens: tokens.input,
+      outputTokens: tokens.output,
+      reasoningTokens: tokens.reasoning,
+      cacheRead: tokens.cache.read,
+      cacheWrite: tokens.cache.write,
+      costUsd: cost,
+    });
+  }
+
+  /**
+   * A retry that means a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours.
+   * Stop now, so the job can fall back; this aborts the session directly, not through the job's stop signal (which
+   * means a cap).
+   */
+  function recordStatus(status: SessionStatus, current: PromptState) {
+    if (status.type !== "retry" || current.limit) return;
+    const model = current.model ?? opts.model;
+    if (!isLimit(status, model.providerID)) return;
+    const { action, message, next } = status;
+    current.limit = {
+      model: modelName(model),
+      reason: action?.reason,
+      message: action?.message ?? message,
+      next,
+    };
+    current.stop();
   }
 
   function totals(): SessionTotals {
