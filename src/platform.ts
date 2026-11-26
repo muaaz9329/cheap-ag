@@ -64,6 +64,41 @@ export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals
   }
 }
 
+/** Windows' default PATHEXT, for an environment that does not set it. */
+const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+
+/** The file names `name` can have: on Windows each PATHEXT extension in order, bare name last. */
+function executableNames(name: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv) {
+  if (platform !== "win32") return [name];
+  const extensions = (env.PATHEXT ?? DEFAULT_PATHEXT).split(";").filter(Boolean);
+  return [...extensions.map((extension) => name + extension), name];
+}
+
+/** The path of the first of `names` that exists in `directory`. */
+function findExact(directory: string, names: string[]) {
+  for (const name of names) {
+    const fullPath = join(directory, name);
+    if (existsSync(fullPath)) return fullPath;
+  }
+  return undefined;
+}
+
+/** Like `findExact`, but a name matches whatever its case on disk; an unreadable directory has no match. */
+function findIgnoringCase(directory: string, names: string[]) {
+  for (const name of names) {
+    // Windows filesystems are case-insensitive; read the dir so a case difference still matches
+    let entries: string[];
+    try {
+      entries = readdirSync(directory);
+    } catch {
+      return undefined;
+    }
+    const match = entries.find((entry) => entry.toLowerCase() === name.toLowerCase());
+    if (match) return join(directory, match);
+  }
+  return undefined;
+}
+
 /** The first executable named `name` on `env`'s PATH, or undefined. On Windows it tries PATHEXT extensions, bare name last. */
 export function which(
   name: string,
@@ -71,33 +106,11 @@ export function which(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   const directories = (env.PATH ?? "").split(delimiter).filter(Boolean);
-  const candidates =
-    platform === "win32"
-      ? [
-          ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
-            .split(";")
-            .filter(Boolean)
-            .map((extension) => name + extension),
-          name,
-        ]
-      : [name];
+  const candidates = executableNames(name, platform, env);
+  const findIn = platform === "win32" ? findIgnoringCase : findExact;
   for (const directory of directories) {
-    for (const candidate of candidates) {
-      if (platform !== "win32") {
-        const fullPath = join(directory, candidate);
-        if (existsSync(fullPath)) return fullPath;
-        continue;
-      }
-      // Windows filesystems are case-insensitive; read the dir so a case difference still matches
-      let entries: string[];
-      try {
-        entries = readdirSync(directory);
-      } catch {
-        break;
-      }
-      const match = entries.find((entry) => entry.toLowerCase() === candidate.toLowerCase());
-      if (match) return join(directory, match);
-    }
+    const found = findIn(directory, candidates);
+    if (found) return found;
   }
   return undefined;
 }
