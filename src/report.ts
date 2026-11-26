@@ -235,7 +235,6 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   const has = (s: Section) => STATUS_SECTIONS[status].includes(s);
   // a compacted batch block drops summary/changed/review/log (OK's risks: survive)
   const lines = [jobHeadline(r)];
-  const keep = new Set<string>(); // question/options lines are never elided
   // a worker with no summary has nothing to put there: `found:` leads instead
   const lead = !compacted && r.summary === NO_SUMMARY && has("found") && r.found;
   if (lead) lines.push(...wrap(`found: ${oneLine(r.found!)}`));
@@ -253,18 +252,8 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
         .map((v) => `${v.path}:${v.start}-${v.end}`)
         .join(", ")}`,
     );
-  const asked = r.questions ?? (r.question ? [r.question] : []);
-  if (has("question"))
-    asked.forEach((question, n) => {
-      const q = [`question${asked.length > 1 ? ` ${n + 1}` : ""}: ${oneLine(question.text)}`];
-      if (question.options.length)
-        q.push(
-          "options:",
-          ...question.options.slice(0, 4).map((o, i) => `  ${"abcd"[i]}) ${oneLine(o)}`),
-        );
-      q.forEach((l) => keep.add(l));
-      lines.push(...q);
-    });
+  const questions = has("question") ? questionLines(r) : [];
+  lines.push(...questions);
   if (has("conflict") && r.conflict?.length)
     lines.push("conflict:", ...r.conflict.map((x) => `  ${oneLine(x)}`));
   if (has("error") && r.error?.length) {
@@ -292,7 +281,29 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
       `cleanup error: ${oneLine(r.cleanupError)} (the change landed; only its worktree folder was left behind)`,
     );
   if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
-  return lines.map((l) => (keep.has(l) ? l.replaceAll("\t", "  ") : fit(l))).join("\n");
+  const neverElided = new Set(questions); // question/options lines are never elided
+  return lines
+    .map((line) => (neverElided.has(line) ? line.replaceAll("\t", "  ") : fit(line)))
+    .join("\n");
+}
+
+/** Every question asked, numbered when there are several, each with its lettered options. */
+function questionLines(record: JobRecord) {
+  const asked = record.questions ?? (record.question ? [record.question] : []);
+  return asked.flatMap((question, index) => {
+    const number = asked.length > 1 ? ` ${index + 1}` : "";
+    const lines = [`question${number}: ${oneLine(question.text)}`];
+    if (question.options.length) lines.push("options:", ...optionLines(question.options));
+    return lines;
+  });
+}
+
+/** Up to four options, lettered a) to d). */
+function optionLines(options: string[]) {
+  const letters = "abcd";
+  return options
+    .slice(0, letters.length)
+    .map((option, index) => `  ${letters[index]}) ${oneLine(option)}`);
 }
 
 /** The first line: status, job, steps, file counts, then the optional tokens in D3 order. */
