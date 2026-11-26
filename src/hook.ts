@@ -1,13 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
-import { loadConfig, userConfigFile } from "./config.js";
+import { type Config, loadConfig, userConfigFile } from "./config.js";
 import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch", "Bash"]);
-// Bash forms that write a file: redirects and heredocs into a path, in-place sed/perl, tee, cp/mv targets, and
-// python/node one-liners that open files for writing. The benchmark showed Claude writing whole files this way.
+// Bash forms that write a named file: redirects and heredocs into a path, tee, and cp/mv targets; in-place sed/perl and
+// python/node one-liners follow. The benchmark showed Claude writing whole files these ways.
 const BASH_WRITES = [
   /(?:^|[^<>])>{1,2}\s*(?!&)["']?(?<path>[^\s"'|;&]+)/g,
   /\btee\s+(?:-a\s+)?["']?(?<path>[^\s"'|;&]+)/g,
@@ -23,18 +23,18 @@ const REDIRECT =
 const CHEAPAG_TOOL = /^mcp__(?:plugin_cheapag_)?cheapag__/;
 // a job block's first word means the worker did not finish the step (the server's FAIL/PARTIAL/TIMEOUT)
 const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /;
-// an OK whose checks passed in the worker's worktree (ticket 30: re-running them caught nothing)
+// an OK whose checks passed in the worker's worktree (re-running them caught nothing)
 const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
-// a command permission block (ticket 69) is the user's decision, so reply waits for AskUserQuestion like take-over "ask"
+// a command permission block is the user's decision, so reply waits for AskUserQuestion like take-over "ask"
 const PERMISSION_BLOCK = /^BLOCKED (\S+) step=\S+ permission\b/m;
 const PERMISSION_REPLY =
   "This job is asking for a command permission: ask the user with AskUserQuestion first, then reply with their answer.";
 // shortcut: the usual runners only; add the repo's test_cmd if Claude re-runs tests through a custom script
-const TEST_CMD =
+const TEST_COMMAND =
   /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 // sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
-// asking the user and loading a tool are free in both take-over modes (ticket 51)
+// asking the user and loading a tool are free in both take-over modes
 const ASK_TOOLS = new Set(["AskUserQuestion", "ToolSearch"]);
 // the desktop app's own tools, e.g. mcp__ccd_turn__wrap_up, are the user's session, not the repo
 const DESKTOP_TOOL = "mcp__ccd_";
@@ -57,8 +57,10 @@ const READ_PARTS = [
   "echo",
 ];
 
-/** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
-const flag = (root: string) => join(root, ".cheapag", "hook.json");
+/** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off. */
+function flagFile(root: string) {
+  return join(root, ".cheapag", "hook.json");
+}
 
 /**
  * `cheapag hook [on|off]`: the user-only `/cheapag:hook` toggles the edit guard for the current repo; no argument
@@ -70,34 +72,45 @@ export function hook(args: string[]): number | Promise<number> {
   if (args.length === 1 && args[0] === "context") return context();
   if (args.length === 2 && args[0] === "context" && args[1] === "codex") return context("codex");
   if (args.length === 1 && args[0] === "result") return result();
-  const out = (line: string) => process.stdout.write(line + "\n");
+  return toggle(args);
+}
+
+function print(line: string) {
+  process.stdout.write(line + "\n");
+}
+
+/** `cheapag hook [on|off]`: turns the edit guard on or off for the current repo, then prints its state. */
+function toggle(args: string[]): number {
   if (args.length > 1 || (args.length && args[0] !== "on" && args[0] !== "off")) {
-    out(`✗ ${USAGE}`);
+    print(`✗ ${USAGE}`);
     return 1;
   }
   let root: string;
   try {
     root = projectRoot(process.cwd());
-  } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+  } catch (error) {
+    print(`✗ ${(error as Error).message}`);
     return 1;
   }
   if (args[0] === "on") {
     mkdirSync(join(root, ".cheapag"), { recursive: true });
-    writeFileSync(flag(root), JSON.stringify({ on: true }) + "\n");
-  } else if (args[0] === "off") rmSync(flag(root), { force: true });
+    writeFileSync(flagFile(root), JSON.stringify({ on: true }) + "\n");
+  } else if (args[0] === "off") rmSync(flagFile(root), { force: true });
+  print(guardState(root));
+  return 0;
+}
+
+/** The guard's state line for the repo; a damaged cheapag.json shows in place of the line limit. */
+function guardState(root: string): string {
   let lines: number | string;
   try {
     lines = loadConfig(root).guard_lines;
-  } catch (err) {
-    lines = `? (${(err as Error).message})`;
+  } catch (error) {
+    lines = `? (${(error as Error).message})`;
   }
-  out(
-    existsSync(flag(root))
-      ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`
-      : `✓ edit guard off for ${root}: Claude's edits are not limited.`,
-  );
-  return 0;
+  if (!existsSync(flagFile(root)))
+    return `✓ edit guard off for ${root}: Claude's edits are not limited.`;
+  return `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`;
 }
 
 /**
@@ -111,8 +124,10 @@ const { version: INSTALLED } = createRequire(import.meta.url)("../package.json")
 };
 const UPDATE_URL = "https://registry.npmjs.org/cheap-agent/latest";
 // once a day is enough for a notice the user cannot act on mid-session (Claude Code's own check is the same shape)
-const DAY_MS = 24 * 60 * 60 * 1000;
-const updateCacheFile = () => join(dirname(userConfigFile()), "update-check.json");
+const DAY_MILLISECONDS = 24 * 60 * 60 * 1000;
+function updateCacheFile() {
+  return join(dirname(userConfigFile()), "update-check.json");
+}
 type UpdateCache = { checked?: number; latest?: string };
 
 /**
@@ -166,8 +181,9 @@ async function context(host?: "claude" | "codex"): Promise<number> {
 }
 
 /** Wraps the notice in yellow, except in the desktop app, which does not render terminal colours. */
-const colour = (text: string) =>
-  process.env.CLAUDE_CODE_ENTRYPOINT === "claude-desktop" ? text : `\x1b[33m${text}\x1b[39m`;
+function colour(text: string) {
+  return process.env.CLAUDE_CODE_ENTRYPOINT === "claude-desktop" ? text : `\x1b[33m${text}\x1b[39m`;
+}
 
 /** The newer version to announce, or undefined when the installed version is current (or the check is opted out). */
 async function newerVersion(): Promise<string | undefined> {
@@ -190,12 +206,12 @@ async function latestVersion(): Promise<string | undefined> {
   } catch {
     // no usable cache: check now
   }
-  if (typeof cache.checked === "number" && Date.now() - cache.checked < DAY_MS)
+  if (typeof cache.checked === "number" && Date.now() - cache.checked < DAY_MILLISECONDS)
     return cache.latest || undefined;
   let latest = cache.latest || undefined;
   try {
-    const res = await fetch(UPDATE_URL, { signal: AbortSignal.timeout(1500) });
-    const body = (await res.json()) as { version?: unknown };
+    const response = await fetch(UPDATE_URL, { signal: AbortSignal.timeout(1500) });
+    const body = (await response.json()) as { version?: unknown };
     if (typeof body.version === "string") latest = body.version;
   } catch {
     // offline, slow or malformed: keep the old latest (or none)
@@ -211,15 +227,19 @@ async function latestVersion(): Promise<string | undefined> {
 
 /** True when `release` is a newer major or minor than `installed`; a patch-only bump is ignored, as is any non x.y.z. */
 function majorOrMinorNewer(release: string, installed: string): boolean {
-  const [a, b] = [nums(release), nums(installed)];
-  if (!a || !b) return false;
-  return a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+  const releaseParts = versionParts(release);
+  const installedParts = versionParts(installed);
+  if (!releaseParts || !installedParts) return false;
+  const [releaseMajor, releaseMinor] = releaseParts;
+  const [installedMajor, installedMinor] = installedParts;
+  if (releaseMajor > installedMajor) return true;
+  return releaseMajor === installedMajor && releaseMinor > installedMinor;
 }
 
 /** A version as numbers, only when it is exactly x.y.z; anything else (a tag, a range) is ignored. */
-function nums(v: string): readonly [number, number, number] | undefined {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+function versionParts(version: string): readonly [number, number, number] | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
 }
 
 /**
@@ -229,7 +249,7 @@ function nums(v: string): readonly [number, number, number] | undefined {
 function guard(): number {
   try {
     const input = JSON.parse(readFileSync(0, "utf8"));
-    const reason = budget(input) ?? check(input);
+    const reason = promptRules(input) ?? editCheck(input);
     if (reason)
       process.stdout.write(
         JSON.stringify({
@@ -264,14 +284,30 @@ type PromptState = {
   okPassed?: boolean;
   permission?: string;
 };
+/** A main-loop call the prompt rules apply to: it names its session, prompt and cwd, and carries no agent_id. */
+type MainLoopInput = Input & { session_id: string; prompt_id: string; cwd: string };
+
+function mainLoopCall(input: Input): input is MainLoopInput {
+  const named = input.session_id && input.prompt_id;
+  return Boolean(named && !input.agent_id && typeof input.cwd === "string");
+}
 
 /** Per-session state; the repo-wide marker lets the plugin's shell test skip node until a cheapag result was ever seen. */
-const stateFile = (root: string, session: string) =>
-  join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
-const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
+function stateFile(root: string, session: string) {
+  return join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
+}
+function markerFile(root: string) {
+  return join(root, ".cheapag", "hook", "takeover");
+}
+
+const ASK_FIRST =
+  "The worker did not finish this step: ask the user first (continue with Claude, retry the worker on another model, or stop) with one question, then do what they pick.";
+const HAND_TO_SONNET = `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
+const OK_DONE =
+  "An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.";
 
 /**
- * The prompt rules (tickets 29, 30, 51), for the main loop only:
+ * The prompt rules, for the main loop only:
  * - after a FAIL, PARTIAL or TIMEOUT, takeover "ask" (the default) allows only reads, one AskUserQuestion, tool loading
  *   and the desktop app's tools; "sonnet" leaves the Agent tool (to hand the step to a Sonnet subagent), reads, the same
  *   asking/loading tools and cheapag's tools; "self" denies the call after limits.takeover_calls (resolved take-overs
@@ -279,10 +315,9 @@ const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
  * - after an OK whose checks passed, re-running tests is denied: unverified OKs were as correct as verified ones.
  * A new user prompt clears both. cheapag's own tools and a subagent's calls are never counted or denied.
  */
-function budget(input: Input): string | undefined {
-  const { cwd } = input;
-  if (!input.session_id || !input.prompt_id || input.agent_id || typeof cwd !== "string") return;
-  const root = projectRoot(cwd);
+function promptRules(input: Input): string | undefined {
+  if (!mainLoopCall(input)) return;
+  const root = projectRoot(input.cwd);
   const file = stateFile(root, input.session_id);
   let state: PromptState;
   try {
@@ -296,64 +331,84 @@ function budget(input: Input): string | undefined {
     // the user is being asked: whatever they pick is theirs, and the reply that follows may go through
     state = { ...state, permission: undefined };
     writeFileSync(file, JSON.stringify(state satisfies PromptState));
-  } else if (state.permission && CHEAPAG_TOOL.test(tool) && tool.endsWith("__reply")) {
-    const job = input.tool_input?.job;
-    if (typeof job !== "string" || job === state.permission) return PERMISSION_REPLY;
   }
+  if (replyBeforeAsk(state, tool, input.tool_input?.job)) return PERMISSION_REPLY;
   if (CHEAPAG_TOOL.test(tool)) return;
   const config = loadConfig(root);
-  const command = input.tool_input?.command;
-  /** What a waiting take-over still lets through: asking the user, loading a tool, the desktop app's tools, reads, and edits outside the repo. */
-  const harmless = () =>
-    ASK_TOOLS.has(tool) ||
-    tool.startsWith(DESKTOP_TOOL) ||
-    READ_TOOLS.has(tool) ||
-    (OUTSIDE_EDITS.has(tool) && outside(root, cwd, input.tool_input)) ||
-    (tool === "Bash" && typeof command === "string" && readOnly(command));
-  if (state.notDone && config.takeover === "ask") {
+  if (state.notDone) return takeoverReason(state, file, { input, root, config });
+  if (state.okPassed && runsTests(tool, input.tool_input?.command)) return OK_DONE;
+}
+
+function runsTests(tool: string, command: unknown): boolean {
+  return tool === "Bash" && typeof command === "string" && TEST_COMMAND.test(command);
+}
+
+/** A reply to the job whose command permission the user has not been asked about yet; a reply naming no job counts. */
+function replyBeforeAsk(state: PromptState, tool: string, job: unknown): boolean {
+  if (!state.permission || !CHEAPAG_TOOL.test(tool) || !tool.endsWith("__reply")) return false;
+  return typeof job !== "string" || job === state.permission;
+}
+
+/**
+ * After the worker did not finish: the takeover mode's reason to deny this call. The call that resolves the take-over
+ * (AskUserQuestion in "ask", the hand-off in "sonnet") clears it; "self" counts each call it lets through.
+ */
+function takeoverReason(
+  state: PromptState,
+  file: string,
+  call: { input: MainLoopInput; root: string; config: Config },
+): string | undefined {
+  const { input, root, config } = call;
+  const tool = input.tool_name ?? "";
+  if (config.takeover === "ask") {
     if (tool === "AskUserQuestion") {
       // the user is being asked: whatever they pick is theirs
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
       return;
     }
-    if (harmless()) return;
-    return "The worker did not finish this step: ask the user first (continue with Claude, retry the worker on another model, or stop) with one question, then do what they pick.";
+    if (harmlessCall(tool, input, root)) return;
+    return ASK_FIRST;
   }
-  if (state.notDone && config.takeover === "sonnet") {
+  if (config.takeover === "sonnet") {
     if (tool === "Agent" || tool === "Task") {
       // the hand-off is happening: one per FAIL, so the guard is off once the taker takes over
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
       return;
     }
-    if (harmless()) return;
-    return `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
+    if (harmlessCall(tool, input, root)) return;
+    return HAND_TO_SONNET;
   }
-  if (state.notDone) {
-    const limit = config.limits.takeover_calls;
-    if (!limit) return;
-    if (state.calls >= limit)
-      return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
-    writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
-    return;
-  }
-  if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
-    return "An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.";
-  }
+  const limit = config.limits.takeover_calls;
+  if (!limit) return;
+  if (state.calls >= limit)
+    return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
+  writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
+}
+
+/** What a waiting take-over still lets through: asking the user, loading a tool, the desktop app's tools, reads, and edits outside the repo. */
+function harmlessCall(tool: string, input: MainLoopInput, root: string): boolean {
+  const command = input.tool_input?.command;
+  return (
+    ASK_TOOLS.has(tool) ||
+    tool.startsWith(DESKTOP_TOOL) ||
+    READ_TOOLS.has(tool) ||
+    (OUTSIDE_EDITS.has(tool) && outside(root, input.cwd, input.tool_input)) ||
+    (tool === "Bash" && typeof command === "string" && readOnly(command))
+  );
 }
 
 /** Reads Claude Code's PostToolUse JSON for a cheapag tool and records what its result means for this prompt. Never blocks. */
 function result(): number {
   try {
     const input: Input = JSON.parse(readFileSync(0, "utf8"));
-    if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string")
-      return 0;
-    const out = text(input.tool_response);
-    const notDone = didNotFinish(out),
-      okPassed = OK_PASSED.test(out);
+    if (!mainLoopCall(input)) return 0;
+    const response = responseText(input.tool_response);
+    const notDone = didNotFinish(response);
+    const okPassed = OK_PASSED.test(response);
     // the worker's own `land applied` finished the block: drop the take-over even when the check never ran
-    const cleared = /^OK j\w+ (applied|discarded)\b/m.test(out);
-    // a command permission block: Claude must ask the user before it may reply (ticket 69)
-    const permission = PERMISSION_BLOCK.exec(out)?.[1];
+    const cleared = /^OK j\w+ (applied|discarded)\b/m.test(response);
+    // a command permission block: Claude must ask the user before it may reply
+    const permission = PERMISSION_BLOCK.exec(response)?.[1];
     if (!notDone && !okPassed && !cleared && !permission) return 0;
     const root = projectRoot(input.cwd);
     const file = stateFile(root, input.session_id);
@@ -376,7 +431,7 @@ function result(): number {
       } satisfies PromptState),
     );
     // shortcut: the marker is never removed, so a repo that once had a cheapag result runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
-    writeFileSync(marker(root), "");
+    writeFileSync(markerFile(root), "");
   } catch {
     // never block
   }
@@ -384,35 +439,44 @@ function result(): number {
 }
 
 /** The text of a tool response: a string, MCP content blocks, or an object holding them. */
-function text(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return v.map(text).join("\n");
-  if (v && typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    return typeof o.text === "string" ? o.text : text(o.content ?? "");
+function responseText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(responseText).join("\n");
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return typeof record.text === "string" ? record.text : responseText(record.content ?? "");
   }
   return "";
 }
 
-function check(input: Input): string | undefined {
+/** The edit guard: the reason to deny an edit or a Bash command that writes a file, or undefined. */
+function editCheck(input: Input): string | undefined {
   if (process.env.CHEAPAG_ALLOW_EDITS === "1" || !EDIT_TOOLS.has(input.tool_name ?? "")) return;
-  const tool = input.tool_input ?? {};
+  const toolInput = input.tool_input ?? {};
   if (typeof input.cwd !== "string") return;
+  const { command } = toolInput;
   if (input.tool_name === "Bash")
-    return typeof tool.command === "string" ? bashCheck(input.cwd, tool.command) : undefined;
+    return typeof command === "string" ? bashCheck(input.cwd, command) : undefined;
   if (input.tool_name === "apply_patch")
-    return typeof tool.command === "string"
-      ? patchCheck(input.cwd, tool.command, input)
-      : undefined;
-  if (typeof tool.file_path !== "string") return;
-  const root = projectRoot(input.cwd);
-  if (!existsSync(flag(root))) return;
-  const file = resolve(input.cwd, tool.file_path);
+    return typeof command === "string" ? patchCheck(input.cwd, command, input) : undefined;
+  return fileCheck(input, input.cwd, toolInput);
+}
+
+/** Edit, Write and MultiEdit in a repo with the guard on: the size rule, then the turn rule. */
+function fileCheck(
+  input: Input,
+  cwd: string,
+  toolInput: Record<string, unknown>,
+): string | undefined {
+  if (typeof toolInput.file_path !== "string") return;
+  const root = projectRoot(cwd);
+  if (!existsSync(flagFile(root))) return;
+  const file = resolve(cwd, toolInput.file_path);
   if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
-  const lines = changed(input.tool_name!, tool, file);
+  const lines = changedLines(input.tool_name!, toolInput, file);
   const state = turnState(input, root);
-  const reason = editRules(state?.turn.edits, tool.file_path, file, lines, limit);
+  const reason = editRules(state?.turn.edits, toolInput.file_path, file, lines, limit);
   if (reason) return reason;
   if (state) saveTurn(root, state);
 }
@@ -459,14 +523,16 @@ function editRules(
 /** A Codex patch file section: `*** Update File:`, `*** Add File:` or `*** Delete File:`; other `***` lines end it. */
 const PATCH_FILE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/;
 
+type FileEdit = { path: string; lines: number };
+
 /** Codex's apply_patch text as one entry per file with the lines its hunks add and remove. Unknown text yields none. */
-function patchEdits(patch: string): { path: string; lines: number }[] {
-  const edits: { path: string; lines: number }[] = [];
-  let current: { path: string; lines: number } | undefined;
+function patchEdits(patch: string): FileEdit[] {
+  const edits: FileEdit[] = [];
+  let current: FileEdit | undefined;
   for (const line of patch.split("\n")) {
-    const file = PATCH_FILE.exec(line);
-    if (file) {
-      current = { path: file[1].trim(), lines: 0 };
+    const section = PATCH_FILE.exec(line);
+    if (section) {
+      current = { path: section[1].trim(), lines: 0 };
       edits.push(current);
     } else if (line.startsWith("*** ") && !line.startsWith("*** Move to:")) {
       current = undefined;
@@ -480,7 +546,7 @@ function patchEdits(patch: string): { path: string; lines: number }[] {
 /** Each file in a Codex patch goes through the Edit/Write rules; a malformed patch yields no files and is allowed. */
 function patchCheck(cwd: string, patch: string, input: Input): string | undefined {
   const root = projectRoot(cwd);
-  if (!existsSync(flag(root))) return;
+  if (!existsSync(flagFile(root))) return;
   const edits = patchEdits(patch);
   if (!edits.length) return;
   const limit = loadConfig(root).guard_lines;
@@ -500,17 +566,19 @@ function patchCheck(cwd: string, patch: string, input: Input): string | undefine
 }
 
 /** Plans live in .plan/ and are how Claude delegates, so the guard never blocks them. */
-const isPlan = (root: string, file: string) => file.startsWith(join(root, ".plan") + sep);
+function isPlan(root: string, file: string) {
+  return file.startsWith(join(root, ".plan") + sep);
+}
 
 /** Sonnet take-over: Bash is read-only when no part writes or runs tests, and every `&&`/`;`/`|` part starts with a reader. */
 function readOnly(command: string): boolean {
   if (command.includes(">")) return false;
-  if (TEST_CMD.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command))
+  if (TEST_COMMAND.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command))
     return false;
-  if (BASH_WRITES.some((re) => command.match(re))) return false;
+  if (BASH_WRITES.some((pattern) => command.match(pattern))) return false;
   const parts = command
     .split(/&&|\|\||;|\|/)
-    .map((p) => p.trim())
+    .map((part) => part.trim())
     .filter(Boolean);
   return parts.length > 0 && parts.every(readPart);
 }
@@ -520,18 +588,19 @@ function readOnly(command: string): boolean {
  * `X=1 git log` and `cd /repo` change no file, and `git -C <dir> diff` reads like `git diff`.
  */
 function readPart(part: string): boolean {
-  const p = stripGitOptions(part.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")).trim();
-  if (p === "cd" || p.startsWith("cd ") || p.startsWith("export ")) return true;
-  return READ_PARTS.some((r) => p === r || p.startsWith(r + " "));
+  const command = stripGitOptions(part.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")).trim();
+  if (command === "cd" || command.startsWith("cd ") || command.startsWith("export ")) return true;
+  return READ_PARTS.some((reader) => command === reader || command.startsWith(reader + " "));
 }
 
 /** Drops git's directory/pager options (`-C <dir>`, `--no-pager`, `-c k=v`) so the verb starts the part. */
-const stripGitOptions = (part: string) =>
-  part.replace(/^git\s+(?:(?:-C\s+\S+|--no-pager|-c\s+\S+)\s+)+/, "git ");
+function stripGitOptions(part: string) {
+  return part.replace(/^git\s+(?:(?:-C\s+\S+|--no-pager|-c\s+\S+)\s+)+/, "git ");
+}
 
 /** The first line says the worker did not finish, unless an env-kind FAIL could not run its check at all: nothing to take over. */
-function didNotFinish(out: string): boolean {
-  return out
+function didNotFinish(response: string): boolean {
+  return response
     .split("\n")
     .some(
       (line) => NOT_DONE.test(line) && !(line.startsWith("FAIL ") && /\bcheck=env\b/.test(line)),
@@ -539,54 +608,68 @@ function didNotFinish(out: string): boolean {
 }
 
 /** An edit path resolves outside the repo, so it cannot touch the worker's worktree. */
-function outside(root: string, cwd: string, tool: Record<string, unknown> | undefined): boolean {
-  const p = tool?.file_path ?? tool?.notebook_path;
-  if (typeof p !== "string") return false;
-  const abs = resolve(cwd, p);
-  return abs !== root && !abs.startsWith(root + sep);
+function outside(
+  root: string,
+  cwd: string,
+  toolInput: Record<string, unknown> | undefined,
+): boolean {
+  const path = toolInput?.file_path ?? toolInput?.notebook_path;
+  if (typeof path !== "string") return false;
+  const absolute = resolve(cwd, path);
+  return absolute !== root && !absolute.startsWith(root + sep);
 }
 
 /** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
 function bashCheck(cwd: string, command: string): string | undefined {
   const root = projectRoot(cwd);
-  if (!existsSync(flag(root))) return;
+  if (!existsSync(flagFile(root))) return;
   const targets: string[] = [];
-  for (const re of BASH_WRITES)
-    for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);
-  const inRepo = (p: string) => {
-    const abs = resolve(cwd, p);
-    return abs.startsWith(root + sep) && !isPlan(root, abs);
+  for (const pattern of BASH_WRITES)
+    for (const match of command.matchAll(pattern))
+      if (match.groups?.path) targets.push(match.groups.path);
+  const inRepo = (path: string) => {
+    const absolute = resolve(cwd, path);
+    return absolute.startsWith(root + sep) && !isPlan(root, absolute);
   };
-  const written = targets.filter((p) => p !== "/dev/null" && inRepo(p));
+  const written = targets.filter((path) => path !== "/dev/null" && inRepo(path));
   if (written.length) return `Bash writing ${written[0]}: ${REDIRECT}`;
   if (BASH_INPLACE.test(command)) return `Bash in-place edit (sed/perl -i): ${REDIRECT}`;
   if (BASH_CODE_WRITES.test(command)) return `Bash running code that writes files: ${REDIRECT}`;
 }
 
-/** Changed lines of an edit: the larger side once the lines both sides share at the start and end are dropped. */
-function changed(name: string, tool: Record<string, unknown>, file: string) {
-  const text = (v: unknown) => (typeof v === "string" ? v : "");
+/** Changed lines of an Edit, a MultiEdit (all its edits together) or a Write (against the file on disk). */
+function changedLines(toolName: string, toolInput: Record<string, unknown>, file: string) {
+  const asString = (value: unknown) => (typeof value === "string" ? value : "");
   // shortcut: replace_all counts one occurrence; count matches in the file if guarded edits slip through that way
-  if (name === "Edit") return diff(text(tool.old_string), text(tool.new_string));
-  if (name === "MultiEdit")
-    return (Array.isArray(tool.edits) ? tool.edits : []).reduce(
-      (n: number, e) => n + diff(text(e?.old_string), text(e?.new_string)),
+  if (toolName === "Edit")
+    return differingLines(asString(toolInput.old_string), asString(toolInput.new_string));
+  if (toolName === "MultiEdit")
+    return (Array.isArray(toolInput.edits) ? toolInput.edits : []).reduce(
+      (total: number, edit) =>
+        total + differingLines(asString(edit?.old_string), asString(edit?.new_string)),
       0,
     );
-  return diff(existsSync(file) ? readFileSync(file, "utf8") : "", text(tool.content));
+  const before = existsSync(file) ? readFileSync(file, "utf8") : "";
+  return differingLines(before, asString(toolInput.content));
 }
 
-function diff(before: string, after: string) {
-  const a = before.split("\n"),
-    b = after.split("\n");
+/** The larger side's line count once the lines both sides share at the start and end are dropped. */
+function differingLines(before: string, after: string) {
+  const beforeLines = before.split("\n");
+  const afterLines = after.split("\n");
   let start = 0;
-  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  while (
+    start < beforeLines.length &&
+    start < afterLines.length &&
+    beforeLines[start] === afterLines[start]
+  )
+    start++;
   let end = 0;
   while (
-    end < a.length - start &&
-    end < b.length - start &&
-    a[a.length - 1 - end] === b[b.length - 1 - end]
+    end < beforeLines.length - start &&
+    end < afterLines.length - start &&
+    beforeLines[beforeLines.length - 1 - end] === afterLines[afterLines.length - 1 - end]
   )
     end++;
-  return Math.max(a.length - start - end, b.length - start - end);
+  return Math.max(beforeLines.length - start - end, afterLines.length - start - end);
 }
