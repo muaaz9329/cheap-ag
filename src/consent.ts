@@ -184,36 +184,40 @@ export function consentGate(
   // consent names the provider it was given for: a new login elsewhere needs a new opt-in; so does another route
   if (!consent || consent.provider !== provider || routeMoved(root, consent))
     return { block: consentBlock(root, provider, full) };
+  const route = allowedRoute(full, provider, consent);
+  if (route) return { route };
+  return {
+    block: failBlock(
+      `no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`,
+    ),
+  };
+}
+
+/** The full route with every role and fallback the consent does not allow taken out; undefined when no model may implement. */
+function allowedRoute(full: Route, provider: Provider["provider"], consent: Consent) {
   const zdr = consent.mode === "zdr-only" && provider === "openrouter";
   const pick = (ms: (WorkerModel | undefined)[]) =>
     ms
       .filter((m): m is WorkerModel => !!m && allowed(provider, consent, m))
       .map((m) => (zdr ? withZdr(m) : m));
   const [implement, ...fallbacks] = pick([full.implement, ...full.fallbacks, full.escalation]);
-  if (!implement)
-    return {
-      block: failBlock(
-        `no allowed model for ${providerLabel(provider)} under this repo's consent (${describe(consent)}); ask the user to widen it with /cheapag:allow`,
-      ),
-    };
+  if (!implement) return undefined;
   const [escalation] = pick([full.escalation]);
-  const others = (m: WorkerModel) =>
+  const notImplementOrEscalation = (m: WorkerModel) =>
     modelName(m) !== modelName(implement) && modelName(m) !== modelName(escalation ?? implement);
   // research with nothing of its own allowed runs on the implement chain
   const [research, ...researchFallbacks] = pick([full.research, ...full.researchFallbacks]);
   return {
-    route: {
-      implement,
-      // the escalation model never doubles as a fallback; it keeps its own place (and cap check) in the job
-      fallbacks: fallbacks.filter(others),
-      escalation:
-        escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined,
-      research: research ?? implement,
-      researchFallbacks: research ? researchFallbacks : fallbacks.filter(others),
-      // a disallowed tier model is dropped: that tier then runs on the implement model
-      medium: pick([full.medium])[0],
-      hard: pick([full.hard])[0],
-    },
+    implement,
+    // the escalation model never doubles as a fallback; it keeps its own place (and cap check) in the job
+    fallbacks: fallbacks.filter(notImplementOrEscalation),
+    escalation:
+      escalation && modelName(escalation) !== modelName(implement) ? escalation : undefined,
+    research: research ?? implement,
+    researchFallbacks: research ? researchFallbacks : fallbacks.filter(notImplementOrEscalation),
+    // a disallowed tier model is dropped: that tier then runs on the implement model
+    medium: pick([full.medium])[0],
+    hard: pick([full.hard])[0],
   };
 }
 
