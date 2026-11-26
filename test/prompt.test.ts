@@ -45,7 +45,7 @@ function openTerminal(opts: { options: Option[]; initial?: number; columns?: num
     input.write(keys);
     await new Promise((resolve) => setImmediate(resolve));
   };
-  return { picked, press, written, input };
+  return { picked, press, written, input, output };
 }
 
 /** The screen for rows `from`..`to` (1-based) of FIFTEEN with one row selected. */
@@ -178,4 +178,20 @@ test("select: an error on the first draw rejects and leaves the terminal taken",
   expect(written).toEqual(["\x1b[?25l"]);
   expect(input.setRawMode.mock.calls).toEqual([[true]]);
   expect(input.listenerCount("keypress")).toBe(1);
+});
+
+test("select: the number of rows shown is fixed when the prompt opens, even if the list grows later", async () => {
+  const options = [...ABC];
+  const { press, written } = openTerminal({ options });
+  options.push(...FIFTEEN.slice(3));
+  await press(DOWN.repeat(4));
+  expect(written.at(-2)).toBe("\x1b[4A\x1b[J");
+  expect(written.at(-1)).toBe("Pick:\n  4) o4\n❯ 5) o5\n  6) o6\n");
+});
+
+test("select: the terminal width is read on every draw, so a resize applies to the next redraw", async () => {
+  const { press, written, output } = openTerminal({ options: ABC, columns: 80 });
+  output.columns = 7;
+  await press(DOWN);
+  expect(written.at(-1)).toBe("Pick:\n  1) a\n❯ 2) b\n  3) c\n");
 });

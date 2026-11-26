@@ -30,16 +30,13 @@ function formatRow(option: Option, rowIndex: number, selectedIndex: number) {
   return `${marker} ${rowIndex + 1}) ${option.label}${hint}`;
 }
 
-/** Rows to draw: at most MAX_VISIBLE_ROWS, scrolled to keep the selected row near the middle. */
-function visibleRows(options: Option[], selectedIndex: number, columns: number) {
-  const rowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
+/** The `rowCount` rows to draw, scrolled to keep the selected row near the middle. */
+function visibleRows(options: Option[], selectedIndex: number, rowCount: number) {
   const centred = selectedIndex - Math.floor(rowCount / 2);
   const first = clamp(centred, 0, options.length - rowCount);
-  return options.slice(first, first + rowCount).map((option, offset) => {
-    const row = formatRow(option, first + offset, selectedIndex);
-    // one short of the width: a row filling the last column can wrap, and the redraw counts lines
-    return row.slice(0, columns - 1);
-  });
+  return options
+    .slice(first, first + rowCount)
+    .map((option, offset) => formatRow(option, first + offset, selectedIndex));
 }
 
 /** One row up or down, wrapping around at both ends. An arrow key forgets the typed digits. */
@@ -74,9 +71,16 @@ export function select(
   return new Promise((resolve, reject) => {
     let selection: Selection = { index: clamp(initial, 0, options.length - 1), typedNumber: "" };
     let drawnLineCount = 0;
+    // counted once, so the drawing keeps its height while the prompt is open
+    const visibleRowCount = Math.min(options.length, MAX_VISIBLE_ROWS);
+
+    function fitToWidth(row: string) {
+      // one short of the width: a row filling the last column can wrap, and the redraw counts lines
+      return row.slice(0, (output.columns || DEFAULT_COLUMNS) - 1);
+    }
 
     function draw() {
-      const rows = visibleRows(options, selection.index, output.columns || DEFAULT_COLUMNS);
+      const rows = visibleRows(options, selection.index, visibleRowCount).map(fitToWidth);
       if (drawnLineCount) output.write(eraseLinesAbove(drawnLineCount));
       output.write([question, ...rows].join("\n") + "\n");
       drawnLineCount = rows.length + 1;
