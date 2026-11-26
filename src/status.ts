@@ -206,6 +206,14 @@ function formatSize(bytes: number): string {
   return `${(bytes / KB).toFixed(1)} KB`;
 }
 
+/** The token counts of one API response, as a Claude Code transcript records them. */
+type Usage = {
+  input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number };
+};
+
 /**
  * This repo's most recent Claude Code session, from its transcript: the context sent on the first turn (its fixed prefix:
  * system prompt, tools, skills, CLAUDE.md), how much of all input came from the prompt cache, and the cache TTL used.
@@ -216,12 +224,6 @@ export function lastSession(
 ):
   | { prefix: number; at: string; requests: number; hitRate: number; ttl?: "5m" | "1h" | "5m+1h" }
   | undefined {
-  type Usage = {
-    input_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number };
-  };
   try {
     const dir = join(
       process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
@@ -243,22 +245,42 @@ export function lastSession(
     }
     const usages = [...byMessage.values()];
     if (!usages.length) return undefined;
-    const input = (u: Usage) =>
-      (u.input_tokens ?? 0) +
-      (u.cache_read_input_tokens ?? 0) +
-      (u.cache_creation_input_tokens ?? 0);
-    const total = usages.reduce((n, u) => n + input(u), 0);
-    const m5 = usages.some((u) => u.cache_creation?.ephemeral_5m_input_tokens),
-      h1 = usages.some((u) => u.cache_creation?.ephemeral_1h_input_tokens);
     return {
-      prefix: input(usages[0]),
+      prefix: inputTokens(usages[0]),
       at: statSync(newest).mtime.toISOString(),
       requests: usages.length,
-      hitRate: total ? usages.reduce((n, u) => n + (u.cache_read_input_tokens ?? 0), 0) / total : 0,
-      ttl: m5 && h1 ? "5m+1h" : m5 ? "5m" : h1 ? "1h" : undefined,
+      hitRate: cacheHitRate(usages),
+      ttl: cacheTtl(usages),
     };
   } catch {
     // an unreadable or half-written transcript: say nothing rather than guess
   }
+  return undefined;
+}
+
+/** All input of one response: uncached, read from the prompt cache, and written to it. */
+function inputTokens(usage: Usage): number {
+  return (
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  );
+}
+
+/** The share of all input that was read from the prompt cache; 0 when there was no input. */
+function cacheHitRate(usages: Usage[]): number {
+  const total = usages.reduce((sum, usage) => sum + inputTokens(usage), 0);
+  if (!total) return 0;
+  const cached = usages.reduce((sum, usage) => sum + (usage.cache_read_input_tokens ?? 0), 0);
+  return cached / total;
+}
+
+/** The prompt cache TTLs the session wrote with. */
+function cacheTtl(usages: Usage[]): "5m" | "1h" | "5m+1h" | undefined {
+  const fiveMinutes = usages.some((usage) => usage.cache_creation?.ephemeral_5m_input_tokens);
+  const oneHour = usages.some((usage) => usage.cache_creation?.ephemeral_1h_input_tokens);
+  if (fiveMinutes && oneHour) return "5m+1h";
+  if (fiveMinutes) return "5m";
+  if (oneHour) return "1h";
   return undefined;
 }
