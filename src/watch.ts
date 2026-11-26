@@ -68,18 +68,9 @@ export function scan(state: WatchState): string[] {
       lines.push(startLine(id, dir));
     }
 
-    const eventsFile = join(dir, "events.jsonl");
-    if (existsSync(eventsFile)) {
-      const buffer = readFileSync(eventsFile);
-      const text = buffer.subarray(job.offset).toString("utf8");
-      const lastNewline = text.lastIndexOf("\n");
-      if (lastNewline !== -1) {
-        job.offset += Buffer.byteLength(text.slice(0, lastNewline + 1));
-        for (const line of text.slice(0, lastNewline).split("\n")) {
-          const shown = toolLine(id, line, state.root);
-          if (shown) lines.push(shown);
-        }
-      }
+    for (const line of readAppendedLines(join(dir, "events.jsonl"), job)) {
+      const shown = toolLine(id, line, state.root);
+      if (shown) lines.push(shown);
     }
 
     // result.txt is rewritten each turn (RUNNING …): only a final first word is the verdict
@@ -104,6 +95,19 @@ function startLine(id: string, dir: string): string {
   const steps = request.steps !== undefined ? ` · steps ${request.steps}` : "";
   const modelText = modelName ? ` · ${modelName}` : "";
   return `▶ ${id}${steps}${modelText}`;
+}
+
+/**
+ * The complete lines added to `file` since `job.offset`, moving the offset past them. A last line without its
+ * newline is still being written, so it waits for the next call.
+ */
+function readAppendedLines(file: string, job: JobWatch): string[] {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file).subarray(job.offset).toString("utf8");
+  const lastNewline = text.lastIndexOf("\n");
+  if (lastNewline === -1) return [];
+  job.offset += Buffer.byteLength(text.slice(0, lastNewline + 1));
+  return text.slice(0, lastNewline).split("\n");
 }
 
 /** Whether `path` is a directory; false when it cannot be examined, such as a dangling link. */
