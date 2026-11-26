@@ -53,7 +53,7 @@ export function cleanup(
   const out: Cleaned = { removed: [], kept: [] };
   const state = join(root, ".cheapag");
   // a symlinked state dir (or subdir) would put what we delete outside the repo: leave it alone
-  if (!realDir(state)) return out;
+  if (!isRealDirectory(state)) return out;
   const sweep: Sweep = {
     root,
     retention,
@@ -109,7 +109,7 @@ function sweepJobLogs(sweep: Sweep) {
     const job = readJob(sweep, id);
     if (job.live) {
       sweep.out.kept.push(`job ${id}: ${job.status} job in flight`);
-    } else if (realDir(join(sweep.treesDir, id))) {
+    } else if (isRealDirectory(join(sweep.treesDir, id))) {
       // the record explains its worktree: it stays while the worktree does
       sweep.out.kept.push(`job ${id}: its worktree is kept`);
     } else if (!isOld(sweep, job.since, limit)) {
@@ -124,7 +124,7 @@ function sweepJobLogs(sweep: Sweep) {
 
 /** A batch record goes with its last job folder; one that never got a job (a crashed start) goes by age. */
 function sweepBatches(sweep: Sweep, batchesDir: string) {
-  if (!realDir(batchesDir)) return;
+  if (!isRealDirectory(batchesDir)) return;
   const names = readdirSync(batchesDir).filter((entry) => BATCH_FILE.test(entry));
   for (const name of names) {
     const file = join(batchesDir, name);
@@ -132,7 +132,7 @@ function sweepBatches(sweep: Sweep, batchesDir: string) {
     const id = name.slice(0, -".json".length);
     // its jobs say what it was: kept silently
     if (jobs.some((job) => JOB_ID.test(job) && existsSync(join(sweep.jobsDir, job)))) continue;
-    const since = mtime(file) ?? sweep.now;
+    const since = modifiedTime(file) ?? sweep.now;
     if (jobs.length === 0 && !isOld(sweep, since, sweep.retention.job_log_days)) continue;
     rmSync(file, { force: true });
     sweep.out.removed.push(`batch ${id}: ${batchRemovalReason(sweep, jobs, since)}`);
@@ -154,9 +154,9 @@ export function startPeriodicCleanup(root: string, config: Config, everyMs: numb
   const timer = setInterval(() => {
     try {
       cleanup(root, config.retention, config.link_dirs);
-    } catch (err) {
+    } catch (error) {
       process.stderr.write(
-        `cheapag: periodic cleanup failed: ${(err as Error).message.replace(/\s+/g, " ")}\n`,
+        `cheapag: periodic cleanup failed: ${(error as Error).message.replace(/\s+/g, " ")}\n`,
       );
     }
   }, everyMs);
@@ -182,8 +182,8 @@ export function clean(args: string[]): number {
   try {
     recoverJobs(process.cwd()); // a crashed server's RUNNING/BLOCKED jobs become CANCELLED, then age normally
     result = cleanProject(process.cwd(), args[0] === "--all");
-  } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+  } catch (error) {
+    out(`✗ ${(error as Error).message}`);
     return 1;
   }
   out(`✓ removed ${result.removed.length}, kept ${result.kept.length}`);
@@ -197,9 +197,9 @@ export function gitignoreHint(cwd: string) {
   try {
     git(projectRoot(cwd), ["check-ignore", "-q", ".cheapag/"]);
     return undefined;
-  } catch (err) {
+  } catch (error) {
     // exit 1: not ignored; anything else (not a repo, git error) offers nothing
-    return (err as { status?: number }).status === 1
+    return (error as { status?: number }).status === 1
       ? "hint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed"
       : undefined;
   }
@@ -221,12 +221,14 @@ function readJob(sweep: Sweep, id: string) {
   const record = readRecord(dir, id);
   const at = recordTime(record);
   // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
-  const unknown = !record && sweep.now - (mtime(dir) ?? 0) < UNKNOWN_GRACE_MS;
+  const unknown = !record && sweep.now - (modifiedTime(dir) ?? 0) < UNKNOWN_GRACE_MS;
   const live = unknown || isInFlight(record);
   return {
     live,
     status: record?.status ?? (unknown ? "STARTING" : undefined),
-    since: Number.isNaN(at) ? (mtime(dir) ?? mtime(join(sweep.treesDir, id)) ?? sweep.now) : at,
+    since: Number.isNaN(at)
+      ? (modifiedTime(dir) ?? modifiedTime(join(sweep.treesDir, id)) ?? sweep.now)
+      : at,
   };
 }
 
@@ -269,12 +271,12 @@ function readBatchJobs(file: string): string[] {
 
 /** Our job and research log folders directly under `dir`, if `dir` is a real directory. */
 function logFolders(dir: string) {
-  if (!realDir(dir)) return [];
-  return readdirSync(dir).filter((id) => LOG_ID.test(id) && realDir(join(dir, id)));
+  if (!isRealDirectory(dir)) return [];
+  return readdirSync(dir).filter((id) => LOG_ID.test(id) && isRealDirectory(join(dir, id)));
 }
 
 /** A directory that is not a symlink. */
-function realDir(path: string) {
+function isRealDirectory(path: string) {
   try {
     return lstatSync(path).isDirectory();
   } catch {
@@ -282,7 +284,8 @@ function realDir(path: string) {
   }
 }
 
-function mtime(path: string) {
+/** When `path` itself (not a symlink's target) last changed, in ms; undefined when it is gone. */
+function modifiedTime(path: string) {
   try {
     return lstatSync(path).mtimeMs;
   } catch {
