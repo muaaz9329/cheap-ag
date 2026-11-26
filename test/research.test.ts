@@ -16,7 +16,14 @@ import * as opencode from "../src/opencode.js";
 import * as routing from "../src/routing.js";
 import * as worker from "../src/worker.js";
 import * as workspace from "../src/workspace.js";
-import { BRIEF_FORMAT, REPRO_RULE, refTokens, research as runResearch } from "../src/research.js";
+import {
+  BRIEF_FORMAT,
+  REPRO_RULE,
+  parseAnswer,
+  refTokens,
+  research as runResearch,
+  verifyRepro,
+} from "../src/research.js";
 import { startFakeOpencode } from "./fake-opencode.js";
 import { callText, removeDir, slow, startServer, tempRepo, type Logins } from "./harness.js";
 
@@ -548,6 +555,7 @@ async function stubbed(
   session: (
     opts: Parameters<typeof worker.openSession>[0],
   ) => Partial<worker.Session> | Promise<never>,
+  progress: (turns: number, message: string) => void = () => {},
 ) {
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -585,7 +593,7 @@ async function stubbed(
     {
       provider: { provider: "opencode-go", via: "login" },
       opencode: async () => ({ url: "http://unused.invalid", password: "unused", version: "test" }),
-      progress: () => {},
+      progress,
     },
   );
   return { text, releaseHold };
@@ -640,4 +648,404 @@ test("a turn cap whose partial prompt throws stays a FAIL with the cap as the re
   expect(prompts).toHaveLength(2);
   expect(prompts[1]).toContain("status: partial");
   expect(text).toMatch(/^FAIL r\w{4} .*\nreason: turn cap \(1\) reached\n/);
+});
+
+/** A tool part event as OpenCode streams it, for a stubbed session's onEvent. */
+const toolEvent = (tool: string, status: string, input: Record<string, unknown> = {}) =>
+  ({
+    type: "message.part.updated",
+    properties: { part: { type: "tool", tool, state: { status, input } } },
+  }) as never;
+
+/** The id from a research block, then the research.json it left. */
+function recordOf(repo: { dir: string }, text: string) {
+  const id = idOf(text);
+  const dir = join(repo.dir, ".cheapag", "jobs", id);
+  return { id, dir, record: JSON.parse(readFileSync(join(dir, "research.json"), "utf8")) };
+}
+
+test("each finished or failed tool call is progress and every event is logged redacted; reads count per file, and bash commands back a repro", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const progress: [number, string][] = [];
+  const events = [
+    toolEvent("read", "running", { filePath: "a.ts" }),
+    toolEvent("read", "completed", { filePath: "a.ts" }),
+    toolEvent("read", "completed", { filePath: "a.ts" }),
+    toolEvent("read", "completed", { filePath: "b.ts" }),
+    toolEvent("grep", "error", { pattern: "x" }),
+    toolEvent("bash", "completed", { command: "npm  test sk-0123456789abcdefABCD" }),
+    toolEvent("bash", "running", { command: "pytest" }),
+  ];
+  const { text } = await stubbed(
+    repo,
+    (opts) => ({
+      run: async () => {
+        events.forEach((event, index) => opts.onEvent(event, Math.ceil(index / 2)));
+        return block("status: answer\nconfidence: high\nrepro: `npm test` → 1 failed\nnotes: ok");
+      },
+    }),
+    (turns, message) => progress.push([turns, message]),
+  );
+  expect(progress).toEqual([
+    [1, "turn 1: read"],
+    [1, "turn 1: read"],
+    [2, "turn 2: read"],
+    [2, "turn 2: grep"],
+    [3, "turn 3: bash"],
+  ]);
+  expect(text).toMatch(/^ANSWER r\w{4} files_read=2 turns=0 cost=\$0.000\n/);
+  expect(text).toContain("\nrepro: `npm test` → 1 failed\n");
+  expect(text).toContain("\nconfidence: high\n");
+  const { dir } = recordOf(repo, text);
+  const logged = gunzipSync(readFileSync(join(dir, "events.jsonl.gz"))).toString("utf8");
+  expect(logged).toBe(
+    events.map((event) => JSON.stringify(event).replace(/sk-\w+/, "[redacted]") + "\n").join(""),
+  );
+});
+
+test("an UNSURE answer leaves its event log plain", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const { text } = await stubbed(repo, (opts) => ({
+    run: async () => {
+      opts.onEvent(toolEvent("grep", "completed"), 1);
+      return { text: "not sure" };
+    },
+  }));
+  const { dir } = recordOf(repo, text);
+  expect(text).toMatch(/^UNSURE /);
+  expect(readFileSync(join(dir, "events.jsonl"), "utf8")).toBe(
+    JSON.stringify(toolEvent("grep", "completed")) + "\n",
+  );
+  expect(existsSync(join(dir, "events.jsonl.gz"))).toBe(false);
+});
+
+test("the minute cap aborts the session and FAILs with the cap as the reason", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_minutes: 0.001 } }));
+  const { text } = await stubbed(repo, (opts) => ({
+    run: () =>
+      new Promise((resolve) =>
+        opts.signal!.addEventListener("abort", () => resolve({ text: "", error: "aborted" })),
+      ),
+  }));
+  expect(text).toMatch(/^FAIL r\w{4} .*\nreason: minute cap \(0\.001 min\) reached\n/);
+});
+
+test.each([
+  [
+    { provider: "m is failing", budget: "Go cap", error: "boom" },
+    "FAIL",
+    "provider down: m is failing",
+  ],
+  [{ budget: "Go cap", error: "boom" }, "BUDGET", "Go cap"],
+  [{ budget: "", error: "boom" }, "FAIL", ""],
+  [{ provider: "", error: "boom" }, "FAIL", "worker error: boom"],
+  [{ text: "```cheapag-research\nnotes: found\n```", error: "late" }, "FAIL", "worker error: late"],
+  [{ text: "```cheapag-research\nnotes: found\n```", budget: "" }, "ANSWER", ""],
+])("a worker result %j is %s with the reason %j", async (result, status, reason) => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  vi.spyOn(routing, "runRouted").mockResolvedValue({ text: "", ...result });
+  const { text } = await stubbed(repo, () => ({}));
+  const { record } = recordOf(repo, text);
+  expect(record.status).toBe(status);
+  expect(record.reason).toBe(reason);
+});
+
+test("usage comes from the session totals, and a failing spend ledger never fails the answer", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const spend = { "opencode-go": 0.25 };
+  const { text } = await stubbed(repo, () => {
+    vi.mocked(routing.recordSpend).mockImplementation(() => {
+      throw new Error("ledger locked");
+    });
+    return {
+      run: async () => block("status: answer\nconfidence: high\nnotes: fine"),
+      totals: () => ({
+        sessionID: "s",
+        turns: 3,
+        calls: 5,
+        usage: {
+          costUsd: 0.25,
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        },
+        rejections: [],
+        spend,
+      }),
+    };
+  });
+  expect(text).toMatch(/^ANSWER r\w{4} files_read=0 turns=3 cost=\$0.250\nnotes:\nfine\n/);
+  expect(recordOf(repo, text).record.usage).toEqual({ turns: 3, calls: 5, costUsd: 0.25 });
+  expect(routing.recordSpend).toHaveBeenCalledWith(spend);
+});
+
+test("request.json and research.json keep their fields in order", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const { text } = await stubbed(repo, () => ({
+    run: async () =>
+      block(
+        "status: answer\nconfidence: high\nrepro: not attempted\ndead ends: the cache\nnotes: fine",
+      ),
+  }));
+  const { id, dir, record } = recordOf(repo, text);
+  const request = JSON.parse(readFileSync(join(dir, "request.json"), "utf8"));
+  expect(Object.keys(request)).toEqual([
+    "question",
+    "root",
+    "scope",
+    "maxWords",
+    "models",
+    "startedAt",
+  ]);
+  expect(request).toMatchObject({ question: "q", root: repo.dir, scope: [], maxWords: 200 });
+  expect(request.models).toEqual(["opencode-go/qwen3.8-flash", "opencode-go/deepseek-v4.1-flash"]);
+  expect(readFileSync(join(dir, "request.json"), "utf8")).toBe(
+    JSON.stringify(request, null, 2) + "\n",
+  );
+  expect(Object.keys(record)).toEqual([
+    "format",
+    "job",
+    "kind",
+    "provider",
+    "question",
+    "scope",
+    "status",
+    "answer",
+    "refs",
+    "confidence",
+    "repro",
+    "deadEnds",
+    "filesRead",
+    "unlanded",
+    "models",
+    "usage",
+    "timing",
+  ]);
+  expect(record).toMatchObject({
+    format: "cheapag/1",
+    job: id,
+    kind: "research",
+    provider: "opencode-go",
+    question: "q",
+    status: "ANSWER",
+    answer: "fine",
+    repro: "not attempted",
+    deadEnds: "the cache",
+    filesRead: 0,
+    unlanded: [],
+    models: { requested: "opencode-go/qwen3.8-flash", final: "opencode-go/qwen3.8-flash" },
+    usage: { turns: 0, calls: 0, costUsd: 0 },
+  });
+  expect(Object.keys(record.timing)).toEqual(["startedAt", "endedAt", "ms"]);
+  expect(record.timing.startedAt).toBe(request.startedAt);
+});
+
+test("a FAIL record has an empty answer and no refs, then its reason", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const { text } = await stubbed(repo, () => ({ run: async () => ({ text: "" }) }));
+  const { record } = recordOf(repo, text);
+  expect(Object.keys(record).slice(6, 10)).toEqual(["status", "answer", "refs", "reason"]);
+  expect(record).toMatchObject({
+    status: "FAIL",
+    answer: "",
+    refs: [],
+    reason: "the research worker gave no answer",
+  });
+});
+
+test.each([[{ error: "boom" }], [{ interrupted: true }]])(
+  "the turn-cap prompt runs once more without tools on its own timeout; a reply with %j recovers nothing",
+  async (reply) => {
+    const repo = tempRepo();
+    onTestFinished(repo.cleanup);
+    writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ limits: { max_turns: 1 } }));
+    const calls: unknown[][] = [];
+    const { text } = await stubbed(repo, (opts) => ({
+      run: async (...args: unknown[]) => {
+        calls.push(args);
+        if (calls.length > 1)
+          return { ...block("status: partial\nconfidence: high\nnotes: so far"), ...reply };
+        opts.onEvent(toolEvent("read", "completed", { filePath: "a.ts" }), 1);
+        return { text: "" };
+      },
+    }));
+    expect(calls).toHaveLength(2);
+    expect(calls[1][0]).toBe(
+      "You were stopped before finishing. Without calling any tool, answer the question now from what you read, in the cheapag-research block format with status: partial.",
+    );
+    expect(calls[1][1]).toBeUndefined();
+    expect(calls[1][2]).toBeInstanceOf(AbortSignal);
+    expect((calls[1][2] as AbortSignal).aborted).toBe(false);
+    expect(calls[1][3]).toBe(true);
+    expect(text).toMatch(/^FAIL r\w{4} .*\nreason: turn cap \(1\) reached\n/);
+  },
+);
+
+test('"." scopes nothing, a trailing slash is dropped, and an absolute path is refused even inside the repo', async () => {
+  const { repo, fake, research } = await scenario();
+  fake.script(block("status: answer\nconfidence: high\nanswer: ok"));
+  await research({ question: "q", paths: "." });
+  expect(fake.recorded.prompts[0].parts).toEqual([{ type: "text", text: prompt("Question: q") }]);
+  fake.script(block("status: answer\nconfidence: high\nanswer: ok"));
+  await research({ question: "q", paths: "./src/,," });
+  expect(fake.recorded.prompts[1].parts).toEqual([
+    {
+      type: "text",
+      text: prompt("Question: q\nScope: look only under src; cite only files there."),
+    },
+  ]);
+  const inside = join(repo.dir, "src");
+  expect(await research({ question: "q", paths: inside })).toBe(
+    `FAIL reason: path ${inside} must be inside the repository, relative to its root`,
+  );
+});
+
+/** The brief block as the worker writes it. */
+const brief = (fields: string) => `\`\`\`cheapag-research\n${fields}\n\`\`\``;
+
+test("parseAnswer: no text is nothing, and text without a block is an UNSURE low-confidence answer", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  mkdirSync(join(repo.dir, "src"));
+  writeFileSync(join(repo.dir, "src", "a.ts"), AUTH);
+  expect(parseAnswer("", repo.dir, [], 200)).toBeUndefined();
+  expect(parseAnswer(" \n ", repo.dir, [], 200)).toBeUndefined();
+  expect(
+    parseAnswer(" see src/a.ts:2 and src/a.ts:99\nthen more words ", repo.dir, [], 5),
+  ).toStrictEqual({
+    status: "UNSURE",
+    answer: "see src/a.ts:2 and src/a.ts:99\nthen …",
+    refs: [{ path: "src/a.ts", start: 2, end: 2 }],
+    confidence: "low",
+  });
+});
+
+test("parseAnswer: the last block wins; field names, aliases, partial, confidence and dead ends are read leniently", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const two = `${brief("status: answer\nnotes: first")}\n${brief("status: unsure\nconfidence: Medium, mostly\nnotes: second")}`;
+  expect(parseAnswer(two, repo.dir, [], 200)).toStrictEqual({
+    status: "UNSURE",
+    partial: undefined,
+    answer: "second",
+    refs: [],
+    confidence: "medium",
+    repro: undefined,
+    deadEnds: undefined,
+  });
+  const lenient = brief(
+    "STATUS: Partial work\nconfidence: very high\nrepro: `a` → b\n  more repro\nDead_Ends: None.\nanswer: line one\nline two",
+  );
+  expect(parseAnswer(lenient, repo.dir, [], 200)).toStrictEqual({
+    status: "ANSWER",
+    partial: true,
+    answer: "line one\nline two",
+    refs: [],
+    confidence: "low",
+    repro: "`a` → b",
+    deadEnds: undefined,
+  });
+  const extra =
+    "```cheapag-research json\nstatus: answer\ndead ends:  the cache \nnotes:  prose \n```";
+  expect(parseAnswer(extra, repo.dir, [], 200)).toMatchObject({
+    answer: "prose",
+    deadEnds: "the cache",
+    confidence: "low",
+  });
+  expect(parseAnswer(brief("status: answer\ndead ends: x\nnotes:  "), repo.dir, [], 200)).toBe(
+    undefined,
+  );
+});
+
+test("parseAnswer: refs exist, are in range and in scope, are unique, and stop at 5; with none listed, the prose's refs count", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  mkdirSync(join(repo.dir, "src"));
+  mkdirSync(join(repo.dir, "srcx"));
+  writeFileSync(join(repo.dir, "src", "a.ts"), AUTH);
+  writeFileSync(join(repo.dir, "srcx", "c.ts"), AUTH);
+  const listed = [
+    "src/a.ts:1",
+    "src/a.ts:1",
+    "src/a.ts:0",
+    "src/a.ts:5-3",
+    "src:1",
+    "srcx/c.ts:1",
+    "src/a.ts:2",
+    "src/a.ts:3-40",
+    "src/a.ts:4",
+    "src/a.ts:5",
+    "src/a.ts:6",
+  ].join(", ");
+  expect(parseAnswer(brief(`files: ${listed}\nnotes: x`), repo.dir, ["src"], 200)?.refs).toEqual([
+    { path: "src/a.ts", start: 1, end: 1 },
+    { path: "src/a.ts", start: 2, end: 2 },
+    { path: "src/a.ts", start: 3, end: 40 },
+    { path: "src/a.ts", start: 4, end: 4 },
+    { path: "src/a.ts", start: 5, end: 5 },
+  ]);
+  expect(
+    parseAnswer(brief("refs: srcx/c.ts:1\nnotes: in src/a.ts:7-8"), repo.dir, ["src"], 200)?.refs,
+  ).toEqual([{ path: "src/a.ts", start: 7, end: 8 }]);
+});
+
+const answered = { status: "ANSWER" as const, answer: "a", refs: [], confidence: "high" as const };
+
+test("verifyRepro: no answer, no repro and not attempted pass through; a ran command (spaces collapsed, either way round) verifies", () => {
+  expect(verifyRepro(undefined, [])).toBeUndefined();
+  expect(verifyRepro({ ...answered, repro: "  " }, [])).toStrictEqual({
+    ...answered,
+    repro: undefined,
+  });
+  expect(verifyRepro({ ...answered, repro: " None " }, [])?.repro).toBe("None");
+  expect(verifyRepro({ ...answered, repro: "NOT ATTEMPTED (read only)" }, [])?.repro).toBe(
+    "NOT ATTEMPTED (read only)",
+  );
+  expect(verifyRepro({ ...answered, repro: " `npm   test` → ok " }, ["npm test --silent"])).toEqual(
+    { ...answered, repro: "`npm   test` → ok" },
+  );
+  expect(
+    verifyRepro({ ...answered, repro: "`npx vitest run test/a.test.ts` → ok" }, [
+      "npx  vitest run",
+    ]),
+  ).toEqual({ ...answered, repro: "`npx vitest run test/a.test.ts` → ok" });
+});
+
+test("verifyRepro: a repro with no backticked command, or one never run, is unverified at low confidence", () => {
+  for (const repro of ["ran the tests → ok", "`pytest` → 1 failed"])
+    expect(verifyRepro({ ...answered, repro }, ["npm test"])).toEqual({
+      ...answered,
+      repro: `unverified (not run): ${repro}`,
+      confidence: "low",
+    });
+});
+
+test("verifyRepro: a bash call with no command verifies any backticked repro (current behaviour)", () => {
+  expect(verifyRepro({ ...answered, repro: "`pytest` → 1 failed" }, [""])).toEqual({
+    ...answered,
+    repro: "`pytest` → 1 failed",
+  });
+});
+
+test("a bash call without a command verifies any claimed repro end to end (current behaviour)", async () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const { text } = await stubbed(repo, (opts) => ({
+    run: async () => {
+      opts.onEvent(toolEvent("bash", "completed"), 1);
+      return block("status: answer\nconfidence: high\nrepro: `pytest` → 1 failed\nnotes: ok");
+    },
+  }));
+  expect(text).toContain("\nrepro: `pytest` → 1 failed\n");
+  expect(text).toContain("\nconfidence: high\n");
 });
