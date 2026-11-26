@@ -18,6 +18,8 @@ const USAGE = "usage: cheapag provider [<provider id>]";
 
 type ProviderId = Provider["provider"];
 
+const COVERAGE_LINE = /^(send|retention):/;
+
 /** Redacts every line: a provider's error message can echo the key back. */
 function out(line = ""): void {
   process.stdout.write(redact(line) + "\n");
@@ -47,6 +49,33 @@ function saveRollBack(root: string | undefined): () => void {
     else writeFileSync(userFile, userBefore);
     if (consentFile && consentBefore !== undefined) writeFileSync(consentFile, consentBefore);
   };
+}
+
+/** Moves this repo's consent to `target` with the same mode and prints what it now covers. */
+function moveConsent(root: string, target: ProviderId): void {
+  const consent = readConsent(root);
+  if (!consent || consent.provider === target) return;
+  const targetLabel = providerLabel(target);
+  const scope = describe(consent);
+  if (consent.mode === "models") {
+    // an explicit model list names the old provider's models: it cannot carry over
+    const oldLabel = providerLabel(consent.provider);
+    out(
+      `! This repo's consent names ${oldLabel} models (${scope}); run /cheapag:allow here for ${targetLabel}`,
+    );
+    return;
+  }
+  // what the user is agreeing to now: the new recipients and their retention, as /cheapag:allow would show them
+  const gate = consentGate(root, target);
+  const shown =
+    "block" in gate ? gate.block.split("\n").filter((line) => COVERAGE_LINE.test(line)) : [];
+  writeConsent(root, {
+    mode: consent.mode,
+    provider: target,
+    approvedAt: new Date().toISOString(),
+  });
+  out(`✓ ${basename(root)}: consent moved to ${targetLabel} (${scope}); it now covers:`);
+  for (const line of shown) out(`  ${line}`);
 }
 
 function listProviders(usable: ProviderId[], current: ProviderId | undefined): number {
@@ -102,29 +131,7 @@ export async function provider(args: string[]): Promise<number> {
   out(
     `Switching the worker from ${current ? providerLabel(current) : "nothing"} to ${providerLabel(target)}`,
   );
-  const consent = root ? readConsent(root) : undefined;
-  if (root && consent && consent.provider !== target) {
-    if (consent.mode === "models") {
-      // an explicit model list names the old provider's models: it cannot carry over
-      out(
-        `! This repo's consent names ${providerLabel(consent.provider)} models (${describe(consent)}); run /cheapag:allow here for ${providerLabel(target)}`,
-      );
-    } else {
-      // what the user is agreeing to now: the new recipients and their retention, as /cheapag:allow would show them
-      const gate = consentGate(root, target);
-      const shown =
-        "block" in gate ? gate.block.split("\n").filter((l) => /^(send|retention):/.test(l)) : [];
-      writeConsent(root, {
-        mode: consent.mode,
-        provider: target,
-        approvedAt: new Date().toISOString(),
-      });
-      out(
-        `✓ ${basename(root)}: consent moved to ${providerLabel(target)} (${describe(consent)}); it now covers:`,
-      );
-      for (const line of shown) out(`  ${line}`);
-    }
-  }
+  if (root) moveConsent(root, target);
 
   const check = await liveCheck({
     provider: target,
