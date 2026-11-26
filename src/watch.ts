@@ -155,7 +155,9 @@ function toolLine(id: string, line: string, root: string): string | undefined {
   if (status !== "completed" && status !== "error") return undefined;
   const tool = typeof part.tool === "string" ? part.tool : "";
   const target = toolTarget(tool, part.state?.input, sessionDirectory(event, part, id, root));
-  return `  ${id}  ${tool}${target ? ` ${target}` : ""}${status === "error" ? " ✗" : ""}`;
+  const targetText = target ? ` ${target}` : "";
+  const errorMark = status === "error" ? " ✗" : "";
+  return `  ${id}  ${tool}${targetText}${errorMark}`;
 }
 
 function readJson(file: string): Record<string, any> | undefined {
