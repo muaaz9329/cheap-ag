@@ -19,6 +19,8 @@ export const PROVIDERS = [
   { id: "local", label: "Custom endpoint" },
 ] as const;
 
+const PROVIDER_IDS = PROVIDERS.map((provider) => provider.id);
+
 export type Provider = { provider: (typeof PROVIDERS)[number]["id"]; via: "login" | "config" };
 
 export const LOGIN_COMMAND = "npx cheap-agent login";
@@ -46,7 +48,7 @@ export function savedProviders(): Provider["provider"][] {
   } catch {
     return []; // an unreadable auth file is the same as no login
   }
-  return PROVIDERS.map((p) => p.id).filter((id) => id in saved && !isConfigBased(id));
+  return PROVIDER_IDS.filter((id) => id in saved && !isConfigBased(id));
 }
 
 /** Whether the user config names a usable local server; a damaged one counts as none here, loadConfig reports it. */
@@ -68,12 +70,12 @@ export function ollamaConfigured() {
 }
 
 export const providerLabel = (id: Provider["provider"]) =>
-  PROVIDERS.find((p) => p.id === id)!.label;
+  PROVIDERS.find((provider) => provider.id === id)!.label;
 
 /** Supported providers ready to use: saved logins, plus the config-based endpoints when the user set them up; in detection order. */
 export function usableProviders(): Provider["provider"][] {
   const saved = savedProviders();
-  return PROVIDERS.map((p) => p.id).filter((id) => {
+  return PROVIDER_IDS.filter((id) => {
     if (id === "local") return localConfigured();
     if (id === "ollama") return ollamaConfigured();
     return saved.includes(id);
@@ -85,7 +87,7 @@ export function usableProviders(): Provider["provider"][] {
  * purpose, or OLLAMA_API_KEY set), else a configured custom endpoint, else the first saved login.
  */
 export function detectProvider(): Provider | undefined {
-  const chosen = PROVIDERS.find((p) => p.id === chosenProvider())?.id;
+  const chosen = PROVIDERS.find((provider) => provider.id === chosenProvider())?.id;
   if (chosen && usableProviders().includes(chosen))
     return { provider: chosen, via: isConfigBased(chosen) ? "config" : "login" };
   if (ollamaConfigured()) return { provider: "ollama", via: "config" };
