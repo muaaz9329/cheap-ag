@@ -40,18 +40,7 @@ export function status(args: string[]): number {
     print("repo: not a git repository (no jobs or consent here)");
   }
   if (root) {
-    const consent = readConsent(root);
-    print(
-      `consent: ${
-        !consent
-          ? "not given; run /cheapag:allow"
-          : consent.provider !== provider
-            ? `given for ${providerLabel(consent.provider)}, not the current provider; run /cheapag:allow`
-            : routeMoved(root, consent)
-              ? "given for other worker models (preset or models changed); run /cheapag:allow"
-              : `${describe(consent)} (since ${consent.approvedAt.slice(0, 10)})`
-      }`,
-    );
+    print(`consent: ${consentText(root, provider)}`);
     print(storageLine(root));
     const all = newestFirst(root);
     const inFlight = (r: (typeof all)[number]) => r.status === "RUNNING" || r.status === "BLOCKED";
@@ -96,6 +85,21 @@ export function status(args: string[]): number {
 function providerText(provider: ProviderId | undefined): string {
   if (!provider) return `none (run ${LOGIN_COMMAND})`;
   return `${provider} preset=${presetHere(provider)}`;
+}
+
+/** The `consent:` value: whether this repo's consent covers the current provider and its models. */
+function consentText(root: string, provider: ProviderId | undefined): string {
+  const consent = readConsent(root);
+  if (!consent) return "not given; run /cheapag:allow";
+  if (consent.provider !== provider) {
+    const label = providerLabel(consent.provider);
+    return `given for ${label}, not the current provider; run /cheapag:allow`;
+  }
+  if (routeMoved(root, consent)) {
+    return "given for other worker models (preset or models changed); run /cheapag:allow";
+  }
+  // approvedAt is read last, so a hand-edited record without it still reports the cases above
+  return `${describe(consent)} (since ${consent.approvedAt.slice(0, 10)})`;
 }
 
 /** Writes one line of the report, with any API key in it redacted. */
