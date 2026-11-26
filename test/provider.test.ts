@@ -1,6 +1,15 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
@@ -9,7 +18,7 @@ import { hermeticHome, serverEntry, slow, tempRepo, type Logins } from "./harnes
 /** `cheapag provider <args>` in a repo, with `logins` saved and `config` as the user config; the live check runs on the fake. */
 async function run(
   args: string[],
-  opts: { logins?: Logins; config?: object; consent?: object; check?: Action[] } = {},
+  opts: { logins?: Logins; config?: object; consent?: object; check?: Action[]; cwd?: string } = {},
 ) {
   const fake = await startFakeOpencode();
   onTestFinished(fake.close);
@@ -28,11 +37,13 @@ async function run(
     writeFileSync(consentFile, JSON.stringify(opts.consent));
   }
   const r = await promisify(execFile)(process.execPath, [serverEntry, "provider", ...args], {
-    cwd: repo.dir,
+    cwd: opts.cwd ?? repo.dir,
     env: { ...env, CHEAPAG_OPENCODE_URL: fake.url },
     encoding: "utf8",
   }).catch((e) => e);
   return {
+    dir: repo.dir,
+    configFile,
     code: r.code ?? 0,
     out: r.stdout as string,
     config: existsSync(configFile) ? JSON.parse(readFileSync(configFile, "utf8")) : undefined,
@@ -173,4 +184,154 @@ test(
     expect(many.config).toBeUndefined();
   },
   slow(30_000),
+);
+
+test(
+  "pins the exact list output: --list prints the same, and with every provider set up there is no 'Not set up' line",
+  async () => {
+    const listed =
+      "Providers set up:\n  opencode-go  OpenCode Go  (in use)\n  openrouter  OpenRouter\n" +
+      "Not set up: DeepSeek, Ollama, Command Code, OpenCode Zen, Custom endpoint. Add one with npx cheap-agent login\n";
+    const plain = await run([]);
+    expect(plain.out).toBe(listed);
+    const flag = await run(["--list"]);
+    expect(flag.code).toBe(0);
+    expect(flag.out).toBe(listed);
+
+    const all = await run([], {
+      logins: {
+        "opencode-go": "g",
+        openrouter: "o",
+        deepseek: "d",
+        commandcode: "c",
+        opencode: "z",
+      },
+      config: {
+        ollama: { endpoint: "cloud" },
+        local: { base_url: "http://127.0.0.1:8080/v1", model: "m" },
+      },
+    });
+    expect(all.code).toBe(0);
+    expect(all.out).toBe(
+      "Providers set up:\n  opencode-go  OpenCode Go\n  openrouter  OpenRouter\n  deepseek  DeepSeek\n" +
+        "  ollama  Ollama  (in use)\n  commandcode  Command Code\n  opencode  OpenCode Zen\n" +
+        "  local  Custom endpoint\n",
+    );
+  },
+  slow(30_000),
+);
+
+test(
+  "pins the exact output of a switch that moves the repo's consent",
+  async () => {
+    const r = await run(["openrouter"], {
+      consent: { mode: "all", provider: "opencode-go", approvedAt: "2026-11-01T00:00:00Z" },
+    });
+    expect(r.code).toBe(0);
+    const lines = r.out.split("\n");
+    // the models on the send line come from the default route, which this module does not own
+    expect(lines[2]).toMatch(/^ {2}send: code from this repo → OpenRouter: \S.*$/);
+    lines[2] = "  send: <route>";
+    expect(lines.join("\n")).toBe(
+      "Switching the worker from OpenCode Go to OpenRouter\n" +
+        `✓ ${basename(r.dir)}: consent moved to OpenRouter (all models); it now covers:\n` +
+        "  send: <route>\n" +
+        '  retention: depends on the upstream provider OpenRouter routes to; "deny data collection" is always on; --zdr-only adds OpenRouter\'s zero-data-retention routing (zdr)\n' +
+        "✓ openrouter/deepseek/deepseek-v4.1-flash answered (cost $0.0001)\n" +
+        "✓ Now using OpenRouter; the next job runs on it\n",
+    );
+    expect(Object.keys(r.consent)).toEqual(["mode", "provider", "approvedAt", "route"]);
+    expect(r.consent.approvedAt).not.toBe("2026-11-01T00:00:00Z");
+  },
+  slow(30_000),
+);
+
+test(
+  "a switch with no repo consent, with a consent already for the new provider, or outside a git repository moves no consent",
+  async () => {
+    const switched =
+      "Switching the worker from OpenCode Go to OpenRouter\n" +
+      "✓ openrouter/deepseek/deepseek-v4.1-flash answered (cost $0.0001)\n" +
+      "✓ Now using OpenRouter; the next job runs on it\n";
+    const none = await run(["openrouter"]);
+    expect(none.code).toBe(0);
+    expect(none.out).toBe(switched);
+    expect(none.consent).toBeUndefined();
+
+    const consent = { mode: "all", provider: "openrouter", approvedAt: "2026-11-01T00:00:00Z" };
+    const same = await run(["openrouter"], { consent });
+    expect(same.out).toBe(switched);
+    expect(same.consent).toEqual(consent);
+
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), "cheapag-outside-")));
+    onTestFinished(() => rmSync(outside, { recursive: true, force: true }));
+    const elsewhere = await run(["openrouter"], { cwd: outside });
+    expect(elsewhere.code).toBe(0);
+    expect(elsewhere.out).toBe(switched);
+    expect(elsewhere.config).toEqual({ provider: "openrouter" });
+    expect(existsSync(join(outside, ".cheapag"))).toBe(false);
+  },
+  slow(60_000),
+);
+
+test(
+  "a failed live check with no user config before removes the config file again, prints the region hint, and redacts keys",
+  async () => {
+    const r = await run(["openrouter"], {
+      check: [
+        {
+          error: {
+            name: "APIError",
+            message: "this model requires Global regions (key sk-abcdefghijklmnopqrstuvwxyz)",
+          },
+        },
+      ],
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toBe(
+      "Switching the worker from OpenCode Go to OpenRouter\n" +
+        "✗ live check failed: this model requires Global regions (key [redacted])\n" +
+        "  Fix: in the OpenCode console (opencode.ai), Settings → Privacy → Regions → Global; or pick a model that does not need it (e.g. opencode-go/glm-5.3-flash) with --preset custom.\n" +
+        "Still using OpenCode Go; nothing changed\n",
+    );
+    expect(r.config).toBeUndefined();
+    expect(existsSync(r.configFile)).toBe(false);
+    expect(r.consent).toBeUndefined();
+  },
+  slow(30_000),
+);
+
+test(
+  "a user config that is not a JSON object stops the switch before anything else is printed",
+  async () => {
+    const r = await run(["openrouter"], { config: [1] });
+    expect(r.code).toBe(1);
+    expect(r.out).toBe(`✗ ${r.configFile}: must hold a JSON object\n`);
+    expect(r.config).toEqual([1]);
+    expect(r.fake.recorded.sessions).toEqual([]);
+  },
+  slow(30_000),
+);
+
+test(
+  "pins the exact refusal lines: a provider not set up, a bad name in its own casing, the one in use, and usage",
+  async () => {
+    const missing = await run(["deepseek"]);
+    expect(missing.out).toBe(
+      "✗ DeepSeek is not set up yet; run npx cheap-agent login and pick it (the key is typed there)\n",
+    );
+    const bad = await run(["Gemini"]);
+    expect(bad.code).toBe(1);
+    expect(bad.out).toBe(
+      '✗ "Gemini" is not a provider; use one of opencode-go, openrouter, deepseek, ollama, commandcode, opencode, local\n',
+    );
+    const inUse = await run(["OPENCODE-GO"]);
+    expect(inUse.code).toBe(0);
+    expect(inUse.out).toBe("✓ already using OpenCode Go\n");
+    expect(inUse.config).toBeUndefined();
+    const usage = await run(["--list", "openrouter"]);
+    expect(usage.code).toBe(1);
+    expect(usage.out).toBe("✗ usage: cheapag provider [<provider id>]\n");
+  },
+  slow(60_000),
 );
