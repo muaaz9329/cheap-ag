@@ -348,33 +348,52 @@ export function baselinePermission() {
  * and make targets (`exact`: `make -f`/`--eval` would run anything). Names with spaces or wildcards are skipped.
  */
 export function projectScripts(dir: string): { scripts: string[]; exact: string[] } {
+  return { scripts: [...new Set(packageScripts(dir))], exact: [...new Set(makeTargets(dir))] };
+}
+
+/** A script or target name with no spaces or wildcards. */
+function isPlainName(name: string) {
+  return /^[\w:@./-]+$/.test(name);
+}
+
+/** The `scripts` object of package.json, or none when the file is missing, unreadable or not JSON. */
+function readPackageScripts(directory: string): Record<string, string> {
+  const path = join(directory, "package.json");
+  if (!existsSync(path)) return {};
+  try {
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    return manifest.scripts ?? {};
+  } catch {
+    // an unreadable package.json contributes no scripts
+    return {};
+  }
+}
+
+/** Each package.json script under every package manager, plus the short forms of `test`. */
+function packageScripts(directory: string): string[] {
+  const names = Object.keys(readPackageScripts(directory)).filter(isPlainName);
+  const commands = names.flatMap((name) => [
+    ...PACKAGE_MANAGERS.map((manager) => `${manager} run ${name}`),
+    `yarn ${name}`,
+  ]);
+  if (names.includes("test"))
+    commands.push("npm test", "npm t", "pnpm test", "yarn test", "bun run test");
+  return commands;
+}
+
+/** `make <target>` for each target, then bare `make`, for every makefile present. */
+function makeTargets(directory: string): string[] {
   const commands: string[] = [];
-  const exact: string[] = [];
-  const plain = (name: string) => /^[\w:@./-]+$/.test(name);
-  const pkg = join(dir, "package.json");
-  if (existsSync(pkg)) {
-    try {
-      const scripts = Object.keys(
-        (JSON.parse(readFileSync(pkg, "utf8")) as { scripts?: Record<string, string> }).scripts ??
-          {},
-      ).filter(plain);
-      for (const s of scripts)
-        commands.push(...PACKAGE_MANAGERS.map((pm) => `${pm} run ${s}`), `yarn ${s}`);
-      if (scripts.includes("test"))
-        commands.push("npm test", "npm t", "pnpm test", "yarn test", "bun run test");
-    } catch {
-      // an unreadable package.json contributes no scripts
-    }
-  }
   for (const name of ["Makefile", "makefile", "GNUmakefile"]) {
-    if (!existsSync(join(dir, name))) continue;
-    const targets = readFileSync(join(dir, name), "utf8").matchAll(
-      /^([A-Za-z0-9][\w.-]*)\s*:(?!=)/gm,
-    );
-    for (const [, target] of targets) if (plain(target)) exact.push(`make ${target}`);
-    exact.push("make");
+    const path = join(directory, name);
+    if (!existsSync(path)) continue;
+    const targets = readFileSync(path, "utf8").matchAll(/^([A-Za-z0-9][\w.-]*)\s*:(?!=)/gm);
+    for (const [, target] of targets) if (isPlainName(target)) commands.push(`make ${target}`);
+    commands.push("make");
   }
-  return { scripts: [...new Set(commands)], exact: [...new Set(exact)] };
+  return commands;
 }
 
 /** The program a command names, plus a bare second word (`git branch`, `npm run`), for an "always allow" prefix. */
