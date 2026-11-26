@@ -198,12 +198,7 @@ export async function follow(
       }
       const progressFile = join(dir, "progress.txt");
       if (existsSync(progressFile)) {
-        let line = "";
-        try {
-          line = readFileSync(progressFile, "utf8").trim();
-        } catch {
-          line = "";
-        }
+        const line = readTrimmed(progressFile);
         if (line && line !== printed.get(id)) {
           printed.set(id, line);
           out.write(`  ${id}  ${line}\n`);
@@ -213,17 +208,20 @@ export async function follow(
       const word = firstWord(resultFile);
       if (word && word !== "RUNNING") {
         final.add(id);
-        let result = "";
-        try {
-          result = readFileSync(resultFile, "utf8").trim();
-        } catch {
-          result = "";
-        }
-        out.write(`\n${result}\n`);
+        out.write(`\n${readTrimmed(resultFile)}\n`);
       }
     }
     if (ids.every((id) => final.has(id))) return 0;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/** A file's text without surrounding whitespace, or "" when it cannot be read. */
+function readTrimmed(file: string): string {
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
   }
 }
 
