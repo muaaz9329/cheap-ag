@@ -55,7 +55,7 @@ import { runSession } from "./worker.js";
 /**
  * `cheapag login`: the only setup (ADR-0004). Picks a provider, lets the bundled OpenCode's own login take the key
  * (hidden input, saved in OpenCode's store; Cheap Agent never sees it), live-checks it, then offers to register
- * the server with Claude Code at user scope and install the plugin (ticket 31). `npx cheap-agent` in a terminal runs it too.
+ * the server with Claude Code at user scope and install the plugin. `npx cheap-agent` in a terminal runs it too.
  */
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -66,106 +66,97 @@ const LOCAL_URL = "http://127.0.0.1:8080/v1";
 
 const CHOICES = [...PRESET_NAMES, "custom"] as const;
 type Choice = (typeof CHOICES)[number];
-const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).includes(s);
+function isChoice(value: string): value is Choice {
+  return (CHOICES as readonly string[]).includes(value);
+}
+
+type Output = (line?: string) => void;
+type ProviderId = Provider["provider"];
+type ProviderEntry = (typeof PROVIDERS)[number];
+
+const PROVIDER_HINTS: Partial<Record<ProviderId, string>> = {
+  local: "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)",
+  ollama: "(this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)",
+};
 
 export async function login(
   args: string[] = [],
   { setup = false }: { setup?: boolean } = {},
 ): Promise<number> {
-  const out = (line = "") => process.stdout.write(redact(line) + "\n");
-  const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
-  if (args.length && flag === undefined) {
-    out(`✗ usage: cheapag login [--preset ${CHOICES.join("|")}]`);
+  // every line is redacted: a provider's error message can echo the key back
+  function out(line = ""): void {
+    process.stdout.write(redact(line) + "\n");
+  }
+  const parsed = parseArgs(args);
+  if ("error" in parsed) {
+    out(parsed.error);
     return 1;
   }
-  if (flag !== undefined && !isChoice(flag)) {
-    out(`✗ "${flag}" is not a preset; use one of ${CHOICES.join(", ")}; nothing changed`);
-    return 1;
-  }
+  const { flag } = parsed;
   // `npx cheap-agent` with a login already saved is just an update: no questions, no key prompt
   if (setup && flag === undefined) {
     const saved = detectProvider();
-    if (saved) {
-      if (!localEndpoint(saved.provider)) migratePreset(saved.provider, out);
-      out(
-        `Cheap Agent ${version} · already set up with ${label(saved.provider)} (${currentPreset(saved.provider) ?? "custom"})`,
-      );
-      const code = await register(out, true);
-      out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
-      return code;
-    }
+    if (saved) return updateSetup(saved.provider, out);
   }
-  if (!process.stdin.isTTY) {
-    const saved = detectProvider();
-    if (!saved) {
-      out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
-      return 1;
-    }
-    if (localEndpoint(saved.provider)) {
-      out(
-        `No terminal to ask in: the ${label(saved.provider).toLowerCase()} setting stays as configured in ${userConfigFile()}`,
-      );
-      return 0;
-    }
-    // no terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the benchmark)
-    migratePreset(saved.provider, out);
-    const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
-    if (!flag)
-      out(
-        `No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`,
-      );
-    return savePreset(saved.provider, choice, out) ? 0 : 1;
+  if (!process.stdin.isTTY) return loginWithoutTerminal(flag, out);
+  return loginInTerminal(flag, out);
+}
+
+/** The `--preset` choice login's arguments give, or the line saying why they are wrong. */
+function parseArgs(args: string[]): { flag: Choice | undefined } | { error: string } {
+  const flag = args.length === 2 && args[0] === "--preset" ? args[1] : undefined;
+  if (args.length && flag === undefined)
+    return { error: `✗ usage: cheapag login [--preset ${CHOICES.join("|")}]` };
+  if (flag !== undefined && !isChoice(flag))
+    return {
+      error: `✗ "${flag}" is not a preset; use one of ${CHOICES.join(", ")}; nothing changed`,
+    };
+  return { flag };
+}
+
+/** Setup run again with a login saved: re-registers the server and updates the plugin, asking nothing. */
+async function updateSetup(provider: ProviderId, out: Output): Promise<number> {
+  if (!localEndpoint(provider)) migratePreset(provider, out);
+  const preset = currentPreset(provider) ?? "custom";
+  out(`Cheap Agent ${version} · already set up with ${label(provider)} (${preset})`);
+  const code = await register(out, true);
+  out(`Restart Claude Code to load it. To change provider or models: ${LOGIN}`);
+  return code;
+}
+
+/**
+ * No terminal to type a key into: only the worker models are set, for the provider already logged in (scripts, the
+ * benchmark). A local endpoint has none to set and stays as configured.
+ */
+function loginWithoutTerminal(flag: Choice | undefined, out: Output): number {
+  const saved = detectProvider();
+  if (!saved) {
+    out(`✗ ${LOGIN} needs an interactive terminal (the key is typed into a hidden prompt)`);
+    return 1;
   }
+  if (localEndpoint(saved.provider)) {
+    const setting = label(saved.provider).toLowerCase();
+    out(`No terminal to ask in: the ${setting} setting stays as configured in ${userConfigFile()}`);
+    return 0;
+  }
+  migratePreset(saved.provider, out);
+  const choice = flag ?? currentPreset(saved.provider) ?? "balanced";
+  if (!flag)
+    out(
+      `No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`,
+    );
+  return savePreset(saved.provider, choice, out) ? 0 : 1;
+}
+
+/** The interactive login: pick a provider, set it up, live-check it, then offer to register the server. */
+async function loginInTerminal(flag: Choice | undefined, out: Output): Promise<number> {
   // the live check's OpenCode runs in its own process group; take it down on Ctrl-C too
   process.on("exit", () => stopOpencode(true));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
     process.on(signal, () => process.exit(130));
   out("Cheap Agent login");
-  const current = detectProvider();
-  if (current)
-    out(
-      `Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`,
-    );
-  // arrow keys or a number, Enter picks; the provider in use starts highlighted
-  const picked =
-    PROVIDERS[
-      await select(
-        "Provider:",
-        PROVIDERS.map((p) => ({
-          label: p.label,
-          hint:
-            p.id === "local"
-              ? "(any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)"
-              : p.id === "ollama"
-                ? "(this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)"
-                : undefined,
-        })),
-        Math.max(
-          0,
-          PROVIDERS.findIndex((p) => p.id === current?.provider),
-        ),
-      )
-    ];
-  if (picked.id === "local") {
-    if (flag) out("--preset does not apply to a local server: its model is asked for below");
-    if (!(await localLogin(out))) return 1;
-  } else if (picked.id === "ollama") {
-    if (!(await ollamaLogin(out, flag))) return 1;
-  } else {
-    migratePreset(picked.id, out);
-    const choice = await askPreset(picked.id, flag);
-
-    // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
-    const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], {
-      stdio: "inherit",
-      env: { ...process.env, OPENCODE_DB },
-    });
-    if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
-      out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
-      return 1;
-    }
-    if (!savePreset(picked.id, choice, out) || !dropLocal(out, picked.label)) return 1;
-  }
+  const picked = await pickProvider(out);
+  if (!(await setUpProvider(picked, flag, out))) return 1;
 
   // another provider set up earlier would otherwise keep winning: point the user config at the one just logged in to
   if (detectProvider()?.provider !== picked.id && !setUserKey("provider", picked.id, out)) return 1;
@@ -178,11 +169,61 @@ export async function login(
   if (!check.ok) {
     const hint = regionHint(check.line);
     if (hint) out(hint);
+    return 1; // the login stays saved; fix the cause and run login again
   }
-  if (!check.ok) return 1; // the login stays saved; fix the cause and run login again
 
   await register(out);
   return 0;
+}
+
+/** The provider menu: arrow keys or a number, Enter picks; the provider in use starts highlighted. */
+async function pickProvider(out: Output): Promise<ProviderEntry> {
+  const current = detectProvider();
+  if (current)
+    out(
+      `Currently using: ${label(current.provider)}. Logging in again replaces or adds a provider.`,
+    );
+  const options = PROVIDERS.map((entry) => ({
+    label: entry.label,
+    hint: PROVIDER_HINTS[entry.id],
+  }));
+  const inUse = PROVIDERS.findIndex((entry) => entry.id === current?.provider);
+  return PROVIDERS[await select("Provider:", options, Math.max(0, inUse))];
+}
+
+/** Runs the picked provider's own setup; false when it stopped, after saying why. */
+async function setUpProvider(
+  picked: ProviderEntry,
+  flag: Choice | undefined,
+  out: Output,
+): Promise<boolean> {
+  if (picked.id === "local") {
+    if (flag) out("--preset does not apply to a local server: its model is asked for below");
+    return localLogin(out);
+  }
+  if (picked.id === "ollama") return ollamaLogin(out, flag);
+  return hostedLogin(picked, flag, out);
+}
+
+/** A hosted provider: the worker models, then the key, which the bundled OpenCode takes; false when either is not saved. */
+async function hostedLogin(
+  picked: ProviderEntry,
+  flag: Choice | undefined,
+  out: Output,
+): Promise<boolean> {
+  migratePreset(picked.id, out);
+  const choice = await askPreset(picked.id, flag);
+
+  // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
+  const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], {
+    stdio: "inherit",
+    env: { ...process.env, OPENCODE_DB },
+  });
+  if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
+    out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
+    return false;
+  }
+  return savePreset(picked.id, choice, out) && dropLocal(out, picked.label);
 }
 
 /** The user-level config as written, so saving a preset keeps its other keys; {} when there is none. */
@@ -198,7 +239,7 @@ function readUser(): Record<string, unknown> {
 /** Rewrites the user config from what it holds now; false, and said (with what was `unsaved`), when it cannot be read or written. */
 function updateUser(
   change: (config: Record<string, unknown>) => Record<string, unknown>,
-  out: (line?: string) => void,
+  out: Output,
   unsaved?: string,
 ) {
   const file = userConfigFile();
@@ -207,14 +248,14 @@ function updateUser(
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
     return true;
-  } catch (err) {
-    out(`✗ ${file}: ${(err as Error).message}${unsaved ? `; ${unsaved}` : ""}`);
+  } catch (error) {
+    out(`✗ ${file}: ${(error as Error).message}${unsaved ? `; ${unsaved}` : ""}`);
     return false;
   }
 }
 
 /** The preset the user's config holds: its saved name, else what its `models` match (Enter keeps it); a damaged file counts as none. */
-function currentPreset(provider: Provider["provider"]): Preset | "custom" | undefined {
+function currentPreset(provider: ProviderId): Preset | "custom" | undefined {
   try {
     const { preset, models } = readUser();
     if (preset !== undefined) return preset as Preset;
@@ -224,30 +265,26 @@ function currentPreset(provider: Provider["provider"]): Preset | "custom" | unde
   }
 }
 
+const CHOICE_HINTS: Partial<Record<Choice, string>> = {
+  balanced: "(recommended)",
+  custom: "(set models yourself in cheapag.json)",
+};
+
 /** The worker-models choice: `--preset` when given (login has checked it), else asked, starting on the provider's current preset. */
-async function askPreset(
-  provider: Provider["provider"],
-  flag: Choice | undefined,
-): Promise<Choice> {
+async function askPreset(provider: ProviderId, flag: Choice | undefined): Promise<Choice> {
   if (flag !== undefined) return flag;
   const preset = currentPreset(provider) ?? "balanced";
-  const hint = (name: Choice) =>
-    name === "balanced"
-      ? "(recommended)"
-      : name === "custom"
-        ? "(set models yourself in cheapag.json)"
-        : undefined;
   return CHOICES[
     await select(
       "Worker models:",
-      CHOICES.map((name) => ({ label: name, hint: hint(name) })),
+      CHOICES.map((name) => ({ label: name, hint: CHOICE_HINTS[name] })),
       CHOICES.indexOf(preset),
     )
   ];
 }
 
 /** Writes the preset name as the user config's `preset`, other keys kept; an old equal `models` is dropped, custom writes nothing. */
-function savePreset(provider: Provider["provider"], choice: Choice, out: (line?: string) => void) {
+function savePreset(provider: ProviderId, choice: Choice, out: Output) {
   // login asks a local endpoint for its model instead; this keeps the narrowing below honest
   if (provider === "local") throw new Error("a custom endpoint has no presets");
   const file = userConfigFile();
@@ -257,11 +294,11 @@ function savePreset(provider: Provider["provider"], choice: Choice, out: (line?:
     );
     return true;
   }
+  const presetModels = PRESETS[provider][choice];
   const saved = updateUser(
     (user) => {
       const config: Record<string, unknown> = { ...user, preset: choice };
-      if (JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][choice]))
-        delete config.models;
+      if (JSON.stringify(config.models) === JSON.stringify(presetModels)) delete config.models;
       return config;
     },
     out,
@@ -269,20 +306,20 @@ function savePreset(provider: Provider["provider"], choice: Choice, out: (line?:
   );
   if (!saved) return false;
   out(
-    `✓ Worker models: ${choice} preset (implement ${PRESETS[provider][choice].implement}), saved in ${file}; follows new releases`,
+    `✓ Worker models: ${choice} preset (implement ${presetModels.implement}), saved in ${file}; follows new releases`,
   );
   return true;
 }
 
 /** Rewrites an old user config whose `models` exactly match a current preset to that preset's name; anything else is left alone. */
-function migratePreset(provider: Provider["provider"], out: (line?: string) => void) {
+function migratePreset(provider: ProviderId, out: Output) {
   if (provider === "local") return;
   try {
     const config = readUser();
     if (config.preset !== undefined || config.models === undefined) return;
     // balanced first, as presetOf does: cheapest and balanced are often the same route
     const name = (["balanced", "cheapest", "strongest"] as const).find(
-      (p) => JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][p]),
+      (preset) => JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][preset]),
     );
     if (!name) return;
     const { models: _models, ...rest } = config;
@@ -295,142 +332,194 @@ function migratePreset(provider: Provider["provider"], out: (line?: string) => v
  * Asks for the local server: its URL, the model (from the server's own /models list when it gives one), a key file if it
  * needs a key, and the context window (detected from llama.cpp's /props or LM Studio's API when they answer). Saves it as
  * the user config's `local`, other keys kept. The key file is only checked to exist: OpenCode reads it, Cheap Agent never does.
+ * Each question's Enter keeps what is saved for the same URL (and, for the context and price, the same model).
  */
-async function localLogin(out: (line?: string) => void): Promise<boolean> {
-  let current: LocalServer | undefined;
-  try {
-    current = localServer();
-  } catch {} // a damaged entry is replaced
+async function localLogin(out: Output): Promise<boolean> {
+  const current = readSaved(localServer);
   out(
     "e.g. llama.cpp http://127.0.0.1:8080/v1, Ollama http://127.0.0.1:11434/v1, or a gateway's https://…/v1",
   );
-  let base = (
-    (await ask(`Server URL [Enter = ${current?.base_url ?? LOCAL_URL}]: `)) ||
-    current?.base_url ||
-    LOCAL_URL
-  ).replace(/\/+$/, "");
-  if (!/^https?:\/\/\S+$/.test(base)) {
-    out(`✗ "${base}" is not an http(s) URL; nothing changed`);
-    return false;
-  }
-  if (base.startsWith("http:") && !privateHost(base)) {
-    out(
-      `✗ plain http to a public host would send code and key unencrypted; use https (plain http is only for this machine or a private network); nothing changed`,
-    );
-    return false;
-  }
-  let listed = await listModels(base);
-  // most servers serve the OpenAI API under /v1: accept the bare host too
-  if (listed === "unreachable" && !base.endsWith("/v1")) {
-    const v1 = await listModels(`${base}/v1`);
-    if (v1 !== "unreachable") [base, listed] = [`${base}/v1`, v1];
-  }
-  if (listed === "unreachable")
-    out(
-      `! ${base}/models did not answer; is the server running? Continuing, the live check will tell.`,
-    );
-
+  const server = await askServer(current, out);
+  if (!server) return false;
+  const { base, listed } = server;
   const keep = current?.base_url === base ? current : undefined;
-  const keptKey = keep?.api_key_env ?? keep?.api_key_file;
-  const keyAnswer = await ask(
-    `API key, if the endpoint needs one: an environment variable name (e.g. MY_GATEWAY_KEY) or a key file path [Enter = ${keptKey ?? "none"}, "none" to clear]: `,
-  );
-  let keyFile = keyAnswer ? undefined : keep?.api_key_file;
-  let keyEnv = keyAnswer ? undefined : keep?.api_key_env;
-  // upper case only: a key pasted here by mistake (mixed case) must never be saved as a variable name
-  if (/^[A-Z_][A-Z0-9_]{0,63}$/.test(keyAnswer)) {
-    keyEnv = keyAnswer;
-    // only whether it is set: its value is OpenCode's to read
-    if (!process.env[keyEnv])
-      out(
-        `! ${keyEnv} is not set in this shell; set it where Claude Code starts, or jobs will fail with a key error`,
-      );
-  } else if (keyAnswer && keyAnswer !== "none") {
-    keyFile = keyAnswer.replace(/^~(?=$|[\\/])/, homedir());
-    if (!isAbsolute(keyFile) || !existsSync(keyFile)) {
-      // not echoed: a key pasted here by mistake stays off the screen
-      out(
-        "✗ not an environment variable name and no such file: give a variable name, or the absolute path of a file holding only the key; nothing changed",
-      );
-      return false;
-    }
-  }
-
-  let model: string | undefined;
-  if (Array.isArray(listed) && listed.length) {
-    const fallback = keep && listed.includes(keep.model) ? keep.model : listed[0];
-    model =
-      listed[
-        await select(
-          "Model:",
-          listed.map((id) => ({ label: id })),
-          listed.indexOf(fallback),
-        )
-      ];
-  } else {
-    if (listed === "auth")
-      out("The server wants a key to list its models; type the model id instead.");
-    model =
-      (await ask(`Model id, as the server names it${keep ? ` [Enter = ${keep.model}]` : ""}: `)) ||
-      keep?.model;
-  }
-  if (!model) {
-    out("✗ no model given; nothing changed");
-    return false;
-  }
-
-  const detected = await contextOf(base, model);
-  const known = detected ?? (keep?.model === model ? keep.context : undefined);
-  const ctxAnswer = await ask(
-    `Context window in tokens${detected ? " (detected)" : ""} [Enter = ${known ?? "unknown"}]: `,
-  );
-  const context = ctxAnswer ? Number(ctxAnswer.replace(/[_,]/g, "").replace(/k$/i, "000")) : known;
-  if (context !== undefined && !(Number.isInteger(context) && context > 0)) {
-    out(`✗ "${ctxAnswer}" is not a number of tokens; nothing changed`);
-    return false;
-  }
-  if (context === undefined)
-    out(
-      "! Context window unknown: OpenCode cannot compact a long job before the server rejects it. Set local.context later if jobs fail on long sessions.",
-    );
-
-  const keptPrice = keep?.model === model ? keep.price : undefined;
-  const priceAnswer = await ask(
-    `Price in USD per million tokens, input/output, for spend tracking and the cost cap [Enter = ${keptPrice ? `${keptPrice.input}/${keptPrice.output}` : "none"}]: `,
-  );
-  const priced = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(priceAnswer);
-  if (priceAnswer && !priced) {
-    out(`✗ "${priceAnswer}" is not input/output prices, e.g. 0.27/1.10; nothing changed`);
-    return false;
-  }
-  const price = priced ? { input: Number(priced[1]), output: Number(priced[2]) } : keptPrice;
+  const keySetting = await askKey(keep, out);
+  if (!keySetting) return false;
+  const model = await askModel(listed, keep, out);
+  if (!model) return false;
+  const sameModel = keep?.model === model ? keep : undefined;
+  const contextSetting = await askContext({ base, model, kept: sameModel?.context }, out);
+  if (!contextSetting) return false;
+  const priceSetting = await askPrice(sameModel?.price, out);
+  if (!priceSetting) return false;
 
   const local: LocalServer = {
     base_url: base,
     model,
-    ...(keyFile && { api_key_file: keyFile }),
-    ...(keyEnv && { api_key_env: keyEnv }),
-    ...(context && { context }),
-    ...(price && { price }),
+    ...keySetting,
+    ...contextSetting,
+    ...priceSetting,
   };
   if (!updateUser((user) => ({ ...user, local }), out, "local server not saved")) return false;
   out(`✓ Custom endpoint: ${model} at ${base}, saved in ${userConfigFile()}`);
   return true;
 }
 
+/** The saved entry `read` returns; undefined when there is none or it is damaged, since login replaces it. */
+function readSaved<T>(read: () => T | undefined): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why `base` cannot be used, or undefined: not http(s), or plain http to a public host (`publicHttp` says why). */
+function urlProblem(base: string, publicHttp: string): string | undefined {
+  if (!/^https?:\/\/\S+$/.test(base)) return `✗ "${base}" is not an http(s) URL; nothing changed`;
+  if (base.startsWith("http:") && !privateHost(base)) return publicHttp;
+  return undefined;
+}
+
+type ModelList = string[] | "auth" | "unreachable";
+
+/** The server URL and what its /models lists; undefined when the URL is refused, after saying why. */
+async function askServer(
+  current: LocalServer | undefined,
+  out: Output,
+): Promise<{ base: string; listed: ModelList } | undefined> {
+  const answer = await ask(`Server URL [Enter = ${current?.base_url ?? LOCAL_URL}]: `);
+  let base = (answer || current?.base_url || LOCAL_URL).replace(/\/+$/, "");
+  const problem = urlProblem(
+    base,
+    `✗ plain http to a public host would send code and key unencrypted; use https (plain http is only for this machine or a private network); nothing changed`,
+  );
+  if (problem) {
+    out(problem);
+    return undefined;
+  }
+  let listed = await listModels(base);
+  // most servers serve the OpenAI API under /v1: accept the bare host too
+  if (listed === "unreachable" && !base.endsWith("/v1")) {
+    const listedUnderV1 = await listModels(`${base}/v1`);
+    if (listedUnderV1 !== "unreachable") [base, listed] = [`${base}/v1`, listedUnderV1];
+  }
+  if (listed === "unreachable")
+    out(
+      `! ${base}/models did not answer; is the server running? Continuing, the live check will tell.`,
+    );
+  return { base, listed };
+}
+
+type KeySetting = Pick<LocalServer, "api_key_file" | "api_key_env">;
+
+/** The key: an environment variable name or a key file path, "none" for no key; undefined when refused, after saying why. */
+async function askKey(keep: LocalServer | undefined, out: Output): Promise<KeySetting | undefined> {
+  const keptKey = keep?.api_key_env ?? keep?.api_key_file;
+  const answer = await ask(
+    `API key, if the endpoint needs one: an environment variable name (e.g. MY_GATEWAY_KEY) or a key file path [Enter = ${keptKey ?? "none"}, "none" to clear]: `,
+  );
+  if (!answer) return keptKeySetting(keep);
+  if (answer === "none") return {};
+  // upper case only: a key pasted here by mistake (mixed case) must never be saved as a variable name
+  if (/^[A-Z_][A-Z0-9_]{0,63}$/.test(answer)) {
+    // only whether it is set: its value is OpenCode's to read
+    if (!process.env[answer])
+      out(
+        `! ${answer} is not set in this shell; set it where Claude Code starts, or jobs will fail with a key error`,
+      );
+    return { api_key_env: answer };
+  }
+  const keyFile = answer.replace(/^~(?=$|[\\/])/, homedir());
+  if (!isAbsolute(keyFile) || !existsSync(keyFile)) {
+    // not echoed: a key pasted here by mistake stays off the screen
+    out(
+      "✗ not an environment variable name and no such file: give a variable name, or the absolute path of a file holding only the key; nothing changed",
+    );
+    return undefined;
+  }
+  return { api_key_file: keyFile };
+}
+
+/** The key setting saved for this URL, as it was. */
+function keptKeySetting(keep: LocalServer | undefined): KeySetting {
+  return {
+    ...(keep?.api_key_file && { api_key_file: keep.api_key_file }),
+    ...(keep?.api_key_env && { api_key_env: keep.api_key_env }),
+  };
+}
+
+/** The model: picked from the server's list, else typed; undefined when none is given, after saying so. */
+async function askModel(
+  listed: ModelList,
+  keep: LocalServer | undefined,
+  out: Output,
+): Promise<string | undefined> {
+  let model: string | undefined;
+  if (Array.isArray(listed) && listed.length) {
+    const fallback = keep && listed.includes(keep.model) ? keep.model : listed[0];
+    const options = listed.map((id) => ({ label: id }));
+    model = listed[await select("Model:", options, listed.indexOf(fallback))];
+  } else {
+    if (listed === "auth")
+      out("The server wants a key to list its models; type the model id instead.");
+    const enterHint = keep ? ` [Enter = ${keep.model}]` : "";
+    model = (await ask(`Model id, as the server names it${enterHint}: `)) || keep?.model;
+  }
+  if (!model) {
+    out("✗ no model given; nothing changed");
+    return undefined;
+  }
+  return model;
+}
+
+/** The context window, detected when the server says; undefined when the answer is not a number of tokens. */
+async function askContext(
+  { base, model, kept }: { base: string; model: string; kept: number | undefined },
+  out: Output,
+): Promise<Pick<LocalServer, "context"> | undefined> {
+  const detected = await contextOf(base, model);
+  const known = detected ?? kept;
+  const answer = await ask(
+    `Context window in tokens${detected ? " (detected)" : ""} [Enter = ${known ?? "unknown"}]: `,
+  );
+  const context = answer ? Number(answer.replace(/[_,]/g, "").replace(/k$/i, "000")) : known;
+  if (context !== undefined && !(Number.isInteger(context) && context > 0)) {
+    out(`✗ "${answer}" is not a number of tokens; nothing changed`);
+    return undefined;
+  }
+  if (context === undefined)
+    out(
+      "! Context window unknown: OpenCode cannot compact a long job before the server rejects it. Set local.context later if jobs fail on long sessions.",
+    );
+  return { ...(context && { context }) };
+}
+
+/** The price per million tokens, input/output; undefined when the answer is not two prices, after saying so. */
+async function askPrice(
+  kept: LocalServer["price"],
+  out: Output,
+): Promise<Pick<LocalServer, "price"> | undefined> {
+  const shown = kept ? `${kept.input}/${kept.output}` : "none";
+  const answer = await ask(
+    `Price in USD per million tokens, input/output, for spend tracking and the cost cap [Enter = ${shown}]: `,
+  );
+  const priced = /^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/.exec(answer);
+  if (answer && !priced) {
+    out(`✗ "${answer}" is not input/output prices, e.g. 0.27/1.10; nothing changed`);
+    return undefined;
+  }
+  const price = priced ? { input: Number(priced[1]), output: Number(priced[2]) } : kept;
+  return { ...(price && { price }) };
+}
+
 /**
- * Asks for the Ollama endpoint (issue #27): this machine's daemon, no key, the models already pulled; or Ollama Cloud,
+ * Asks for the Ollama endpoint: this machine's daemon, no key, the models already pulled; or Ollama Cloud,
  * which reads the key from OLLAMA_API_KEY. Saves it as the user config's `ollama`, other keys kept. Login reads the key
  * only to list the cloud models; the config names the variable, and OpenCode resolves it for every job.
  */
-async function ollamaLogin(
-  out: (line?: string) => void,
-  flag: Choice | undefined,
-): Promise<boolean> {
-  let current: OllamaConfig | undefined;
-  try {
-    current = ollamaConfig();
-  } catch {} // a damaged entry is replaced
+async function ollamaLogin(out: Output, flag: Choice | undefined): Promise<boolean> {
+  const current = readSaved(ollamaConfig);
   // with only OLLAMA_API_KEY set, cloud is what the user came for; otherwise this machine is the likely pick
   const cloud = current?.endpoint === "cloud" || (!current && !!process.env[OLLAMA_KEY_ENV]);
   const endpoints = [
@@ -447,55 +536,19 @@ async function ollamaLogin(
 
 /** Ollama on this machine: its URL, then one of the models `/api/tags` lists, with the context `/api/show` reports. */
 async function localOllamaLogin(
-  out: (line?: string) => void,
+  out: Output,
   current: OllamaConfig | undefined,
   flag: Choice | undefined,
 ): Promise<boolean> {
   if (flag)
     out("--preset does not apply to Ollama on this machine: it runs the one model asked for below");
   const keep = current?.endpoint === "local" ? current : undefined;
-  const typed = (
-    (await ask(`Ollama URL [Enter = ${keep?.base_url ?? OLLAMA_LOCAL_URL}]: `)) ||
-    keep?.base_url ||
-    OLLAMA_LOCAL_URL
-  ).replace(/\/+$/, "");
-  // the daemon's own API (/api/tags) is at the root; OpenCode wants the OpenAI-compatible /v1 under it
-  const base = /^https?:\/\/[^/]+$/.test(typed) ? `${typed}/v1` : typed;
-  if (!/^https?:\/\/\S+$/.test(base)) {
-    out(`✗ "${base}" is not an http(s) URL; nothing changed`);
-    return false;
-  }
-  // this machine's daemon is plain http; the same rule as a custom endpoint still keeps a public host on https
-  if (base.startsWith("http:") && !privateHost(base)) {
-    out(`✗ plain http to a public host would send code unencrypted; use https; nothing changed`);
-    return false;
-  }
-  let listed: CatalogModel[];
-  try {
-    listed = await ollamaModels("local", base);
-  } catch (err) {
-    out(`✗ ${(err as Error).message}; nothing changed`);
-    return false;
-  }
-  const preferred = keep && listed.some((m) => m.id === keep.model) ? keep.model : listed[0].id;
-  const model =
-    listed[
-      await select(
-        "Model:",
-        listed.map((m) => ({
-          label: m.id,
-          hint: m.context ? `${Math.round(m.context / 1000)}k context` : undefined,
-        })),
-        Math.max(
-          0,
-          listed.findIndex((m) => m.id === preferred),
-        ),
-      )
-    ].id;
-  const reported =
-    listed.find((m) => m.id === model)?.context ||
-    (keep?.model === model ? keep.context : undefined);
-  const context = reported && reported > 0 ? reported : undefined;
+  const base = await askOllamaUrl(keep, out);
+  if (!base) return false;
+  const listed = await reachOllama(() => ollamaModels("local", base), out);
+  if (!listed) return false;
+  const model = await pickOllamaModel(listed, keep);
+  const context = ollamaContext(listed, model, keep);
   if (!context)
     out(
       "! Ollama reported no context window for this model; set ollama.context later if long jobs are cut off",
@@ -511,9 +564,73 @@ async function localOllamaLogin(
   return true;
 }
 
+/** The context window Ollama reports for `model`, else the one saved for it; undefined when neither is above 0. */
+function ollamaContext(
+  listed: CatalogModel[],
+  model: string,
+  keep: OllamaConfig | undefined,
+): number | undefined {
+  const reported =
+    listed.find((entry) => entry.id === model)?.context ||
+    (keep?.model === model ? keep.context : undefined);
+  return reported && reported > 0 ? reported : undefined;
+}
+
+/** The daemon's URL, with the OpenAI-compatible /v1 that OpenCode wants; undefined when refused, after saying why. */
+async function askOllamaUrl(
+  keep: OllamaConfig | undefined,
+  out: Output,
+): Promise<string | undefined> {
+  const answer = await ask(`Ollama URL [Enter = ${keep?.base_url ?? OLLAMA_LOCAL_URL}]: `);
+  const typed = (answer || keep?.base_url || OLLAMA_LOCAL_URL).replace(/\/+$/, "");
+  // the daemon's own API (/api/tags) is at the root; OpenCode wants the OpenAI-compatible /v1 under it
+  const base = /^https?:\/\/[^/]+$/.test(typed) ? `${typed}/v1` : typed;
+  // this machine's daemon is plain http; the same rule as a custom endpoint still keeps a public host on https
+  const problem = urlProblem(
+    base,
+    `✗ plain http to a public host would send code unencrypted; use https; nothing changed`,
+  );
+  if (problem) {
+    out(problem);
+    return undefined;
+  }
+  return base;
+}
+
+/** The models `list` gets from Ollama; undefined when it cannot, after saying why. */
+async function reachOllama(
+  list: () => Promise<CatalogModel[]>,
+  out: Output,
+): Promise<CatalogModel[] | undefined> {
+  try {
+    return await list();
+  } catch (error) {
+    out(`✗ ${(error as Error).message}; nothing changed`);
+    return undefined;
+  }
+}
+
+/** The model picked from Ollama's list, starting on the saved one; each row shows the context Ollama reports. */
+async function pickOllamaModel(
+  listed: CatalogModel[],
+  keep: OllamaConfig | undefined,
+): Promise<string> {
+  const preferred =
+    keep && listed.some((entry) => entry.id === keep.model) ? keep.model : listed[0].id;
+  const options = listed.map((entry) => ({
+    label: entry.id,
+    hint: entry.context ? `${Math.round(entry.context / 1000)}k context` : undefined,
+  }));
+  const start = Math.max(
+    0,
+    listed.findIndex((entry) => entry.id === preferred),
+  );
+  return listed[await select("Model:", options, start)].id;
+}
+
 /** Ollama Cloud: the key must already be in the environment (never typed here), then the cloud presets are offered. */
 async function cloudOllamaLogin(
-  out: (line?: string) => void,
+  out: Output,
   current: OllamaConfig | undefined,
   flag: Choice | undefined,
 ): Promise<boolean> {
@@ -529,18 +646,13 @@ async function cloudOllamaLogin(
     /\/+$/,
     "",
   );
-  let listed: CatalogModel[];
-  try {
-    listed = await ollamaModels("cloud", base, key);
-  } catch (err) {
-    out(`✗ ${(err as Error).message}; nothing changed`);
-    return false;
-  }
+  const listed = await reachOllama(() => ollamaModels("cloud", base, key), out);
+  if (!listed) return false;
   // the roles name cloud model ids: say what this account cannot see now, instead of failing job after job
   const wanted = [
     ...new Set([...ROLES.ollama.implement, ...ROLES.ollama.research, ROLES.ollama.escalation]),
   ];
-  const missing = wanted.filter((id) => !listed.some((m) => m.id === id));
+  const missing = wanted.filter((id) => !listed.some((entry) => entry.id === id));
   if (missing.length)
     out(
       `! Ollama Cloud does not list ${missing.join(", ")}; if a job fails, set "models" in ${userConfigFile()}`,
@@ -556,19 +668,19 @@ async function cloudOllamaLogin(
 }
 
 /** Writes the user config's `ollama`, other keys kept; true when saved. */
-function saveOllama(ollama: OllamaConfig, out: (line?: string) => void) {
+function saveOllama(ollama: OllamaConfig, out: Output) {
   return updateUser((user) => ({ ...user, ollama }), out, "Ollama setting not saved");
 }
 
 /** The server's model ids from GET /models, "auth" when it wants a key for that, "unreachable" when it does not answer as an OpenAI API. */
-async function listModels(base: string): Promise<string[] | "auth" | "unreachable"> {
+async function listModels(base: string): Promise<ModelList> {
   try {
-    const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5_000) });
-    if (res.status === 401 || res.status === 403) return "auth";
-    if (!res.ok) return "unreachable";
-    const { data } = (await res.json()) as { data?: { id?: unknown }[] };
+    const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5_000) });
+    if (response.status === 401 || response.status === 403) return "auth";
+    if (!response.ok) return "unreachable";
+    const { data } = (await response.json()) as { data?: { id?: unknown }[] };
     if (!Array.isArray(data)) return "unreachable";
-    return data.map((m) => m.id).filter((id): id is string => typeof id === "string");
+    return data.map((entry) => entry.id).filter((id): id is string => typeof id === "string");
   } catch {
     return "unreachable";
   }
@@ -580,24 +692,38 @@ async function listModels(base: string): Promise<string[] | "auth" | "unreachabl
  */
 async function contextOf(base: string, model: string): Promise<number | undefined> {
   const root = base.replace(/\/v1$/, "");
-  const get = async (url: string) => {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
-      return res.ok ? ((await res.json()) as any) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const props = await get(`${root}/props`);
-  const nCtx = props?.default_generation_settings?.n_ctx;
-  if (Number.isInteger(nCtx) && nCtx > 0)
-    return Math.floor(
-      nCtx / (Number.isInteger(props.total_slots) && props.total_slots > 0 ? props.total_slots : 1),
-    );
-  const lms = await get(`${root}/api/v0/models`);
-  const entry = Array.isArray(lms?.data) ? lms.data.find((m: any) => m?.id === model) : undefined;
-  const loaded = entry?.loaded_context_length ?? entry?.max_context_length;
-  return Number.isInteger(loaded) && loaded > 0 ? loaded : undefined;
+  const props = await getJson(`${root}/props`);
+  const contextSize = field(field(props, "default_generation_settings"), "n_ctx");
+  if (isPositiveInteger(contextSize)) {
+    const slots = field(props, "total_slots");
+    return Math.floor(contextSize / (isPositiveInteger(slots) ? slots : 1));
+  }
+  const studioModels = field(await getJson(`${root}/api/v0/models`), "data");
+  const entry = Array.isArray(studioModels)
+    ? studioModels.find((candidate: unknown) => field(candidate, "id") === model)
+    : undefined;
+  const loaded = field(entry, "loaded_context_length") ?? field(entry, "max_context_length");
+  return isPositiveInteger(loaded) ? loaded : undefined;
+}
+
+/** The JSON body of a GET to `url`; undefined when it fails or answers with an error status. */
+async function getJson(url: string): Promise<unknown> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    return response.ok ? ((await response.json()) as unknown) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `value[key]` when `value` is an object (as `?.` reads it); undefined otherwise. */
+function field(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  return (value as Record<string, unknown>)[key];
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) > 0;
 }
 
 /** Sets one key of the user config, other keys kept; undefined removes it. False (and said) when the file cannot be written. */
@@ -609,59 +735,58 @@ export function setUserKey(key: string, value: unknown, out: (line?: string) => 
 }
 
 /** After a login to a hosted provider: removes the user config's `local`, which would otherwise keep winning over it. */
-function dropLocal(out: (line?: string) => void, provider: string) {
+function dropLocal(out: Output, provider: string) {
   try {
     const { local, ...rest } = readUser();
     if (local === undefined) return true;
     writeFileSync(userConfigFile(), JSON.stringify(rest, null, 2) + "\n");
     out(`✓ Custom endpoint setting removed from ${userConfigFile()}; ${provider} is used now`);
     return true;
-  } catch (err) {
-    out(`✗ ${userConfigFile()}: ${(err as Error).message}`);
+  } catch (error) {
+    out(`✗ ${userConfigFile()}: ${(error as Error).message}`);
     return false;
   }
 }
 
 /** One tiny real call to the implement model the user's config now picks, through the bundled OpenCode, in a throwaway directory. */
 export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
-  const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
+  const directory = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;
-  let timeoutMs = CHECK_TIMEOUT_MS;
   try {
     // a local model may first have to load from disk, and Ollama on this machine unloads it when idle
-    timeoutMs = localEndpoint(provider.provider) ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
-    // the throwaway dir has no cheapag.json, so this is the user's config alone
-    const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(dir)));
+    const timeoutMs = localEndpoint(provider.provider) ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
+    // the throwaway directory has no cheapag.json, so this is the user's config alone
+    const config = loadConfig(directory);
+    const route = fullRoute(provider.provider, effectiveModels(provider.provider, config));
     const model = route.implement;
     name = modelName(model);
     // with the route, OpenCode's config pins this model too (on OpenRouter: data collection denied)
-    const run = ensureOpencode(provider, dir, route).then((opencode) =>
+    const run = ensureOpencode(provider, directory, route).then((opencode) =>
       runSession({
         opencode,
-        directory: dir,
+        directory,
         model: { providerID: model.providerID, id: model.id },
         prompt: "Live check: reply with the single word OK. Do not use any tools.",
         onEvent: () => {},
       }),
     );
     // covers boot as well as the answer; on timeout, stopping OpenCode below ends the session, and login exits
-    const timeout = new Promise<never>(
-      (_, reject) =>
-        (timer = setTimeout(
-          () => reject(new Error(`no answer within ${timeoutMs / 1000}s`)),
-          timeoutMs,
-        )),
-    );
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no answer within ${timeoutMs / 1000}s`)),
+        timeoutMs,
+      );
+    });
     const result = await Promise.race([run, timeout]);
     if (result.error) return { ok: false, line: explain(result.error, name) };
     return { ok: true, line: `${name} answered (cost $${result.usage.costUsd.toFixed(4)})` };
-  } catch (err) {
-    return { ok: false, line: explain((err as Error).message, name) };
+  } catch (error) {
+    return { ok: false, line: explain((error as Error).message, name) };
   } finally {
     clearTimeout(timer);
     stopOpencode();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -689,14 +814,13 @@ function explain(message: string, model: string) {
  * Offers user-scope registration with Claude Code, then the plugin; prints the commands whenever it does not run them.
  * On an update, the plugin line says it was updated and the fresh-install closing line is left to the caller.
  */
-async function register(out: (line?: string) => void, update = false): Promise<number> {
-  const done = () => {
+async function register(out: Output, update = false): Promise<number> {
+  function setUpPlugin() {
     const plugin = installPlugin(out, { update });
     if (!update) finish(out, plugin);
-  };
+  }
   const command = serverCommand();
   const manual = `claude mcp add -s user cheapag -- ${command.map(quote).join(" ")}`;
-  const remove = "claude mcp remove cheapag -s user";
   const existing = runCli("claude", ["mcp", "get", "cheapag"], { encoding: "utf8" });
   if (!existing) {
     out(`Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  ${manual}`);
@@ -706,45 +830,51 @@ async function register(out: (line?: string) => void, update = false): Promise<n
   if (existing.status === 0 && /Scope:\s*User/i.test(existing.stdout)) {
     if (sameCommand(registeredCommand(existing.stdout), command)) {
       out("✓ cheapag is already registered with Claude Code");
-      done();
+      setUpPlugin();
       return 0;
     }
     // an older version or path would keep running the old server: replace it without asking
-    const removed = runCli("claude", ["mcp", "remove", "cheapag", "-s", "user"], {
-      encoding: "utf8",
-    });
-    const added =
-      removed?.status === 0
-        ? runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], {
-            encoding: "utf8",
-          })
-        : undefined;
-    if (removed?.status !== 0 || added?.status !== 0) {
-      const failed = removed?.status === 0 ? added : removed;
-      out(
-        `✗ claude mcp update failed (${firstLine(failed)}). Run it yourself:\n  ${remove}\n  ${manual}`,
-      );
-      done();
-      return 1;
-    }
-    out(`✓ Updated cheapag's server in Claude Code to ${version}`);
-    done();
-    return 0;
+    const replaced = replaceRegistration(command, manual, out);
+    setUpPlugin();
+    return replaced ? 0 : 1;
   }
   if (/^n/i.test(await ask("Add cheapag to Claude Code for all your projects? [Y/n] "))) {
     out(`Not registered. To add it later, run:\n  ${manual}`);
     return 0;
   }
-  const added = runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], {
-    encoding: "utf8",
-  });
+  const added = addServer(command);
   if (!added || added.status !== 0) {
     out(`✗ claude mcp add failed (${firstLine(added)}). Run it yourself:\n  ${manual}`);
     return 1;
   }
   out("✓ Added cheapag to Claude Code for all your projects");
-  done();
+  setUpPlugin();
   return 0;
+}
+
+/** Swaps the user-scope entry for `command`; false when `claude mcp` failed, after printing what to run instead. */
+function replaceRegistration(command: string[], manual: string, out: Output): boolean {
+  const remove = "claude mcp remove cheapag -s user";
+  const removed = runCli("claude", ["mcp", "remove", "cheapag", "-s", "user"], {
+    encoding: "utf8",
+  });
+  const added = removed?.status === 0 ? addServer(command) : undefined;
+  if (removed?.status !== 0 || added?.status !== 0) {
+    const failed = removed?.status === 0 ? added : removed;
+    out(
+      `✗ claude mcp update failed (${firstLine(failed)}). Run it yourself:\n  ${remove}\n  ${manual}`,
+    );
+    return false;
+  }
+  out(`✓ Updated cheapag's server in Claude Code to ${version}`);
+  return true;
+}
+
+/** Registers `command` as cheapag's server at user scope; undefined when Claude Code's CLI is not found. */
+function addServer(command: string[]) {
+  return runCli("claude", ["mcp", "add", "-s", "user", "cheapag", "--", ...command], {
+    encoding: "utf8",
+  });
 }
 
 /** The executable and arguments `claude mcp get cheapag` reports for the entry, or undefined when it shows neither. */
@@ -759,12 +889,12 @@ function sameCommand(existing: string[] | undefined, current: string[]) {
   return (
     existing !== undefined &&
     existing.length === current.length &&
-    existing.every((arg, i) => arg === current[i])
+    existing.every((argument, index) => argument === current[index])
   );
 }
 
 /** The last thing setup says: how to start. */
-function finish(out: (line?: string) => void, plugin: boolean) {
+function finish(out: Output, plugin: boolean) {
   out(
     plugin
       ? "\nDone. Open a new Claude Code session in your project and run /cheapag:allow once there; then ask for changes as usual."
@@ -781,19 +911,18 @@ function serverCommand() {
 }
 
 // double quotes on Windows: cmd and PowerShell don't treat single quotes as quoting
-const quote = (arg: string) =>
-  /^[\w@%+=:,./-]+$/.test(arg)
-    ? arg
-    : process.platform === "win32"
-      ? `"${arg.replace(/"/g, '\\"')}"`
-      : `'${arg.replace(/'/g, `'\\''`)}'`;
+function quote(argument: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(argument)) return argument;
+  if (process.platform === "win32") return `"${argument.replace(/"/g, '\\"')}"`;
+  return `'${argument.replace(/'/g, `'\\''`)}'`;
+}
 
 /** One question on a fresh readline, closed before anything else (OpenCode's login) reads the terminal. */
 async function ask(question: string) {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const reader = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    return (await rl.question(question)).trim();
+    return (await reader.question(question)).trim();
   } finally {
-    rl.close();
+    reader.close();
   }
 }

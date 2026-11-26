@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { promisify } from "node:util";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -162,6 +163,7 @@ async function runLogin(opts: {
     claudeCalls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : [],
     saved: existsSync(auth) ? Object.keys(JSON.parse(readFileSync(auth, "utf8"))) : [],
     config: existsSync(config) ? JSON.parse(readFileSync(config, "utf8")) : undefined,
+    configFile: config,
     fake,
     marketplace: join(home, "config", "cheapag", "marketplace"),
     launcher: join(home, "config", "cheapag", "bin", "cheapag.cjs"),
@@ -1227,4 +1229,354 @@ test("liveCheck with a damaged Ollama entry fails with the config error instead 
   expect(check.line).toMatch(
     /^live check failed: .*config\.json: ollama\.endpoint must be "local" or "cloud"$/,
   );
+});
+
+const { version } = JSON.parse(
+  readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+) as { version: string };
+
+tty(
+  "re-running login on the same custom endpoint keeps every saved answer on Enter; --preset does not apply to it",
+  async () => {
+    const url = await serverAnswering({
+      "/v1/models": { data: [{ id: "first-model" }, { id: "kept-model" }] },
+    });
+    const kept = {
+      base_url: `${url}/v1`,
+      model: "kept-model",
+      api_key_env: "CHEAPAG_TEST_KEPT_KEY",
+      context: 4096,
+      price: { input: 1, output: 2 },
+    };
+    const r = await runLogin({
+      claude: "registered",
+      args: ["--preset", "cheapest"],
+      config: { test_cmd: "make", local: kept },
+      steps: [
+        { expect: "Provider", send: "\r" }, // Custom endpoint, highlighted as the one in use
+        { expect: "ServerURL", send: "\r" },
+        { expect: "APIkey,if", send: "\r" },
+        { expect: "Model:", send: "\r" },
+        { expect: "Contextwindow", send: "\r" },
+        { expect: "PriceinUSD", send: "\r" },
+      ],
+    });
+    expect(r.exit).toBe("EXIT 0");
+    expect(r.output).toContain(
+      "Cheap Agent login\nCurrently using: Custom endpoint. Logging in again replaces or adds a provider.\nProvider:\n",
+    );
+    expect(r.output).toContain(
+      "  4) Ollama  (this machine's Ollama with no key, or Ollama Cloud with OLLAMA_API_KEY)\n",
+    );
+    expect(r.output).toContain(
+      "❯ 7) Custom endpoint  (any OpenAI-compatible URL: a local server, LiteLLM, Azure, a vendor's API)\n",
+    );
+    expect(r.output).toContain(
+      "--preset does not apply to a local server: its model is asked for below\n" +
+        "e.g. llama.cpp http://127.0.0.1:8080/v1, Ollama http://127.0.0.1:11434/v1, or a gateway's https://…/v1\n" +
+        `Server URL [Enter = ${url}/v1]: `,
+    );
+    expect(r.output).toContain(
+      'API key, if the endpoint needs one: an environment variable name (e.g. MY_GATEWAY_KEY) or a key file path [Enter = CHEAPAG_TEST_KEPT_KEY, "none" to clear]: ',
+    );
+    expect(r.output).toContain("Model:\n  1) first-model\n❯ 2) kept-model\n");
+    expect(r.output).toContain("Context window in tokens [Enter = 4096]: ");
+    expect(r.output).toContain(
+      "Price in USD per million tokens, input/output, for spend tracking and the cost cap [Enter = 1/2]: ",
+    );
+    expect(r.output).not.toContain("is not set in this shell");
+    expect(r.output).toContain(
+      `✓ Custom endpoint: kept-model at ${url}/v1, saved in ${r.configFile}\n`,
+    );
+    expect(JSON.stringify(r.config)).toBe(JSON.stringify({ test_cmd: "make", local: kept }));
+  },
+  slow(90_000),
+);
+
+tty(
+  'on the same custom endpoint "none" clears the saved key, and another model gets none of the saved model\'s context or price',
+  async () => {
+    const url = await serverAnswering({ "/v1/models": 401 });
+    const r = await runLogin({
+      claude: "registered",
+      config: {
+        local: {
+          base_url: `${url}/v1`,
+          model: "kept-model",
+          api_key_file: "/kept/key",
+          context: 4096,
+          price: { input: 1, output: 2 },
+        },
+      },
+      steps: [
+        { expect: "Provider", send: "7\r" },
+        { expect: "ServerURL", send: "\r" },
+        { expect: "APIkey,if", send: "none\r" },
+        { expect: "Modelid", send: "other-model\r" },
+        { expect: "Contextwindow", send: "\r" },
+        { expect: "PriceinUSD", send: "\r" },
+      ],
+    });
+    expect(r.exit).toBe("EXIT 0");
+    expect(r.output).toContain('[Enter = /kept/key, "none" to clear]: none\n');
+    expect(r.output).toContain(
+      "The server wants a key to list its models; type the model id instead.\nModel id, as the server names it [Enter = kept-model]: other-model\n",
+    );
+    expect(r.output).toContain(
+      "Context window in tokens [Enter = unknown]: \n! Context window unknown: OpenCode cannot compact a long job before the server rejects it. Set local.context later if jobs fail on long sessions.\n",
+    );
+    expect(r.output).toContain("for spend tracking and the cost cap [Enter = none]: \n");
+    expect(JSON.stringify(r.config)).toBe(
+      JSON.stringify({ local: { base_url: `${url}/v1`, model: "other-model" } }),
+    );
+  },
+  slow(90_000),
+);
+
+tty(
+  "a custom endpoint's key file under ~ is saved as its full path, unread; a typed context and price are parsed",
+  async () => {
+    const url = await localModels();
+    const { home: keyHome } = hermeticHome();
+    onTestFinished(() => rmSync(keyHome, { recursive: true, force: true }));
+    writeFileSync(join(keyHome, "llama.key"), "fake-key-never-read\n");
+    const r = await runLogin({
+      claude: "registered",
+      env: { HOME: keyHome },
+      steps: [
+        { expect: "Provider", send: "7\r" },
+        { expect: "ServerURL", send: `${url}/v1//\r` },
+        { expect: "APIkey,if", send: "~/llama.key\r" },
+        { expect: "Model:", send: "\r" },
+        { expect: "Contextwindow", send: "128K\r" },
+        { expect: "PriceinUSD", send: " 0.5 / 2 \r" },
+      ],
+    });
+    expect(r.exit).toBe("EXIT 0");
+    expect(r.output).not.toContain("fake-key-never-read");
+    expect(JSON.stringify(r.config)).toBe(
+      JSON.stringify({
+        local: {
+          base_url: `${url}/v1`,
+          model: "bonsai-9b-mtp",
+          api_key_file: join(keyHome, "llama.key"),
+          context: 128000,
+          price: { input: 0.5, output: 2 },
+        },
+      }),
+    );
+  },
+  slow(90_000),
+);
+
+tty.each([
+  [
+    "llama.cpp's /props with no slot count",
+    { "/props": { default_generation_settings: { n_ctx: 8192 } } },
+    "Context window in tokens (detected) [Enter = 8192]: ",
+  ],
+  [
+    "LM Studio's max_context_length when the model is not loaded",
+    {
+      "/props": { default_generation_settings: {} },
+      "/api/v0/models": { data: [{ id: "other" }, { id: "m1", max_context_length: 4096 }] },
+    },
+    "Context window in tokens (detected) [Enter = 4096]: ",
+  ],
+  [
+    "a loaded context of 0, which is not a detection",
+    {
+      "/api/v0/models": {
+        data: [{ id: "m1", loaded_context_length: 0, max_context_length: 4096 }],
+      },
+    },
+    "Context window in tokens [Enter = unknown]: ",
+  ],
+] as const)(
+  "a custom endpoint's context window from %s",
+  async (_, answers, expected) => {
+    const url = await serverAnswering({ "/v1/models": { data: [{ id: "m1" }] }, ...answers });
+    const r = await runLogin({
+      claude: "registered",
+      steps: [
+        { expect: "Provider", send: "7\r" },
+        { expect: "ServerURL", send: `${url}/v1\r` },
+        { expect: "APIkey,if", send: "\r" },
+        { expect: "Model:", send: "\r" },
+        { expect: "Contextwindow", send: "\r" },
+        { expect: "PriceinUSD", send: "x\r" },
+      ],
+    });
+    expect(r.exit).toBe("EXIT 1");
+    expect(r.output).toContain(expected);
+    expect(r.config).toBeUndefined();
+  },
+  slow(60_000),
+);
+
+tty(
+  "re-running login for Ollama on this machine starts on it over OLLAMA_API_KEY, keeps the saved model and context, and drops the custom endpoint",
+  async () => {
+    const url = await ollamaDaemon();
+    const ollama = {
+      endpoint: "local",
+      base_url: `${url}/v1`,
+      model: "llama3.2:latest",
+      context: 4096,
+    };
+    const r = await runLogin({
+      claude: "registered",
+      args: ["--preset", "cheapest"],
+      env: { OLLAMA_API_KEY: "cloud-key-0123456789" },
+      config: { ollama, local: { base_url: "http://127.0.0.1:1/v1", model: "m" } },
+      steps: [
+        { expect: "Provider", send: "4\r" },
+        { expect: "Ollamaendpoint", send: "\r" },
+        { expect: "OllamaURL", send: "\r" },
+        { expect: "Model:", send: "\r" },
+      ],
+    });
+    expect(r.exit).toBe("EXIT 0");
+    expect(r.output).toContain(
+      "Ollama endpoint:\n❯ 1) This machine  (no key; the models you have pulled; nothing leaves the machine)\n  2) Ollama Cloud  (ollama.com; the key in OLLAMA_API_KEY)\n",
+    );
+    expect(r.output).toContain(
+      "--preset does not apply to Ollama on this machine: it runs the one model asked for below\n" +
+        `Ollama URL [Enter = ${url}/v1]: `,
+    );
+    expect(r.output).toContain("Model:\n❯ 1) llama3.2:latest\n  2) qwen3:8b  33k context\n");
+    expect(r.output).not.toContain("Ollama reported no context window");
+    expect(r.output).toContain(
+      `✓ Custom endpoint setting removed from ${r.configFile}; Ollama is used now\n` +
+        `✓ Ollama on this machine: llama3.2:latest at ${url}/v1, saved in ${r.configFile}\n`,
+    );
+    expect(JSON.stringify(r.config)).toBe(JSON.stringify({ ollama }));
+    expect(r.fake.recorded.sessions[0].model).toEqual({
+      providerID: "ollama",
+      id: "llama3.2:latest",
+    });
+  },
+  slow(90_000),
+);
+
+tty(
+  "with only OLLAMA_API_KEY set, the Ollama endpoint starts on Cloud; this machine's model with no reported context is saved without one",
+  async () => {
+    const url = await ollamaDaemon();
+    const r = await runLogin({
+      claude: "registered",
+      env: { OLLAMA_API_KEY: "cloud-key-0123456789" },
+      steps: [
+        { expect: "Provider", send: "4\r" },
+        { expect: "Ollamaendpoint", send: "1\r" },
+        { expect: "OllamaURL", send: `${url}/\r` },
+        { expect: "Model:", send: "\r" },
+      ],
+    });
+    expect(r.exit).toBe("EXIT 0");
+    expect(r.output).toContain("  1) This machine  (no key;");
+    expect(r.output).toContain("❯ 2) Ollama Cloud  (ollama.com; the key in OLLAMA_API_KEY)\n");
+    expect(r.output).toContain("Ollama URL [Enter = http://127.0.0.1:11434/v1]: ");
+    expect(r.output).toContain(
+      "! Ollama reported no context window for this model; set ollama.context later if long jobs are cut off\n",
+    );
+    expect(JSON.stringify(r.config)).toBe(
+      JSON.stringify({
+        ollama: { endpoint: "local", base_url: `${url}/v1`, model: "llama3.2:latest" },
+      }),
+    );
+  },
+  slow(90_000),
+);
+
+tty(
+  "npx cheap-agent with a saved provider and no preset says custom; a failed registration update makes it exit 1",
+  async () => {
+    const r = await runLogin({
+      claude: "registered",
+      logins: { openrouter: "k" },
+      registeredCommand: ["npx", "-y", "cheap-agent@1.2.7"],
+      mcpFails: "remove",
+      cmd: [process.execPath, serverEntry],
+      steps: [],
+    });
+    expect(r.exit).toBe("EXIT 1");
+    expect(r.output).toContain(
+      `Cheap Agent ${version} · already set up with OpenRouter (custom)\n` +
+        `✗ claude mcp update failed (remove refused). Run it yourself:\n  claude mcp remove cheapag -s user\n  claude ${ADD}\n`,
+    );
+    expect(r.output).toContain(
+      "\nRestart Claude Code to load it. To change provider or models: npx cheap-agent login\n",
+    );
+    expect(r.config).toBeUndefined();
+  },
+  slow(90_000),
+);
+
+tty(
+  "npx cheap-agent with Ollama on this machine saved leaves its models alone: no preset migration",
+  async () => {
+    const config = {
+      ollama: { endpoint: "local", base_url: "http://127.0.0.1:1/v1", model: "m" },
+      models: PRESETS.ollama.balanced,
+    };
+    const r = await runLogin({
+      claude: "registered",
+      config,
+      cmd: [process.execPath, serverEntry],
+      steps: [],
+    });
+    expect(r.exit).toBe("EXIT 0");
+    expect(r.output).toContain(`Cheap Agent ${version} · already set up with Ollama (custom)\n`);
+    expect(r.output).not.toContain("follows new releases");
+    expect(r.config).toEqual(config);
+  },
+  slow(90_000),
+);
+
+test.skipIf(process.platform === "win32")(
+  "the registration command names npx when run from npx's cache, and quotes a path the shell would split",
+  async () => {
+    const { home: root } = hermeticHome();
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    const packageRoot = dirname(dirname(serverEntry));
+    // a copy of the built package at `dir`, using this checkout's node_modules
+    const install = (dir: string) => {
+      mkdirSync(dir, { recursive: true });
+      cpSync(dirname(serverEntry), join(dir, "dist"), { recursive: true });
+      cpSync(join(packageRoot, "package.json"), join(dir, "package.json"));
+      symlinkSync(join(packageRoot, "node_modules"), join(dir, "node_modules"));
+      return join(dir, "dist", "index.js");
+    };
+    const cases = [
+      [install(join(root, "_npx", "abc")), `npx -y cheap-agent@${version}`],
+      [
+        install(join(root, "it's here")),
+        `${process.execPath} '${join(root, "it'\\''s here", "dist", "index.js")}'`,
+      ],
+    ];
+    for (const [entry, command] of cases) {
+      const r = await runLogin({
+        claude: "absent",
+        logins: { openrouter: "k" },
+        cmd: [process.execPath, entry],
+        steps: [],
+      });
+      expect(r.exit).toBe("EXIT 0");
+      expect(r.output).toContain(
+        `Claude Code's CLI was not found. To add cheapag for all your projects, run:\n  claude mcp add -s user cheapag -- ${command}\n`,
+      );
+    }
+  },
+  slow(120_000),
+);
+
+test("without a terminal, Ollama on this machine stays as configured", async () => {
+  const ollama = { endpoint: "local", base_url: "http://127.0.0.1:1/v1", model: "m" };
+  const r = await scriptedLogin([], JSON.stringify({ ollama }));
+  expect([r.code, r.stdout]).toEqual([
+    0,
+    `No terminal to ask in: the ollama setting stays as configured in ${r.file}\n`,
+  ]);
+  expect(r.config).toEqual({ ollama });
 });
