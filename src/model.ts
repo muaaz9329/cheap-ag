@@ -196,7 +196,8 @@ function saveFlags(provider: Provider, models: CatalogModel[], flags: Required<F
     return 1;
   }
   const main = validModel(flags.main, flags.effort);
-  // both are checked, so a bad main and a bad fallback are both reported; null means no fallback, undefined a refused one
+  // both are checked, so a bad main and a bad fallback are both reported;
+  // null means no fallback, undefined a refused one
   const fallback = noFallback ? null : validModel(flags.fallback, flags.fallbackEffort);
   if (!main || fallback === undefined) return 1;
   return savePick(provider, {
@@ -226,12 +227,12 @@ function savePick(provider: Provider, chosen: Pick) {
 }
 
 /** Effort, when the model has any: `default` first. */
-async function askEffort(role: string, entry: CatalogModel, current?: string) {
+async function askEffort(role: string, entry: CatalogModel, currentEffort?: string) {
   if (!entry.efforts.length) return undefined;
   const index = await select(
     `Effort for ${role} ${entry.id}:`,
     [{ label: "default" }, ...entry.efforts.map((label) => ({ label }))],
-    entry.efforts.indexOf(current ?? "") + 1,
+    entry.efforts.indexOf(currentEffort ?? "") + 1,
   );
   return index ? entry.efforts[index - 1] : undefined;
 }
