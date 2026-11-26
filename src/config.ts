@@ -109,14 +109,12 @@ export const OLLAMA_KEY_ENV = "OLLAMA_API_KEY";
 export const OLLAMA_LOCAL_URL = OLLAMA_URLS.local;
 export const OLLAMA_CLOUD_URL = OLLAMA_URLS.cloud;
 
+const HOME_NETWORK_SUFFIX = /\.(lan|home|internal|home\.arpa)$/;
+
 /** Whether a URL's host is this machine or a private network (where plain http is fine): loopback, RFC 1918, CGNAT, link-local, *.local, single-label names and home LAN suffixes. */
 export function privateHost(url: string) {
-  let host: string;
-  try {
-    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  } catch {
-    return false;
-  }
+  if (!URL.canParse(url)) return false;
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (
     host === "localhost" ||
     host.endsWith(".localhost") ||
@@ -126,17 +124,23 @@ export function privateHost(url: string) {
     return true;
   if (host.includes(":")) return /^f[cd]/.test(host) || host.startsWith("fe80:"); // IPv6 unique-local and link-local
   if (!host.includes(".")) return true; // single-label machine names, e.g. gpu-box
-  if (/\.(lan|home|internal|home\.arpa)$/.test(host)) return true;
-  const ip = host.split(".").map(Number);
-  if (ip.length !== 4 || ip.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
-  const [a, b] = ip;
+  if (HOME_NETWORK_SUFFIX.test(host)) return true;
+  return privateIpv4(host);
+}
+
+/** Whether a dotted IPv4 address is loopback, RFC 1918, link-local or CGNAT; false for any other host. */
+function privateIpv4(host: string) {
+  const octets = host.split(".").map(Number);
+  const outOfRange = (octet: number) => !Number.isInteger(octet) || octet < 0 || octet > 255;
+  if (octets.length !== 4 || octets.some(outOfRange)) return false;
+  const [first, second] = octets;
   return (
-    a === 127 ||
-    a === 10 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254) ||
-    (a === 100 && b >= 64 && b <= 127)
+    first === 127 ||
+    first === 10 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254) ||
+    (first === 100 && second >= 64 && second <= 127)
   );
 }
 
@@ -158,95 +162,119 @@ export function localServer(): LocalServer | undefined {
   return value?.local === undefined ? undefined : parseLocal(value.local, file);
 }
 
+/** Whether a parsed JSON value is an object with keys: not null and not an array. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const HTTP_URL = /^https?:\/\/\S+$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isHttpUrl(value: unknown): value is string {
+  return typeof value === "string" && HTTP_URL.test(value);
+}
+
+function isEnvName(value: unknown): value is string {
+  return typeof value === "string" && ENV_NAME.test(value);
+}
+
+/** Whether a value is a string with something other than whitespace in it. */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isPositiveWholeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 /** The optional price and token limits a `local` and an `ollama` entry share; `entry` names it in the errors. */
-function parseLimits(entry: "local" | "ollama", raw: Record<string, unknown>, file: string) {
+function parseModelLimits(entry: "local" | "ollama", raw: Record<string, unknown>, file: string) {
   const { context, output } = raw;
-  const p = raw.price as { input?: unknown; output?: unknown } | undefined;
+  const price = raw.price as { input?: unknown; output?: unknown } | undefined;
+  const isUsdAmount = (amount: unknown) => typeof amount === "number" && amount >= 0;
   if (
-    p !== undefined &&
-    (typeof p !== "object" ||
-      p === null ||
-      ![p.input, p.output].every((v) => typeof v === "number" && v >= 0))
+    price !== undefined &&
+    (typeof price !== "object" || price === null || ![price.input, price.output].every(isUsdAmount))
   )
     throw new Error(
       `${file}: ${entry}.price must be { "input": <USD per million tokens>, "output": <USD per million tokens> }`,
     );
-  for (const [key, v] of [
+  for (const [key, tokens] of [
     ["context", context],
     ["output", output],
   ] as const) {
-    if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v <= 0))
+    if (tokens !== undefined && !isPositiveWholeNumber(tokens))
       throw new Error(`${file}: ${entry}.${key} must be a positive whole number of tokens`);
   }
   return {
-    ...(p !== undefined && { price: { input: p.input as number, output: p.output as number } }),
+    ...(price !== undefined && {
+      price: { input: price.input as number, output: price.output as number },
+    }),
     ...(context !== undefined && { context: context as number }),
     ...(output !== undefined && { output: output as number }),
   };
 }
 
 function parseLocal(local: unknown, file: string): LocalServer {
-  if (typeof local !== "object" || local === null || Array.isArray(local))
-    throw new Error(`${file}: local must be an object`);
-  const { base_url, model, api_key_file, api_key_env } = local as Record<string, unknown>;
-  if (typeof base_url !== "string" || !/^https?:\/\/\S+$/.test(base_url))
+  if (!isPlainObject(local)) throw new Error(`${file}: local must be an object`);
+  const { base_url, model, api_key_file, api_key_env } = local;
+  if (!isHttpUrl(base_url))
     throw new Error(
       `${file}: local.base_url must be an http(s) URL, e.g. http://127.0.0.1:8080/v1`,
     );
-  if (typeof model !== "string" || !model.trim())
+  if (!isNonEmptyString(model))
     throw new Error(`${file}: local.model must be the server's model id`);
   if (api_key_file !== undefined && (typeof api_key_file !== "string" || !isAbsolute(api_key_file)))
     throw new Error(`${file}: local.api_key_file must be an absolute path`);
-  if (
-    api_key_env !== undefined &&
-    (typeof api_key_env !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(api_key_env))
-  )
+  if (api_key_env !== undefined && !isEnvName(api_key_env))
     throw new Error(
       `${file}: local.api_key_env must be an environment variable name, e.g. MY_GATEWAY_KEY`,
     );
   if (api_key_file !== undefined && api_key_env !== undefined)
     throw new Error(`${file}: local takes api_key_file or api_key_env, not both`);
-  const limits = parseLimits("local", local as Record<string, unknown>, file);
+  const limits = parseModelLimits("local", local, file);
   return {
     base_url: base_url.replace(/\/+$/, ""),
     model: model.trim(),
     ...(api_key_file !== undefined && { api_key_file }),
-    ...(api_key_env !== undefined && { api_key_env: api_key_env as string }),
+    ...(api_key_env !== undefined && { api_key_env }),
     ...limits,
   };
 }
 
-function parseOllama(raw: unknown, file: string): OllamaConfig {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    throw new Error(`${file}: ollama must be an object`);
-  const { endpoint, model, base_url, api_key_env } = raw as Record<string, unknown>;
-  if (endpoint !== "local" && endpoint !== "cloud")
-    throw new Error(`${file}: ollama.endpoint must be "local" or "cloud"`);
+/** The `ollama` entry's base URL, the endpoint's own by default; plain http may only reach a private host. */
+function parseOllamaUrl(endpoint: "local" | "cloud", baseUrl: unknown, file: string) {
   const defaults = OLLAMA_URLS[endpoint];
-  const base = base_url === undefined ? defaults : base_url;
-  if (typeof base !== "string" || !/^https?:\/\/\S+$/.test(base))
+  const url = baseUrl === undefined ? defaults : baseUrl;
+  if (!isHttpUrl(url))
     throw new Error(`${file}: ollama.base_url must be an http(s) URL, e.g. ${defaults}`);
-  if (base.startsWith("http:") && !privateHost(base))
+  if (url.startsWith("http:") && !privateHost(url))
     throw new Error(
       `${file}: ollama.base_url with plain http must be this machine or a private network; use https`,
     );
-  if (endpoint === "local" && (typeof model !== "string" || !model.trim()))
+  return url.replace(/\/+$/, "");
+}
+
+function parseOllama(raw: unknown, file: string): OllamaConfig {
+  if (!isPlainObject(raw)) throw new Error(`${file}: ollama must be an object`);
+  const { endpoint, model, base_url, api_key_env } = raw;
+  if (endpoint !== "local" && endpoint !== "cloud")
+    throw new Error(`${file}: ollama.endpoint must be "local" or "cloud"`);
+  const baseUrl = parseOllamaUrl(endpoint, base_url, file);
+  if (endpoint === "local" && !isNonEmptyString(model))
     throw new Error(`${file}: ollama.model must be the local server's model id, e.g. "llama3.2"`);
-  if (model !== undefined && (typeof model !== "string" || !model.trim()))
+  if (model !== undefined && !isNonEmptyString(model))
     throw new Error(`${file}: ollama.model must be a model id`);
   const keyEnv = api_key_env ?? (endpoint === "cloud" ? OLLAMA_KEY_ENV : undefined);
-  if (
-    keyEnv !== undefined &&
-    (typeof keyEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv))
-  )
+  if (keyEnv !== undefined && !isEnvName(keyEnv))
     throw new Error(
       `${file}: ollama.api_key_env must be an environment variable name, e.g. ${OLLAMA_KEY_ENV}`,
     );
-  const limits = parseLimits("ollama", raw as Record<string, unknown>, file);
+  const limits = parseModelLimits("ollama", raw, file);
   return {
     endpoint,
-    base_url: base.replace(/\/+$/, ""),
-    ...(model !== undefined && { model: (model as string).trim() }),
+    base_url: baseUrl,
+    ...(model !== undefined && { model: model.trim() }),
     ...(keyEnv !== undefined && { api_key_env: keyEnv }),
     ...limits,
   };
@@ -281,7 +309,8 @@ export function ollamaIsLocal() {
 }
 
 export function loadConfig(root: string): Config {
-  const [mine, repo] = [read(userConfigFile()), read(join(root, "cheapag.json"))];
+  const mine = readConfigFile(userConfigFile());
+  const repo = readConfigFile(join(root, "cheapag.json"));
   // caps, retention and models merge key by key, so a repo can set one and keep the user's others
   return {
     ...DEFAULTS,
@@ -293,43 +322,65 @@ export function loadConfig(root: string): Config {
   };
 }
 
-function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
+/** The settings one config file sets: caps and retention key by key, everything else whole. */
+type FileConfig = Partial<Omit<Config, "limits" | "retention">> & {
   limits?: Partial<Limits>;
   retention?: Partial<Retention>;
-} {
+};
+
+/** The settings in `file`, checked; none when the file does not exist. */
+function readConfigFile(file: string): FileConfig {
   if (!existsSync(file)) return {};
-  let raw: string;
+  return parseConfig(readJsonObject(file), file);
+}
+
+/** The JSON object in `file`; the error names the file and why it could not be read. */
+function readJsonObject(file: string): Record<string, unknown> {
+  let text: string;
   try {
-    raw = readFileSync(file, "utf8");
-  } catch (err) {
-    throw new Error(`cannot read ${file}: ${(err as Error).message}`);
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw new Error(`cannot read ${file}: ${(error as Error).message}`);
   }
   let value: unknown;
   try {
-    value = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON: ${(error as Error).message}`);
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error(`${file} must hold a JSON object`);
-  const {
-    test_cmd,
-    integration_cmd,
-    link_dirs,
-    allow_commands,
+  if (!isPlainObject(value)) throw new Error(`${file} must hold a JSON object`);
+  return value;
+}
+
+/** Checks one file's settings in a fixed order, so a file with several mistakes always reports the same one first. */
+function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
+  checkUserOnlyKeys(value, file);
+  const limits = parseJobLimits(value.limits, file);
+  const retention = parseRetention(value.retention, file);
+  const allowCommands = parseAllowCommands(value.allow_commands, file);
+  const models = parseModels(value.models, file);
+  const escalationSkipAt = parseEscalationSkipAt(value.escalation_skip_at, file);
+  const handOffs = parseHandOffs(value, file);
+  const guardLines = parseGuardLines(value.guard_lines, file);
+  const commands = parseCommands(value, file);
+  const linkDirs = parseLinkDirs(value.link_dirs, file);
+  return {
+    ...commands,
+    ...(linkDirs && { link_dirs: linkDirs }),
+    ...(allowCommands && { allow_commands: allowCommands }),
     limits,
     retention,
-    models,
-    escalation_skip_at,
-    guard_lines,
-    hard_tasks,
-    takeover,
-    on_blocked_command,
-    local,
-    ollama,
-    preset,
-    provider,
-  } = value as Record<string, unknown>;
+    ...(models && { models }),
+    ...(value.preset !== undefined && { preset: value.preset as Preset }),
+    ...(escalationSkipAt !== undefined && { escalation_skip_at: escalationSkipAt }),
+    ...(guardLines !== undefined && { guard_lines: guardLines }),
+    ...handOffs,
+  };
+}
+
+/** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
+function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
+  const { provider, local, ollama, preset } = value;
   if (provider !== undefined) {
     if (file !== userConfigFile())
       throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
@@ -354,100 +405,123 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
     if (!PRESET_NAMES.includes(preset as Preset))
       throw new Error(`${file}: preset must be one of ${PRESET_NAMES.join(", ")}`);
   }
-  if (
-    limits !== undefined &&
-    (typeof limits !== "object" || limits === null || Array.isArray(limits))
-  )
+}
+
+/** The job caps, in the order a file's caps are checked. */
+const LIMIT_KEYS = [
+  "max_turns",
+  "max_minutes",
+  "max_cost_usd",
+  "max_parallel",
+  "max_blocked_minutes",
+  "repro_by_turns",
+  "takeover_calls",
+] as const;
+const WHOLE_NUMBER_LIMITS: readonly (keyof Limits)[] = [
+  "max_turns",
+  "max_parallel",
+  "repro_by_turns",
+  "takeover_calls",
+];
+
+/** The job caps a file sets; other keys under `limits`, such as E4's self_fix_attempts, are not read yet. */
+function parseJobLimits(limits: unknown, file: string): Partial<Limits> {
+  if (limits !== undefined && !isPlainObject(limits))
     throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
-  // E4's self_fix_attempts is not read yet
-  for (const key of [
-    "max_turns",
-    "max_minutes",
-    "max_cost_usd",
-    "max_parallel",
-    "max_blocked_minutes",
-    "repro_by_turns",
-    "takeover_calls",
-  ] as const) {
-    const v = (limits as Record<string, unknown> | undefined)?.[key];
-    if (v === undefined) continue;
-    const whole =
-      key === "max_turns" ||
-      key === "max_parallel" ||
-      key === "repro_by_turns" ||
-      key === "takeover_calls";
-    // takeover_calls 0 turns the take-over budget off (ticket 29)
-    const min = key === "takeover_calls" ? 0 : Number.MIN_VALUE;
-    if (
-      typeof v !== "number" ||
-      !Number.isFinite(v) ||
-      v < min ||
-      (whole && !Number.isInteger(v))
-    ) {
-      throw new Error(
-        `${file}: limits.${key} must be a ${min ? "positive" : "non-negative"} ${whole ? "whole number" : "number"}`,
-      );
-    }
-    caps[key] = v;
+  for (const key of LIMIT_KEYS) {
+    const value = limits?.[key];
+    if (value === undefined) continue;
+    caps[key] = parseJobLimit(key, value, file);
   }
+  return caps;
+}
+
+function parseJobLimit(key: keyof Limits, value: unknown, file: string): number {
+  const whole = WHOLE_NUMBER_LIMITS.includes(key);
+  // takeover_calls 0 turns the take-over budget off
+  const allowsZero = key === "takeover_calls";
+  const minimum = allowsZero ? 0 : Number.MIN_VALUE;
   if (
-    retention !== undefined &&
-    (typeof retention !== "object" || retention === null || Array.isArray(retention))
-  )
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < minimum ||
+    (whole && !Number.isInteger(value))
+  ) {
+    const range = allowsZero ? "non-negative" : "positive";
+    const kind = whole ? "whole number" : "number";
+    throw new Error(`${file}: limits.${key} must be a ${range} ${kind}`);
+  }
+  return value;
+}
+
+/** How many days cleanup keeps each kind of leftover, as far as a file sets them. */
+function parseRetention(retention: unknown, file: string): Partial<Retention> {
+  if (retention !== undefined && !isPlainObject(retention))
     throw new Error(`${file}: retention must be an object`);
   const keep: Partial<Retention> = {};
   for (const key of ["unlanded_worktree_days", "job_log_days"] as const) {
-    const v = (retention as Record<string, unknown> | undefined)?.[key];
-    if (v === undefined) continue;
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0)
+    const days = retention?.[key];
+    if (days === undefined) continue;
+    if (typeof days !== "number" || !Number.isFinite(days) || days < 0)
       throw new Error(`${file}: retention.${key} must be a number of days (0 or more)`);
-    keep[key] = v;
+    keep[key] = days;
   }
-  if (
-    allow_commands !== undefined &&
-    (!Array.isArray(allow_commands) ||
-      allow_commands.some((c) => typeof c !== "string" || !c.trim()))
-  ) {
+  return keep;
+}
+
+/** The allowed command prefixes, trimmed. */
+function parseAllowCommands(commands: unknown, file: string): string[] | undefined {
+  if (commands === undefined) return undefined;
+  if (!Array.isArray(commands) || commands.some((command) => !isNonEmptyString(command)))
     throw new Error(`${file}: allow_commands must be a list of commands`);
-  }
-  if (
-    models !== undefined &&
-    (typeof models !== "object" || models === null || Array.isArray(models))
-  )
-    throw new Error(`${file}: models must be an object`);
-  const roles = (models ?? {}) as Record<string, unknown>;
-  const name = (v: unknown) => typeof v === "string" && /^[\w.-]+\/\S+$/.test(v);
-  for (const role of ["implement", "medium", "hard", "research", "escalation"]) {
-    if (roles[role] !== undefined && !name(roles[role]))
+  return (commands as string[]).map((command) => command.trim());
+}
+
+const MODEL_ROLES = ["implement", "medium", "hard", "research", "escalation"];
+const MODEL_NAME = /^[\w.-]+\/\S+$/;
+
+/** Whether a value is a full provider/model name, e.g. opencode-go/glm-5.3. */
+function isModelName(value: unknown): value is string {
+  return typeof value === "string" && MODEL_NAME.test(value);
+}
+
+/** The worker models a file names per role, with fallbacks and efforts; the object is kept as written. */
+function parseModels(models: unknown, file: string): ModelsConfig | undefined {
+  if (models === undefined) return undefined;
+  if (!isPlainObject(models)) throw new Error(`${file}: models must be an object`);
+  for (const role of MODEL_ROLES) {
+    if (models[role] !== undefined && !isModelName(models[role]))
       throw new Error(
         `${file}: models.${role} must be a provider/model name, e.g. opencode-go/deepseek-v4.1-flash`,
       );
   }
-  if (
-    roles.fallback !== undefined &&
-    (!Array.isArray(roles.fallback) || !roles.fallback.every(name))
-  )
+  const { fallback, variants } = models;
+  if (fallback !== undefined && (!Array.isArray(fallback) || !fallback.every(isModelName)))
     throw new Error(`${file}: models.fallback must be a list of provider/model names`);
-  if (roles.variants !== undefined) {
-    const variants = roles.variants;
-    if (
-      typeof variants !== "object" ||
-      variants === null ||
-      Array.isArray(variants) ||
-      Object.values(variants).some((v) => typeof v !== "string")
-    ) {
-      throw new Error(
-        `${file}: models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}`,
-      );
-    }
-  }
+  const isEffort = (effort: unknown) => typeof effort === "string";
   if (
-    escalation_skip_at !== undefined &&
-    (typeof escalation_skip_at !== "number" || !(escalation_skip_at > 0 && escalation_skip_at <= 1))
+    variants !== undefined &&
+    (!isPlainObject(variants) || !Object.values(variants).every(isEffort))
   ) {
-    throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
+    throw new Error(
+      `${file}: models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}`,
+    );
   }
+  return models as ModelsConfig;
+}
+
+/** The share of a tracked usage cap at which the escalation attempt is skipped. */
+function parseEscalationSkipAt(share: unknown, file: string): number | undefined {
+  if (share === undefined) return undefined;
+  if (typeof share !== "number" || !(share > 0 && share <= 1))
+    throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
+  return share;
+}
+
+/** Who implements a hard task, who finishes a failed step, and what a blocked command does. */
+function parseHandOffs(value: Record<string, unknown>, file: string) {
+  const { hard_tasks, takeover, on_blocked_command } = value;
   if (hard_tasks !== undefined && !HARD_TASKS.includes(hard_tasks as HardTasks))
     throw new Error(`${file}: hard_tasks must be one of ${HARD_TASKS.join(", ")}`);
   if (takeover !== undefined && !TAKE_OVER.includes(takeover as TakeOver))
@@ -458,49 +532,49 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   ) {
     throw new Error(`${file}: on_blocked_command must be one of ${ON_BLOCKED_COMMAND.join(", ")}`);
   }
-  if (
-    guard_lines !== undefined &&
-    (typeof guard_lines !== "number" || !Number.isInteger(guard_lines) || guard_lines <= 0)
-  ) {
-    throw new Error(`${file}: guard_lines must be a positive whole number`);
-  }
-  if (test_cmd !== undefined && (typeof test_cmd !== "string" || !test_cmd.trim()))
-    throw new Error(`${file}: test_cmd must be a non-empty string`);
-  // null is E4's written default: test_cmd
-  if (integration_cmd != null && (typeof integration_cmd !== "string" || !integration_cmd.trim()))
-    throw new Error(`${file}: integration_cmd must be a non-empty string`);
-  let dirs: string[] | undefined;
-  if (link_dirs !== undefined) {
-    if (!Array.isArray(link_dirs) || link_dirs.some((d) => typeof d !== "string" || !d.trim()))
-      throw new Error(`${file}: link_dirs must be a list of directory paths`);
-    dirs = (link_dirs as string[]).map((dir) => {
-      const parts = dir.split(/[\\/]+/).filter(Boolean);
-      if (isAbsolute(dir) || parts.includes(".."))
-        throw new Error(`${file}: link_dirs entry "${dir}" must be a path inside the repository`);
-      if (BUILD_OUTPUT.test(parts.at(-1)!))
-        throw new Error(`${file}: link_dirs entry "${dir}" is build output, which is never linked`);
-      return parts.join("/");
-    });
-  }
   return {
-    ...(test_cmd !== undefined && { test_cmd }),
-    ...(integration_cmd != null && { integration_cmd }),
-    ...(dirs && { link_dirs: dirs }),
-    ...(allow_commands !== undefined && {
-      allow_commands: (allow_commands as string[]).map((c) => c.trim()),
-    }),
-    limits: caps,
-    retention: keep,
-    ...(models !== undefined && { models: roles as ModelsConfig }),
-    ...(preset !== undefined && { preset: preset as Preset }),
-    ...(escalation_skip_at !== undefined && { escalation_skip_at }),
-    ...(guard_lines !== undefined && { guard_lines }),
     ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
     ...(takeover !== undefined && { takeover: takeover as TakeOver }),
     ...(on_blocked_command !== undefined && {
       on_blocked_command: on_blocked_command as OnBlockedCommand,
     }),
   };
+}
+
+function parseGuardLines(lines: unknown, file: string): number | undefined {
+  if (lines === undefined) return undefined;
+  if (!isPositiveWholeNumber(lines))
+    throw new Error(`${file}: guard_lines must be a positive whole number`);
+  return lines;
+}
+
+/** The repo's test and integration commands. */
+function parseCommands(value: Record<string, unknown>, file: string) {
+  const { test_cmd, integration_cmd } = value;
+  if (test_cmd !== undefined && !isNonEmptyString(test_cmd))
+    throw new Error(`${file}: test_cmd must be a non-empty string`);
+  // null is E4's written default: test_cmd
+  if (integration_cmd != null && !isNonEmptyString(integration_cmd))
+    throw new Error(`${file}: integration_cmd must be a non-empty string`);
+  return {
+    ...(test_cmd !== undefined && { test_cmd }),
+    ...(integration_cmd != null && { integration_cmd }),
+  };
+}
+
+/** The folders a worktree links from the repo, as repo-relative paths joined with forward slashes. */
+function parseLinkDirs(dirs: unknown, file: string): string[] | undefined {
+  if (dirs === undefined) return undefined;
+  if (!Array.isArray(dirs) || dirs.some((dir) => !isNonEmptyString(dir)))
+    throw new Error(`${file}: link_dirs must be a list of directory paths`);
+  return (dirs as string[]).map((dir) => {
+    const parts = dir.split(/[\\/]+/).filter(Boolean);
+    if (isAbsolute(dir) || parts.includes(".."))
+      throw new Error(`${file}: link_dirs entry "${dir}" must be a path inside the repository`);
+    if (BUILD_OUTPUT.test(parts.at(-1)!))
+      throw new Error(`${file}: link_dirs entry "${dir}" is build output, which is never linked`);
+    return parts.join("/");
+  });
 }
 
 /** "Always allow" (ticket 69): appends `prefix` to `allow_commands` in the repo's cheapag.json, creating the file with only that key; every other key and its order stay. */
