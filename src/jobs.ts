@@ -97,11 +97,11 @@ import { toolTarget } from "./watch.js";
  * The worker session's ruleset for this job. The step's own done-when checks are allowed exactly as written, so the
  * worker can check its work before finishing (Cheap Agent runs them anyway); the hard denylist still comes last.
  */
-function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
+function rulesetFor(worktree: Worktree, commands: string[], config: Config) {
   const { scripts, exact } = projectScripts(worktree.path);
   return workerRuleset({
     scripts,
-    exact: [...exact, ...cmds.flatMap(checkAllows)],
+    exact: [...exact, ...commands.flatMap(checkAllows)],
     allowCommands: config.allow_commands,
     linked: worktree.linked,
     onBlockedCommand: config.on_blocked_command,
@@ -377,11 +377,11 @@ type GroupRun = Shared & {
  * or final); `done` resolves to the final block; `record()` is the job record as it stands; `settles()` resolves at the
  * job's next settlement (BLOCKED, or final).
  */
-function runGroup(g: GroupRun) {
-  const { root, input, plan, config, route, opencode } = g;
-  const steps = g.group.steps;
-  const cmds = g.fix
-    ? [g.fix.cmd]
+function runGroup(groupRun: GroupRun) {
+  const { root, input, plan, config, route, opencode } = groupRun;
+  const steps = groupRun.group.steps;
+  const commands = groupRun.fix
+    ? [groupRun.fix.cmd]
     : verifyCommands(
         steps.map((s) => s.fields["done-when"]),
         config.test_cmd,
@@ -391,7 +391,7 @@ function runGroup(g: GroupRun) {
     typeof value === "string"
       ? writeWhole(join(dir, name), redact(value))
       : writeJson(join(dir, name), value);
-  const stepIds = g.group.label;
+  const stepIds = groupRun.group.label;
   // a step's own difficulty: wins over the call's; in a range the hardest step decides
   const difficulty =
     [...DIFFICULTIES].reverse().find((d) => steps.some((s) => s.fields.difficulty === d)) ??
@@ -403,7 +403,7 @@ function runGroup(g: GroupRun) {
   write("request.json", {
     ...input,
     steps: stepIds,
-    batch: g.batch,
+    batch: groupRun.batch,
     model: modelName(model),
     difficulty,
     startedAt,
@@ -430,7 +430,7 @@ function runGroup(g: GroupRun) {
     }
   };
   // whoever is waiting on this job right now: delegate first, then each reply
-  let progress = g.progress;
+  let progress = groupRun.progress;
   // the same line goes to progress.txt for anything watching the folder; best effort, with or without an MCP progress token
   const tell: Progress = (turns, message) => {
     try {
@@ -468,7 +468,7 @@ function runGroup(g: GroupRun) {
   let selfFix = 0;
   let escalated = false;
   let repro: JobRecord["repro"]; // the server's check of the worker's reproduction test (OK jobs only)
-  let reproRisk: string | undefined;
+  let reproductionRisk: string | undefined;
   let failing: Failing | undefined;
   let checked = false; // whether verify has seen the worker's latest changes
   let redone = 0; // 1 once a landing conflict started the redo (spec: Landing and redo)
@@ -509,7 +509,7 @@ function runGroup(g: GroupRun) {
   // only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
   const kind = steps.find((s) => s.fields.kind)?.fields.kind;
   const isFix =
-    g.fix ||
+    groupRun.fix ||
     (kind
       ? kind === "fix"
       : FIX_WORDS.test(
@@ -522,8 +522,8 @@ function runGroup(g: GroupRun) {
       .split("\n")
       .map((l) => l.slice(3).trim())
       .filter(Boolean);
-  const reproDue = () => {
-    if (edited || !isFix || !cmds.length || !worktree || !session) return;
+  const reproductionDue = () => {
+    if (edited || !isFix || !commands.length || !worktree || !session) return;
     const by = limits.repro_by_turns * scale;
     if (session.totals().turns < by) return;
     edited = dirty().some((f) => !carried.has(f));
@@ -562,7 +562,7 @@ function runGroup(g: GroupRun) {
     root,
     stop,
     done,
-    batch: g.batch,
+    batch: groupRun.batch,
     settles: () => settled,
     block: () => renderJob(last),
     parked: () => parked,
@@ -572,9 +572,12 @@ function runGroup(g: GroupRun) {
   const verify = async () => {
     const runs = await runVerify(
       worktree!.path,
-      cmds,
+      commands,
       (cmd) =>
-        tell(session!.totals().turns, `step ${g.group.label} · verify ${cmd} · ${elapsed()}s`),
+        tell(
+          session!.totals().turns,
+          `step ${groupRun.group.label} · verify ${cmd} · ${elapsed()}s`,
+        ),
       kill.signal,
     );
     checked = true;
@@ -597,17 +600,17 @@ function runGroup(g: GroupRun) {
     const waiting = status === "BLOCKED";
     const silent = waiting || notStarted !== undefined; // likewise a group that never started
     const rejections = session?.totals().rejections ?? [];
-    const risks = jobRisks(reproRisk, report, rejections);
+    const risks = jobRisks(reproductionRisk, report, rejections);
     const record = {
       format: "cheapag/1" as const,
       job,
-      batch: g.batch,
-      kind: g.fix ? "fix" : "implement",
+      batch: groupRun.batch,
+      kind: groupRun.fix ? "fix" : "implement",
       status,
       landed,
       plan: input.plan,
       steps: stepIds,
-      provider: g.provider.provider,
+      provider: groupRun.provider.provider,
       // the server process running the job: a restart finds RUNNING/BLOCKED records whose pid is gone
       pid: process.pid,
       models: {
@@ -722,7 +725,7 @@ function runGroup(g: GroupRun) {
     const marked = reapply(worktree, patch);
     const files = clashFiles(marked, conflictPaths(clash), changed);
     landing = false;
-    await Promise.race([g.beforeRedo?.(), halted]); // max_parallel counts a redo's worker too
+    await Promise.race([groupRun.beforeRedo?.(), halted]); // max_parallel counts a redo's worker too
     startClock();
     finalize("RUNNING");
     const result = await work(redoPrompt(steps, files, marked, patch), "redo ");
@@ -757,7 +760,7 @@ function runGroup(g: GroupRun) {
 
   /** Waits for the job's turn (a batch's scheduling), then opens its worktree and the worker session. */
   const begin = async () => {
-    notStarted = await Promise.race([g.start, halted.then(() => undefined)]);
+    notStarted = await Promise.race([groupRun.start, halted.then(() => undefined)]);
     if (notStarted) throw new Error(notStarted);
     if (stopped as Stop | undefined) throw new Error("stopped before it started"); // cancelled while queued; the stop's reason is recorded
     startClock(); // queued time is not working time
@@ -767,11 +770,11 @@ function runGroup(g: GroupRun) {
       opencode,
       directory: worktree.path,
       model,
-      permission: rulesetFor(worktree, cmds, config),
-      step: { label: g.group.label, title: steps.map((s) => s.title).join("; ") },
+      permission: rulesetFor(worktree, commands, config),
+      step: { label: groupRun.group.label, title: steps.map((s) => s.title).join("; ") },
       // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
-      onQuestion: g.fix ? undefined : (q) => onQuestion(q),
-      onPermission: g.fix ? undefined : onPermission,
+      onQuestion: groupRun.fix ? undefined : (q) => onQuestion(q),
+      onPermission: groupRun.fix ? undefined : onPermission,
       signal: halt.signal,
       onEvent: (event, turns) => {
         appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
@@ -782,13 +785,13 @@ function runGroup(g: GroupRun) {
             const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
             tell(
               turns,
-              `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`,
+              `step ${groupRun.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`,
             );
             if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
             // finishing on the last allowed turn is fine
             if (part.tool !== "finish") {
               overTurns();
-              reproDue();
+              reproductionDue();
             }
           }
         }
@@ -798,7 +801,7 @@ function runGroup(g: GroupRun) {
     finalize("RUNNING"); // now with the worktree, so a restart can point at it
   };
 
-  const provider = g.provider.provider;
+  const provider = groupRun.provider.provider;
   // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET;
   // a transient provider error retries, falls back the same way, then stops as PROVIDER
   const routed = async (text: string, on?: typeof escalation, interrupt?: AbortSignal) => {
@@ -818,10 +821,11 @@ function runGroup(g: GroupRun) {
     }
     overTurns(); // a fix needs at least one more turn
     if (stopped as Stop | undefined) return false; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
-    const esc = attempt === "esc";
-    if (esc && escalated) return false; // already used for the turn-cap hand-over
+    const escalating = attempt === "esc";
+    if (escalating && escalated) return false; // already used for the turn-cap hand-over
     const skip =
-      esc && escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
+      escalating &&
+      escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
     if (skip) {
       tried.push(tag + skip);
       return false;
@@ -831,16 +835,16 @@ function runGroup(g: GroupRun) {
 
   /** One self-fix, or the escalation on the stronger model, against the failing check; `done` when no attempt follows it. */
   const attemptFix = async (attempt: Attempt, tag: string, failure: Failing) => {
-    const esc = attempt === "esc";
-    if (esc) escalated = true;
+    const escalating = attempt === "esc";
+    if (escalating) escalated = true;
     else selfFix++;
     const before: string[] = failure.tail;
-    const result = await routed(fixThis(before), esc ? escalation : undefined);
+    const result = await routed(fixThis(before), escalating ? escalation : undefined);
     checked = false;
     const fresh = ownReport(result);
     if (fresh) report = fresh;
     const label = attemptLabel(`${tag}${attempt}`, fresh);
-    if (result.limit && esc) {
+    if (result.limit && escalating) {
       tried.push(`${label} → usage limit: ${result.limit.message.slice(0, 80)}`);
       escalated = false; // it never ran: the job ends on the implement chain's model and result
       return { result, done: true };
@@ -861,7 +865,7 @@ function runGroup(g: GroupRun) {
     report = finishReport(result);
     failing = undefined;
     checked = false;
-    if (!result.error && cmds.length) {
+    if (!result.error && commands.length) {
       failing = await verify();
       // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
       for (const attempt of ATTEMPTS) {
@@ -872,22 +876,22 @@ function runGroup(g: GroupRun) {
       }
     }
     // stopped mid-change by the turn cap: check what the worker left, to tell PARTIAL from FAIL
-    if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
+    if (stopped?.cap === "turns" && commands.length && !checked) failing = await verify();
     return result;
   };
 
   /** The worker's first prompt: the integration fix's, or the plan and its step(s) with any repo path pointed at the worktree. */
   const firstPrompt = () => {
     // an absolute repo path typed in a task would point the worker outside its worktree
-    const rootRe = new RegExp(
+    const rootPattern = new RegExp(
       [...new Set([root, realpathSync(root)])]
         .map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
         .join("|"),
       "g",
     ); // one pass: the worktree path contains the root
-    const inWorktree = (text: string) => text.replace(rootRe, () => worktree!.path);
-    return g.fix
-      ? fixPrompt(plan, steps, g.fix)
+    const inWorktree = (text: string) => text.replace(rootPattern, () => worktree!.path);
+    return groupRun.fix
+      ? fixPrompt(plan, steps, groupRun.fix)
       : inWorktree(contextPack(plan, steps, input.note, input.brief, input.source));
   };
 
@@ -898,7 +902,7 @@ function runGroup(g: GroupRun) {
    */
   const escalateAfterTurnCap = async (result: RunResult) => {
     const escalationBlocked =
-      escalated || !failing || envFailure(failing.run) || !cmds.length || !worktree || !session
+      escalated || !failing || envFailure(failing.run) || !commands.length || !worktree || !session
         ? "not now"
         : escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
     if (stopped?.cap !== "turns" || escalationBlocked || !worktreeDiff(worktree!).changed.length)
@@ -938,10 +942,10 @@ function runGroup(g: GroupRun) {
     if (failing) return; // a verify failure is explained by the error: and tried: sections, not a reason
     // only a fix has a reproduction to check: a feature lands without the without-the-change run
     if (isFix)
-      ({ repro, risk: reproRisk } = await checkRepro(
+      ({ repro, risk: reproductionRisk } = await checkReproduction(
         worktree!,
         report.repro,
-        [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands],
+        [...commands, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands],
         verified.filter((r) => r.ok).map((r) => r.cmd),
         diff.changed.map((c) => c.path),
         kill.signal,
@@ -949,7 +953,7 @@ function runGroup(g: GroupRun) {
     // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
     pauseClock();
     parked = true;
-    await Promise.race([g.beforeLand?.(), halted]);
+    await Promise.race([groupRun.beforeLand?.(), halted]);
     parked = false;
     if (stopped as Stop | undefined) return;
     landing = true; // from here on, caps and cancel no longer apply (until a redo works again)
@@ -969,7 +973,7 @@ function runGroup(g: GroupRun) {
     if (!session) return;
     try {
       recordSpend(session.totals().spend);
-      if (g.provider.provider === "opencode-go" && usedBalance(session.totals().spend))
+      if (groupRun.provider.provider === "opencode-go" && usedBalance(session.totals().spend))
         billing = "zen";
     } catch {
       // the ledger only steers later escalations: a write error (full disk, permissions) must not change this job's result
@@ -1030,9 +1034,13 @@ function runGroup(g: GroupRun) {
 type Failing = { run: VerifyRun; tail: string[] };
 
 /** The job's risks: the server's own first, so the 5-risk cap never cuts them, then the worker's. */
-function jobRisks(reproRisk: string | undefined, report: FinishReport, rejections: unknown[]) {
+function jobRisks(
+  reproductionRisk: string | undefined,
+  report: FinishReport,
+  rejections: unknown[],
+) {
   return [
-    ...(reproRisk ? [reproRisk] : []),
+    ...(reproductionRisk ? [reproductionRisk] : []),
     ...(report.disagree && !/^none\b/i.test(report.disagree)
       ? [`spec vs source: ${report.disagree}`]
       : []),
@@ -1420,7 +1428,7 @@ async function findings(session: Session): Promise<string | undefined> {
  * starts with a command this job may already run (done-when, test_cmd, allow_commands); anything else stays unverified.
  * `passed` are verify commands that already passed on this tree, so a claim equal to one skips the fixed-code rerun.
  */
-async function checkRepro(
+async function checkReproduction(
   worktree: Worktree,
   claim: string | undefined,
   allowed: string[],
