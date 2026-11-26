@@ -328,20 +328,13 @@ export async function runRouted(
 ): Promise<RunResult & { budget?: string; provider?: string }> {
   // the first model is the session's own; once moved, every prompt names the fallback explicitly
   const model = () => escalation ?? (c.current === c.first ? undefined : c.current);
-  let text = prompt;
-  let result = await session.run(text, model(), interrupt);
+  let result = await session.run(prompt, model(), interrupt);
   if (escalation && result.limit) c.limits.push(result.limit);
   while (!escalation) {
     if (isTransient(result)) {
       // OpenCode's own retries are already past, and Go pins a session to one backend cell: retry once in a forked session
       if (await session.rotate()) result = await session.run(RETRY, model(), interrupt);
-      if (isTransient(result)) {
-        const others = c.rest.map((m) => m.id).join(", ") || "none";
-        return {
-          ...result,
-          provider: `${c.current.id} is failing (last error: ${(result.error ?? `HTTP ${result.httpStatus}`).slice(0, 120)}); other models: ${others}`,
-        };
-      }
+      if (isTransient(result)) return { ...result, provider: failingReason(c, result) };
     }
     if (!result.limit) break;
     c.limits.push(result.limit);
@@ -349,12 +342,18 @@ export async function runRouted(
     if (!next) return { ...result, budget: exhausted(provider, c.limits) };
     c.current = next;
     c.used.push(modelName(next));
-    text = CONTINUE;
-    result = await session.run(text, model(), interrupt);
+    result = await session.run(CONTINUE, model(), interrupt);
   }
   if (provider === "openrouter" && result.httpStatus === 402)
     return { ...result, budget: "OpenRouter credits exhausted" };
   return result;
+}
+
+/** The PROVIDER reason: the failing model, its last error cut short, and the fallbacks the user could switch to. */
+function failingReason(modelChain: Chain, result: Pick<RunResult, "error" | "httpStatus">) {
+  const others = modelChain.rest.map((model) => model.id).join(", ") || "none";
+  const lastError = (result.error ?? `HTTP ${result.httpStatus}`).slice(0, 120);
+  return `${modelChain.current.id} is failing (last error: ${lastError}); other models: ${others}`;
 }
 
 /** A provider error worth retrying: an overload, a rate limit, a timeout, or a 5xx. Auth/config errors are not. */
