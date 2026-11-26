@@ -188,10 +188,22 @@ export function errorTail(run: VerifyRun, root: string): string[] {
   return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
 }
 
-/** A failure's lines, its headline counting its repeats (×N). */
-function failureLines({ lines, count }: Failure): string[] {
-  const [headline, ...rest] = lines;
-  if (count > 1) return [`${headline} (×${count})`, ...rest];
+/**
+ * The output's lines worth reading: ANSI codes stripped, `root` made repo-relative, tabs expanded, and pass lines,
+ * progress and blank lines dropped.
+ */
+function tailLines(output: string, root: string): string[] {
+  // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
+  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
+  const lines = output
+    // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
+      rest.replace(/\\/g, "/"),
+    )
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\t/g, "  ").trimEnd())
+    .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
   return lines;
 }
 
@@ -248,22 +260,10 @@ function isRepoFrame(line: string) {
   return FRAME.test(line) && !/node_modules|node:internal|site-packages/.test(line);
 }
 
-/**
- * The output's lines worth reading: ANSI codes stripped, `root` made repo-relative, tabs expanded, and pass lines,
- * progress and blank lines dropped.
- */
-function tailLines(output: string, root: string): string[] {
-  // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
-  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
-  const lines = output
-    // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
-      rest.replace(/\\/g, "/"),
-    )
-    .split(/\r?\n/)
-    .map((l) => l.replace(/\t/g, "  ").trimEnd())
-    .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
+/** A failure's lines, its headline counting its repeats (×N). */
+function failureLines({ lines, count }: Failure): string[] {
+  const [headline, ...rest] = lines;
+  if (count > 1) return [`${headline} (×${count})`, ...rest];
   return lines;
 }
 
