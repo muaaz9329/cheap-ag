@@ -194,63 +194,53 @@ export async function openSession(opts: {
         texts: new Map(),
         reasonings: new Map(),
       };
-      let idle = false;
-
-      const variant = (model ?? opts.model).variant;
-      const prompted = await client.session.promptAsync({
-        // prompts carry no agent: OpenCode ignores the one given at session.create, and passing ours on each prompt made the worker slower on bug fixes
-        sessionID,
-        directory,
-        parts: [{ type: "text", text: prompt }],
-        ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
-        ...(variant && { variant }),
-      });
-      if (prompted.error)
-        throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+      await sendPrompt(prompt, model);
       // after the prompt, so an abort can never race ahead of it
-      signal?.addEventListener("abort", stop, { once: true });
-      if (signal?.aborted) stop();
-      interrupt?.addEventListener("abort", stop, { once: true });
-      if (interrupt?.aborted) stop();
-
-      for await (const raw of stream) {
-        const event = raw as Event;
-        const props = event.properties as { sessionID?: string };
-        if (props.sessionID !== sessionID) continue;
-
-        if (event.type === "permission.asked") {
-          const after = await answerPermission(event, current);
-          if (after === "stop") break;
-          if (after === "logged") continue;
-        } else if (event.type === "question.asked") {
-          if ((await answerQuestion(event, current)) === "stop") break;
-          continue;
-        } else {
-          recordEvent(event, current);
-        }
-        opts.onEvent(event, rounds.size);
-        if (event.type === "session.idle") {
-          idle = true;
-          break;
-        }
-      }
-      if (!idle) current.error ??= "worker event stream ended before the session went idle";
-      // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
-      const last = [...current.texts.values()].at(-1)?.messageID;
-      const text = [...current.texts.values()]
-        .filter((t) => t.messageID === last)
-        .map((t) => t.text)
-        .join("\n");
+      stopOnAbort(signal, stop);
+      stopOnAbort(interrupt, stop);
+      await readEvents(stream, current);
       // an interrupted prompt ends on OpenCode's abort error; that is the hand-over, not a worker failure
-      const { finish, error, httpStatus, limit } = current;
-      if (interrupt?.aborted && !signal?.aborted) return { finish, text, interrupted: true };
-      return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
+      const interrupted = Boolean(interrupt?.aborted) && !signal?.aborted;
+      return promptResult(current, interrupted);
     } finally {
       signal?.removeEventListener("abort", stop);
       interrupt?.removeEventListener("abort", stop);
       clearTimeout(backstop);
       abort.abort();
     }
+  }
+
+  /** Sends the prompt, on `model` when one is given, without waiting for the worker to answer it. */
+  async function sendPrompt(prompt: string, model: WorkerModel | undefined) {
+    const variant = (model ?? opts.model).variant;
+    const prompted = await client.session.promptAsync({
+      // prompts carry no agent: OpenCode ignores the one given at session.create, and passing ours on each prompt made the worker slower on bug fixes
+      sessionID,
+      directory,
+      parts: [{ type: "text", text: prompt }],
+      ...(model && { model: { providerID: model.providerID, modelID: model.id } }),
+      ...(variant && { variant }),
+    });
+    if (prompted.error)
+      throw new Error(`could not prompt the worker: ${JSON.stringify(prompted.error)}`);
+  }
+
+  /** Reads this session's events into `current` until it goes idle, a reply fails or the stream ends. */
+  async function readEvents(stream: AsyncIterable<unknown>, current: PromptState) {
+    for await (const raw of stream) {
+      const event = raw as Event;
+      const properties = event.properties as { sessionID?: string };
+      if (properties.sessionID !== sessionID) continue;
+      let after: AfterEvent = "log";
+      if (event.type === "permission.asked") after = await answerPermission(event, current);
+      else if (event.type === "question.asked") after = await answerQuestion(event, current);
+      else recordEvent(event, current);
+      if (after === "stop") break;
+      if (after === "logged") continue;
+      opts.onEvent(event, rounds.size);
+      if (event.type === "session.idle") return;
+    }
+    current.error ??= "worker event stream ended before the session went idle";
   }
 
   /**
@@ -582,6 +572,29 @@ function messageText(parts: Map<string, PartText>, messageID: string | undefined
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** Calls `stop` when `signal` aborts, at once if it already has. */
+function stopOnAbort(signal: AbortSignal | undefined, stop: () => void) {
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+}
+
+/** What a prompt produced; an interrupted one leaves out its error, which is only OpenCode's abort. */
+function promptResult(current: PromptState, interrupted: boolean): RunResult {
+  const text = lastMessageText(current.texts);
+  const { finish, error, httpStatus, limit } = current;
+  if (interrupted) return { finish, text, interrupted: true };
+  return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
+}
+
+/** The last message's text: the fallback block is read from it alone, so a stale one from earlier cannot win. */
+function lastMessageText(texts: Map<string, PartText>): string {
+  const last = [...texts.values()].at(-1)?.messageID;
+  return [...texts.values()]
+    .filter((part) => part.messageID === last)
+    .map((part) => part.text)
+    .join("\n");
 }
 
 /** Resolves with undefined when `signal` aborts, at once if it already has; without a signal, never. */
