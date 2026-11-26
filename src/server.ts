@@ -151,6 +151,24 @@ function workerContext(provider: Provider, root: string, extra: Extra) {
   };
 }
 
+/** The ping tool: boots OpenCode and reports the versions, provider and preset, or why it could not. */
+async function ping(root: string | undefined) {
+  const provider = detectProvider();
+  if (!provider) return safeText(NO_PROVIDER);
+  try {
+    // ping works outside a repository; a given root must be one, and is reported resolved
+    const dir = root === undefined ? undefined : callRoot(root);
+    const opencode = await ensureOpencode(provider, dir);
+    const at = dir === undefined ? "" : ` root=${dir}`;
+    const preset = presetHere(provider.provider, dir);
+    const worker = `opencode=${opencode.version} provider=${provider.provider} via=${provider.via}`;
+    const status = `OK cheapag ${version} ${worker} preset=${preset}${at}`;
+    return safeText(withWarnings(status, provider, dir));
+  } catch (error) {
+    return safeText(`FAIL reason: ${(error as Error).message}`);
+  }
+}
+
 /** How often a running server cleans each repository it has prepared. */
 const CLEANUP_INTERVAL_MS = 60 * 60_000;
 
@@ -227,25 +245,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
       description: "Check that the Cheap Agent server is running and report its version.",
       inputSchema: { root: ROOT },
     },
-    async ({ root }) => {
-      const provider = detectProvider();
-      if (!provider) return safeText(NO_PROVIDER);
-      try {
-        // ping works outside a repository; a given root must be one, and is reported resolved
-        const dir = root === undefined ? undefined : callRoot(root);
-        const opencode = await ensureOpencode(provider, dir);
-        const at = dir === undefined ? "" : ` root=${dir}`;
-        return safeText(
-          withWarnings(
-            `OK cheapag ${version} opencode=${opencode.version} provider=${provider.provider} via=${provider.via} preset=${presetHere(provider.provider, dir)}${at}`,
-            provider,
-            dir,
-          ),
-        );
-      } catch (err) {
-        return safeText(`FAIL reason: ${(err as Error).message}`);
-      }
-    },
+    ({ root }) => ping(root),
   );
 
   server.registerTool(
