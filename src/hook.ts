@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
-import { loadConfig, userConfigFile } from "./config.js";
+import { type Config, loadConfig, userConfigFile } from "./config.js";
 import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag hook [on | off]";
@@ -333,8 +333,25 @@ function budget(input: Input): string | undefined {
   }
   if (CHEAPAG_TOOL.test(tool)) return;
   const config = loadConfig(root);
+  if (state.notDone) return takeoverReason(state, file, { input, root, config });
   const command = input.tool_input?.command;
-  if (state.notDone && config.takeover === "ask") {
+  if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
+    return OK_DONE;
+  }
+}
+
+/**
+ * After the worker did not finish: the takeover mode's reason to deny this call. The call that resolves the take-over
+ * (AskUserQuestion in "ask", the hand-off in "sonnet") clears it; "self" counts each call it lets through.
+ */
+function takeoverReason(
+  state: PromptState,
+  file: string,
+  call: { input: MainLoopInput; root: string; config: Config },
+): string | undefined {
+  const { input, root, config } = call;
+  const tool = input.tool_name ?? "";
+  if (config.takeover === "ask") {
     if (tool === "AskUserQuestion") {
       // the user is being asked: whatever they pick is theirs
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
@@ -343,7 +360,7 @@ function budget(input: Input): string | undefined {
     if (harmlessCall(tool, input, root)) return;
     return ASK_FIRST;
   }
-  if (state.notDone && config.takeover === "sonnet") {
+  if (config.takeover === "sonnet") {
     if (tool === "Agent" || tool === "Task") {
       // the hand-off is happening: one per FAIL, so the guard is off once the taker takes over
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
@@ -352,17 +369,11 @@ function budget(input: Input): string | undefined {
     if (harmlessCall(tool, input, root)) return;
     return HAND_TO_SONNET;
   }
-  if (state.notDone) {
-    const limit = config.limits.takeover_calls;
-    if (!limit) return;
-    if (state.calls >= limit)
-      return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
-    writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
-    return;
-  }
-  if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
-    return OK_DONE;
-  }
+  const limit = config.limits.takeover_calls;
+  if (!limit) return;
+  if (state.calls >= limit)
+    return `Take-over budget spent (${limit} tool calls after a cheapag FAIL or PARTIAL): stop now and tell the user what is fixed, what is left and the failing test. The user can raise limits.takeover_calls in cheapag.json.`;
+  writeFileSync(file, JSON.stringify({ ...state, calls: state.calls + 1 }));
 }
 
 /** What a waiting take-over still lets through: asking the user, loading a tool, the desktop app's tools, reads, and edits outside the repo. */
