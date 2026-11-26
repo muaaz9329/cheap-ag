@@ -140,19 +140,24 @@ function suggestionLine(entry: CatalogModel) {
   return `${entry.id} · ${details(entry)}`;
 }
 
-/** The 4 models worth showing first: the current main, the preset's balanced pick, then the cheapest (the catalog is cheapest first). */
+/**
+ * At most SHOWN models worth showing first: the current main, the ones we route and bench (presets, role
+ * defaults), then the cheapest paid ones (the catalog is cheapest first).
+ */
 function suggestions(provider: Provider, models: CatalogModel[], main: WorkerModel) {
-  // the current model, then the ones we route and bench (presets, role defaults), then the cheapest paid ones: free
-  // catalog entries are often short-lived promos, so they stay in the full picker only
-  const presets = Object.values(
-    (PRESETS as Record<string, (typeof PRESETS)["opencode-go"]>)[provider.provider] ?? {},
-  ).map((p) => p.implement && bareId(provider, p.implement));
-  const roles = (ROLES as Record<string, (typeof ROLES)["opencode-go"]>)[provider.provider];
-  const ours = [main.id, ...presets, ...(roles ? [...roles.implement, roles.escalation] : [])].map(
-    (id) => models.find((m) => m.id === id),
+  const presets = (PRESETS as Record<string, (typeof PRESETS)["opencode-go"]>)[provider.provider];
+  const presetIds = Object.values(presets ?? {}).map(
+    (preset) => preset.implement && bareId(provider, preset.implement),
   );
+  const roles = (ROLES as Record<string, (typeof ROLES)["opencode-go"]>)[provider.provider];
+  const roleIds = roles ? [...roles.implement, roles.escalation] : [];
+  const routed = [main.id, ...presetIds, ...roleIds].map((id) =>
+    models.find((entry) => entry.id === id),
+  );
+  // free catalog entries are often short-lived promos, so they stay in the full picker only
   const paid = models.filter(hasPrice);
-  return [...new Set([...ours, ...paid].filter((m): m is CatalogModel => !!m))].slice(0, SHOWN);
+  const found = [...routed, ...paid].filter((entry): entry is CatalogModel => !!entry);
+  return [...new Set(found)].slice(0, SHOWN);
 }
 
 function describe(
