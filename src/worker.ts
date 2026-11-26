@@ -476,9 +476,9 @@ export async function openSession(opts: {
       costUsd: 0,
     };
     const spend: Record<string, number> = {};
-    for (const m of messages.values()) {
-      for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += m[key];
-      spend[m.model] = (spend[m.model] ?? 0) + m.costUsd;
+    for (const message of messages.values()) {
+      for (const key of Object.keys(usage) as (keyof Usage)[]) usage[key] += message[key];
+      spend[message.model] = (spend[message.model] ?? 0) + message.costUsd;
     }
     return {
       sessionID,
