@@ -36,10 +36,10 @@ export function verifyCommands(doneWhen: string[], testCmd?: string) {
  * leading `NAME=value` (or `export NAME=value`) assignments stripped. De-duplicated, in first-seen order.
  */
 export function checkAllows(cmd: string): string[] {
-  const out: string[] = [];
-  const add = (s: string) => {
-    const value = s.trim();
-    if (value && !out.includes(value)) out.push(value);
+  const allowed: string[] = [];
+  const add = (text: string) => {
+    const value = text.trim();
+    if (value && !allowed.includes(value)) allowed.push(value);
   };
   add(cmd);
   for (const segment of cmd.split(/&&|\|\||;|\|/)) {
@@ -50,7 +50,7 @@ export function checkAllows(cmd: string): string[] {
       .trim();
     if (stripped) add(stripped);
   }
-  return out;
+  return allowed;
 }
 
 /**
@@ -191,7 +191,7 @@ export function errorTail(run: VerifyRun, root: string): string[] {
   const body = failures.length
     ? failures.slice(0, MAX_FAILURES).flatMap(failureLines)
     : lines.slice(-(MAX_LINES - 1));
-  return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
+  return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((line) => clip(`  ${line}`))];
 }
 
 /**
@@ -200,16 +200,15 @@ export function errorTail(run: VerifyRun, root: string): string[] {
  */
 function tailLines(output: string, root: string): string[] {
   // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
-  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
+  const rootPattern = [root, normalisePath(root)].map(escapeRegExp).join("|");
+  const pathUnderRoot = new RegExp(`(?:${rootPattern})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g");
   const lines = output
     // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
-      rest.replace(/\\/g, "/"),
-    )
+    .replace(pathUnderRoot, (_, rest: string) => rest.replace(/\\/g, "/"))
     .split(/\r?\n/)
-    .map((l) => l.replace(/\t/g, "  ").trimEnd())
-    .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
+    .map((line) => line.replace(/\t/g, "  ").trimEnd())
+    .filter((line) => line.trim() && (MARKER.test(line) || !NOISE.test(line)));
   return lines;
 }
 
@@ -280,8 +279,11 @@ export const sameFailure = (a: string[], b: string[]) =>
   a.join("\n").replace(/\d+/g, "#") === b.join("\n").replace(/\d+/g, "#");
 
 /** At most 200 chars, eliding the middle. */
-const clip = (line: string) =>
-  line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`;
+function clip(line: string) {
+  return line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`;
+}
 
 /** Escapes a string for literal use inside a RegExp. */
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
