@@ -155,9 +155,8 @@ export function startPeriodicCleanup(root: string, config: Config, everyMs: numb
     try {
       cleanup(root, config.retention, config.link_dirs);
     } catch (error) {
-      process.stderr.write(
-        `cheapag: periodic cleanup failed: ${(error as Error).message.replace(/\s+/g, " ")}\n`,
-      );
+      const message = (error as Error).message.replace(/\s+/g, " ");
+      process.stderr.write(`cheapag: periodic cleanup failed: ${message}\n`);
     }
   }, everyMs);
   timer.unref();
