@@ -1,9 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { startServer, tempRepo } from "./harness.js";
-import { errorTail, checkAllows, envFailure, runVerify } from "../src/verify.js";
+import {
+  errorTail,
+  checkAllows,
+  envFailure,
+  runVerify,
+  sameFailure,
+  verifyCommands,
+} from "../src/verify.js";
 
 /** A committed check script that prints test-runner-style output: passes, noise, duplicates and frames. */
 const CHECK = `import { readFileSync } from "node:fs";
@@ -405,4 +412,269 @@ test("a usage limit on the escalation model: the job ends on the implement model
     "deepseek-v4-pro",
   ]);
   expect(record).toMatchObject({ status: "FAIL", landed: false, selfFix: 2 });
+});
+
+/** A failed run whose output is `output`, for errorTail. */
+const failed = (output: string, cmd = "npm test") => ({
+  cmd,
+  ok: false,
+  ms: 1,
+  output,
+  code: 1,
+  signal: null,
+});
+
+test("verifyCommands takes the trimmed backticked fragments in order, else the test_cmd, else none", () => {
+  expect(
+    verifyCommands(["`npm test` then ` npx tsc `", "no command", "`  ` and `node a.mjs`"], "make"),
+  ).toEqual(["npm test", "npx tsc", "node a.mjs"]);
+  expect(verifyCommands(["no command", "``"], "make")).toEqual(["make"]);
+  expect(verifyCommands(["no command"], "")).toEqual([]);
+  expect(verifyCommands([])).toEqual([]);
+});
+
+test("checkAllows skips empty segments and repeats, and keeps an assignment with no command after it", () => {
+  expect(checkAllows("CI=1 npm test && CI=1 npm test;")).toEqual([
+    "CI=1 npm test && CI=1 npm test;",
+    "CI=1 npm test",
+    "npm test",
+  ]);
+  expect(checkAllows("  X=1  ")).toEqual(["X=1"]);
+});
+
+test.skipIf(process.platform === "win32")(
+  "runVerify runs each command with CI=1 and FORCE_COLOR=0, keeps stderr, and stops at the first failure",
+  async () => {
+    const started: string[] = [];
+    const runs = await runVerify(
+      import.meta.dirname,
+      ["echo $CI$FORCE_COLOR", "echo err 1>&2; exit 3", "echo never"],
+      (cmd) => started.push(cmd),
+    );
+    expect(started).toEqual(["echo $CI$FORCE_COLOR", "echo err 1>&2; exit 3"]);
+    expect(runs).toMatchObject([
+      { cmd: "echo $CI$FORCE_COLOR", ok: true, output: "10\n", code: 0, signal: null },
+      { cmd: "echo err 1>&2; exit 3", ok: false, output: "err\n", code: 3, signal: null },
+    ]);
+    expect(runs.map((run) => Object.keys(run))).toEqual([
+      ["cmd", "ok", "ms", "output", "code", "signal"],
+      ["cmd", "ok", "ms", "output", "code", "signal"],
+    ]);
+    expect(runs.every((run) => run.ms >= 0)).toBe(true);
+  },
+);
+
+test("runVerify runs nothing when the signal is already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const started: string[] = [];
+  const runs = await runVerify(
+    import.meta.dirname,
+    ["echo never"],
+    (cmd) => started.push(cmd),
+    controller.signal,
+  );
+  expect(runs).toEqual([]);
+  expect(started).toEqual([]);
+});
+
+test.skipIf(process.platform === "win32")(
+  "aborting the signal kills the running check, fails it and says so",
+  async () => {
+    const controller = new AbortController();
+    const started: string[] = [];
+    const runs = runVerify(
+      import.meta.dirname,
+      ["sleep 600", "echo never"],
+      (cmd) => started.push(cmd),
+      controller.signal,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    controller.abort();
+    const [run, ...rest] = await runs;
+    expect(run).toMatchObject({ cmd: "sleep 600", ok: false, code: null, signal: "SIGKILL" });
+    expect(run.output).toBe("\n(cheapag: stopped, job cap or cancel)");
+    expect(rest).toEqual([]);
+    expect(started).toEqual(["sleep 600"]);
+  },
+);
+
+test("runVerify keeps only the last MiB of a check's output", async () => {
+  const [run] = await runVerify(
+    import.meta.dirname,
+    [`node -e "process.stdout.write('a'.repeat(1048576) + 'END')"`],
+    () => {},
+  );
+  expect(run.ok).toBe(true);
+  expect(run.output).toBe("a".repeat(1048573) + "END");
+});
+
+test.skipIf(process.platform === "win32")(
+  "on Windows, a check runs through Git Bash with -c when Git Bash is found",
+  async () => {
+    vi.stubEnv("CLAUDE_CODE_GIT_BASH_PATH", "/bin/bash");
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    let runs: ReturnType<typeof runVerify>;
+    try {
+      // the shell is picked and spawned synchronously, before runVerify's first await
+      runs = runVerify(import.meta.dirname, ['echo "$0" $CI'], () => {});
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+    const [run] = await runs;
+    expect(run).toMatchObject({ ok: true, code: 0, output: "/bin/bash 1\n" });
+  },
+);
+
+test("envFailure says ? when a loader phrase comes with no exit code", () => {
+  const run = { ...failed("sh: foo: Command Not Found"), code: null };
+  expect(envFailure(run)).toBe("exit ?: Command Not Found");
+});
+
+test("errorTail falls back to the last 24 lines, without ANSI codes, pass lines, progress or blank lines", () => {
+  const numbered = Array.from({ length: 26 }, (_, n) => `\tline ${n}   `);
+  const output = [
+    ...numbered.slice(0, 13),
+    "\x1b[32m ✓ a › passes\x1b[0m\r",
+    "PASS src/a.test.ts",
+    "Test Files  1 passed (1)",
+    "  Tests  3 passed (3)",
+    "Tests: 1 failed, 2 passed",
+    "⠋⠙",
+    "...",
+    "ok 1 - fine",
+    "",
+    "   ",
+    ...numbered.slice(13),
+  ].join("\n");
+  expect(errorTail(failed(output), "/repo")).toEqual([
+    "`npm test`",
+    ...Array.from({ length: 24 }, (_, n) => `    line ${n + 2}`),
+  ]);
+});
+
+test("errorTail makes paths under root repo-relative, escaping the root and forward-slashing the rest", () => {
+  const root = "/tmp/r(1)+repo";
+  const output = [
+    `boom at ${root}/src/a.ts:3:1`,
+    `    at fn (${root}/src\\win\\b.ts:4:2)`,
+    `    at '${root}/lib/c.js'`,
+    `see "${root}/d e.ts" and [${root}/f.ts]`,
+    root,
+    `${root}X/g.ts`,
+  ].join("\n");
+  expect(errorTail(failed(output, "x"), root)).toEqual([
+    "`x`",
+    "  boom at src/a.ts:3:1",
+    "      at fn (src/win/b.ts:4:2)",
+    "      at 'lib/c.js'",
+    '  see "d e.ts" and [f.ts]',
+    "  /tmp/r(1)+repo",
+    "  /tmp/r(1)+repoX/g.ts",
+  ]);
+});
+
+test("errorTail strips a native Windows root, and the forward-slash form only where the path separator is a backslash", () => {
+  const output = "at C:\\r\\repo\\src\\a.ts:1 and C:\\r\\repo/lib\\b.ts and C:/r/repo/src/c.ts:2";
+  const forwardSlashed = sep === "\\" ? "src/c.ts:2" : "C:/r/repo/src/c.ts:2";
+  expect(errorTail(failed(output), "C:\\r\\repo")).toEqual([
+    "`npm test`",
+    `  at src/a.ts:1 and lib/b.ts and ${forwardSlashed}`,
+  ]);
+});
+
+test("errorTail keeps 3 distinct failures: details up to 4, the first in-repo frame, repeats counted, within 12 lines", () => {
+  const output = [
+    "✗ item 1 not ready",
+    "  expected 1",
+    "  received 2",
+    "  - a",
+    "  + b",
+    "  got 3",
+    "    at node_modules/x/y.js:1:1",
+    "    at src/item.ts:9:9",
+    "    at src/other.ts:1:1",
+    "✗ item 2 not ready",
+    "  expected 5",
+    "✗ item 3 not ready",
+    "thread panicked: far frame",
+    ...Array.from({ length: 12 }, (_, n) => `filler ${n}`),
+    "    at src/late.ts:1:1",
+    "FAIL x > y",
+    "AssertionError: z",
+    "✘ dropped",
+  ].join("\n");
+  expect(errorTail(failed(output), "/repo")).toEqual([
+    "`npm test`",
+    "  ✗ item 1 not ready (×3)",
+    "    expected 1",
+    "    received 2",
+    "    - a",
+    "    + b",
+    "    at src/item.ts:9:9",
+    "  thread panicked: far frame",
+    "  FAIL x > y",
+    "    AssertionError: z",
+  ]);
+});
+
+test("errorTail keeps a marker line that looks like a pass, a detail line that looks like a frame stays a detail, and a repeat counts ×2", () => {
+  const output = "✓ cached Error: stale\n✗ t\n  expected src/a.ts:1:1\n    at src/b.ts:2:2\n✗ t\n";
+  expect(errorTail(failed(output, "c"), "/repo")).toEqual([
+    "`c`",
+    "  ✓ cached Error: stale",
+    "  ✗ t (×2)",
+    "    expected src/a.ts:1:1",
+    "    at src/b.ts:2:2",
+  ]);
+});
+
+test("errorTail reads Python failures: Traceback, the first frame outside site-packages, and E lines", () => {
+  const output = [
+    "Traceback (most recent call last):",
+    '  File "/usr/lib/python3/site-packages/x.py", line 1, in <module>',
+    '  File "t.py", line 3, in test',
+    "E   assert 1 == 2",
+    "E   +  where 1 = f()",
+  ].join("\n");
+  expect(errorTail(failed(output, "pytest"), "/repo")).toEqual([
+    "`pytest`",
+    "  Traceback (most recent call last):",
+    '    File "t.py", line 3, in test',
+    "  E   assert 1 == 2",
+    "  E   +  where 1 = f()",
+  ]);
+});
+
+test("errorTail joins a headline with the next line only when that line is an Error and both fit under 400 chars", () => {
+  const separate = "FAIL a > b\nFAIL c > d\n× e\nError: " + "x".repeat(390);
+  expect(errorTail(failed(separate), "/repo")).toEqual([
+    "`npm test`",
+    "  FAIL a > b",
+    "  FAIL c > d",
+    "  × e",
+  ]);
+  const joined = "× e\nError: " + "x".repeat(389);
+  expect(errorTail(failed(joined), "/repo")).toEqual([
+    "`npm test`",
+    "  × e",
+    `    Error: ${"x".repeat(109)} … ${"x".repeat(77)}`,
+  ]);
+});
+
+test("errorTail clips a line over 200 chars to its first 120 and last 77", () => {
+  const output = `${"a".repeat(198)}\n${"b".repeat(100)}${"c".repeat(99)}`;
+  expect(errorTail(failed(output), "/repo")).toEqual([
+    "`npm test`",
+    `  ${"a".repeat(198)}`,
+    `  ${"b".repeat(100)}${"c".repeat(18)} … ${"c".repeat(77)}`,
+  ]);
+});
+
+test("sameFailure compares the joined tails with every number ignored", () => {
+  expect(sameFailure(["`t`", "  ✗ a 1 (12ms)"], ["`t`", "  ✗ a 2 (7ms)"])).toBe(true);
+  expect(sameFailure(["x", "y"], ["x\ny"])).toBe(true);
+  expect(sameFailure(["`t`", "  ✗ a"], ["`t`", "  ✗ b"])).toBe(false);
 });

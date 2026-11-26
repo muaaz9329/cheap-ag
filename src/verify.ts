@@ -1,4 +1,9 @@
-import { spawn } from "node:child_process";
+import {
+  spawn,
+  type SpawnOptionsWithStdioTuple,
+  type StdioNull,
+  type StdioPipe,
+} from "node:child_process";
 import { gitBash, killProcessGroup, normalisePath } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
@@ -19,9 +24,10 @@ const OUTPUT_LIMIT = 1024 * 1024;
 /** The backticked fragments of each step's `done-when`, in order; else the configured test_cmd; else none. */
 export function verifyCommands(doneWhen: string[], testCmd?: string) {
   const backticked = doneWhen
-    .flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))
+    .flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((match) => match[1].trim()))
     .filter(Boolean);
-  return backticked.length ? backticked : testCmd ? [testCmd] : [];
+  if (backticked.length) return backticked;
+  return testCmd ? [testCmd] : [];
 }
 
 /**
@@ -30,10 +36,10 @@ export function verifyCommands(doneWhen: string[], testCmd?: string) {
  * leading `NAME=value` (or `export NAME=value`) assignments stripped. De-duplicated, in first-seen order.
  */
 export function checkAllows(cmd: string): string[] {
-  const out: string[] = [];
-  const add = (s: string) => {
-    const value = s.trim();
-    if (value && !out.includes(value)) out.push(value);
+  const allowed: string[] = [];
+  const add = (text: string) => {
+    const value = text.trim();
+    if (value && !allowed.includes(value)) allowed.push(value);
   };
   add(cmd);
   for (const segment of cmd.split(/&&|\|\||;|\|/)) {
@@ -44,7 +50,7 @@ export function checkAllows(cmd: string): string[] {
       .trim();
     if (stripped) add(stripped);
   }
-  return out;
+  return allowed;
 }
 
 /**
@@ -68,29 +74,26 @@ export async function runVerify(
   return runs;
 }
 
+/** Starts `cmd` in `cwd` in its own process group, so everything it spawned can be stopped with it. */
+function spawnCheck(cwd: string, cmd: string) {
+  // checks are written in bash syntax; on Windows run them through Git Bash when we have it, else let Node pick the shell
+  const bash = process.platform === "win32" ? gitBash() : undefined;
+  const env = { ...process.env, CI: "1", FORCE_COLOR: "0" };
+  const options: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe> = {
+    cwd,
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
+  };
+  if (bash) return spawn(bash, ["-c", cmd], options);
+  return spawn(cmd, { shell: true, ...options });
+}
+
 function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyRun> {
   const started = Date.now();
   return new Promise((resolve) => {
-    // checks are written in bash syntax; on Windows run them through Git Bash when we have it, else let Node pick the shell
-    const bash = process.platform === "win32" ? gitBash() : undefined;
-    const env = { ...process.env, CI: "1", FORCE_COLOR: "0" };
-    // its own process group, so everything it spawned can be stopped with it
-    const child = bash
-      ? spawn(bash, ["-c", cmd], {
-          cwd,
-          detached: true,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          env,
-        })
-      : spawn(cmd, {
-          shell: true,
-          cwd,
-          detached: true,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          env,
-        });
+    const child = spawnCheck(cwd, cmd);
     const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;
@@ -114,30 +117,31 @@ function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyR
       exitSignal = exitSignalValue;
       killGroup();
     });
-    child.on("close", () => {
+    const finish = (run: VerifyRun) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", halt);
-      resolve({
+      resolve(run);
+    };
+    child.on("close", () =>
+      finish({
         cmd,
         ok: code === 0 && !signal?.aborted,
         ms: Date.now() - started,
         output,
         code,
         signal: exitSignal,
-      });
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", halt);
-      resolve({
+      }),
+    );
+    child.on("error", (error) =>
+      finish({
         cmd,
         ok: false,
         ms: Date.now() - started,
-        output: err.message,
+        output: error.message,
         code: null,
         signal: null,
-      });
-    });
+      }),
+    );
   });
 }
 
@@ -167,6 +171,14 @@ const NOISE =
   /^\s*(✓|√|PASS\b|ok\b)|^\s*(Tests?|Test Files|Suites?)\b.*\bpassed\b|^\s*[.·•⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+$/;
 const MAX_FAILURES = 3;
 const MAX_LINES = 25;
+// how many lines past a failure's marker its details and frame may sit
+const FAILURE_LOOKAHEAD = 12;
+// details stop once a failure's block holds this many lines; its frame may still follow
+const BLOCK_DETAIL_LIMIT = 5;
+// a headline and an error longer than this together are two failures, not one
+const JOINED_LENGTH_LIMIT = 400;
+
+type Failure = { key: string; lines: string[]; count: number };
 
 /**
  * Spec D9: the failing command, then up to 3 distinct failures (similar ones counted ×N), each with its message,
@@ -174,62 +186,92 @@ const MAX_LINES = 25;
  * Falls back to the last lines when no failure marker is found.
  */
 export function errorTail(run: VerifyRun, root: string): string[] {
+  const lines = tailLines(run.output, root);
+  const failures = findFailures(lines);
+  const body = failures.length
+    ? failures.slice(0, MAX_FAILURES).flatMap(failureLines)
+    : lines.slice(-(MAX_LINES - 1));
+  return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((line) => clip(`  ${line}`))];
+}
+
+/**
+ * The output's lines worth reading: ANSI codes stripped, `root` made repo-relative, tabs expanded, and pass lines,
+ * progress and blank lines dropped.
+ */
+function tailLines(output: string, root: string): string[] {
   // Windows output can hold root natively (`C:\r\repo`) or forward-slash; strip it and forward-slash the rest
-  const rootRe = [root, normalisePath(root)].map(escapeRe).join("|");
-  const lines = run.output
+  const rootPattern = [root, normalisePath(root)].map(escapeRegExp).join("|");
+  const pathUnderRoot = new RegExp(`(?:${rootPattern})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g");
+  const lines = output
     // oxlint-disable-next-line no-control-regex -- ESC is intended: this strips ANSI escape codes
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(new RegExp(`(?:${rootRe})[\\\\/]([^\\s:'"\\[\\]()]*)`, "g"), (_, rest: string) =>
-      rest.replace(/\\/g, "/"),
-    )
+    .replace(pathUnderRoot, (_, rest: string) => rest.replace(/\\/g, "/"))
     .split(/\r?\n/)
-    .map((l) => l.replace(/\t/g, "  ").trimEnd())
-    .filter((l) => l.trim() && (MARKER.test(l) || !NOISE.test(l)));
+    .map((line) => line.replace(/\t/g, "  ").trimEnd())
+    .filter((line) => line.trim() && (MARKER.test(line) || !NOISE.test(line)));
+  return lines;
+}
 
-  const failures: { key: string; lines: string[]; count: number }[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (!MARKER.test(lines[i])) continue;
-    const block = [lines[i].trim()];
-    let frame = false;
-    let j = i + 1;
-    // a runner's headline ("FAIL a > b") and its error ("AssertionError: …") on adjacent lines are one failure
-    if (
-      j < lines.length &&
-      MARKER.test(lines[j]) &&
-      block[0].length + lines[j].length < 400 &&
-      /^\s*(FAIL|✗|×)/.test(lines[i]) &&
-      /Error/.test(lines[j])
-    ) {
-      block.push(`  ${lines[j].trim()}`);
-      j++;
-    }
-    for (; j < lines.length && j <= i + 12 && !MARKER.test(lines[j]); j++) {
-      if (DETAIL.test(lines[j]) && block.length < 5) block.push(`  ${lines[j].trim()}`);
-      else if (
-        !frame &&
-        FRAME.test(lines[j]) &&
-        !/node_modules|node:internal|site-packages/.test(lines[j])
-      ) {
-        block.push(`  ${lines[j].trim()}`);
-        frame = true;
-      }
-    }
-    i = Math.max(i, j - 1);
+/** Each distinct failure in `lines`, in order; failures whose headlines differ only in numbers count as one. */
+function findFailures(lines: string[]): Failure[] {
+  const failures: Failure[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (!MARKER.test(lines[index])) continue;
+    const { block, next } = readFailure(lines, index);
+    index = Math.max(index, next - 1);
     const key = block[0].replace(/\d+/g, "#");
-    const same = failures.find((f) => f.key === key);
+    const same = failures.find((failure) => failure.key === key);
     if (same) same.count++;
     else failures.push({ key, lines: block, count: 1 });
   }
+  return failures;
+}
 
-  const body = failures.length
-    ? failures
-        .slice(0, MAX_FAILURES)
-        .flatMap((f) => [
-          f.count > 1 ? `${f.lines[0]} (×${f.count})` : f.lines[0],
-          ...f.lines.slice(1),
-        ])
-    : lines.slice(-(MAX_LINES - 1));
-  return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
+/**
+ * The failure whose marker is at `start`: its headline, the error on the next line when the two are one failure, its
+ * detail lines while the block has fewer than 5 lines, and its first in-repo frame, read until the next marker or 12
+ * lines on. `next` is the first line not read.
+ */
+function readFailure(lines: string[], start: number) {
+  const block = [lines[start].trim()];
+  let frame = false;
+  let next = start + 1;
+  if (next < lines.length && isHeadlineError(lines[start], lines[next])) {
+    block.push(`  ${lines[next].trim()}`);
+    next++;
+  }
+  const lastIndex = start + FAILURE_LOOKAHEAD;
+  for (; next < lines.length && next <= lastIndex && !MARKER.test(lines[next]); next++) {
+    const line = lines[next];
+    if (DETAIL.test(line) && block.length < BLOCK_DETAIL_LIMIT) block.push(`  ${line.trim()}`);
+    else if (!frame && isRepoFrame(line)) {
+      block.push(`  ${line.trim()}`);
+      frame = true;
+    }
+  }
+  return { block, next };
+}
+
+/** A runner's headline ("FAIL a > b") and its error ("AssertionError: …") on adjacent lines are one failure. */
+function isHeadlineError(line: string, nextLine: string) {
+  return (
+    MARKER.test(nextLine) &&
+    line.trim().length + nextLine.length < JOINED_LENGTH_LIMIT &&
+    /^\s*(FAIL|✗|×)/.test(line) &&
+    /Error/.test(nextLine)
+  );
+}
+
+/** Whether `line` is a stack frame in the repo, not in a dependency or the runtime. */
+function isRepoFrame(line: string) {
+  return FRAME.test(line) && !/node_modules|node:internal|site-packages/.test(line);
+}
+
+/** A failure's lines, its headline counting its repeats (×N). */
+function failureLines({ lines, count }: Failure): string[] {
+  const [headline, ...rest] = lines;
+  if (count > 1) return [`${headline} (×${count})`, ...rest];
+  return lines;
 }
 
 /** Whether two tails show the same failure, ignoring numbers (timings, counts, ports). */
@@ -237,8 +279,11 @@ export const sameFailure = (a: string[], b: string[]) =>
   a.join("\n").replace(/\d+/g, "#") === b.join("\n").replace(/\d+/g, "#");
 
 /** At most 200 chars, eliding the middle. */
-const clip = (line: string) =>
-  line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`;
+function clip(line: string) {
+  return line.length <= 200 ? line : `${line.slice(0, 120)} … ${line.slice(-77)}`;
+}
 
 /** Escapes a string for literal use inside a RegExp. */
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
