@@ -93,6 +93,12 @@ function listProviders(usable: ProviderId[], current: ProviderId | undefined): n
   return 0;
 }
 
+/** Takes an id or a label in any case, as users type either. */
+function findProvider(name: string): ProviderId | undefined {
+  const wanted = name.toLowerCase();
+  return PROVIDERS.find(({ id, label }) => id === wanted || label.toLowerCase() === wanted)?.id;
+}
+
 /**
  * `cheapag provider`: lists the providers already set up, or switches the worker to one of them with no key prompt
  * (ticket 47). The switch moves this repo's consent to the new provider with the same mode and prints what it now
@@ -107,16 +113,15 @@ export async function provider(args: string[]): Promise<number> {
     out(`✗ ${USAGE}`);
     return 1;
   }
-  const wanted = args[0].toLowerCase();
-  const target = PROVIDERS.find((p) => p.id === wanted || p.label.toLowerCase() === wanted)?.id;
+  const target = findProvider(args[0]);
   if (!target) {
-    out(`✗ "${args[0]}" is not a provider; use one of ${PROVIDERS.map((p) => p.id).join(", ")}`);
+    const ids = PROVIDERS.map(({ id }) => id).join(", ");
+    out(`✗ "${args[0]}" is not a provider; use one of ${ids}`);
     return 1;
   }
   if (!usable.includes(target)) {
-    out(
-      `✗ ${providerLabel(target)} is not set up yet; run ${LOGIN_COMMAND} and pick it (the key is typed there)`,
-    );
+    const label = providerLabel(target);
+    out(`✗ ${label} is not set up yet; run ${LOGIN_COMMAND} and pick it (the key is typed there)`);
     return 1;
   }
   if (target === current) {
