@@ -30,7 +30,7 @@ const PERMISSION_BLOCK = /^BLOCKED (\S+) step=\S+ permission\b/m;
 const PERMISSION_REPLY =
   "This job is asking for a command permission: ask the user with AskUserQuestion first, then reply with their answer.";
 // shortcut: the usual runners only; add the repo's test_cmd if Claude re-runs tests through a custom script
-const TEST_CMD =
+const TEST_COMMAND =
   /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 // sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
@@ -88,8 +88,8 @@ function toggle(args: string[]): number {
   let root: string;
   try {
     root = projectRoot(process.cwd());
-  } catch (err) {
-    print(`✗ ${(err as Error).message}`);
+  } catch (error) {
+    print(`✗ ${(error as Error).message}`);
     return 1;
   }
   if (args[0] === "on") {
@@ -105,8 +105,8 @@ function guardState(root: string): string {
   let lines: number | string;
   try {
     lines = loadConfig(root).guard_lines;
-  } catch (err) {
-    lines = `? (${(err as Error).message})`;
+  } catch (error) {
+    lines = `? (${(error as Error).message})`;
   }
   if (!existsSync(flagFile(root)))
     return `✓ edit guard off for ${root}: Claude's edits are not limited.`;
@@ -124,7 +124,7 @@ const { version: INSTALLED } = createRequire(import.meta.url)("../package.json")
 };
 const UPDATE_URL = "https://registry.npmjs.org/cheap-agent/latest";
 // once a day is enough for a notice the user cannot act on mid-session (Claude Code's own check is the same shape)
-const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY_MILLISECONDS = 24 * 60 * 60 * 1000;
 function updateCacheFile() {
   return join(dirname(userConfigFile()), "update-check.json");
 }
@@ -206,7 +206,7 @@ async function latestVersion(): Promise<string | undefined> {
   } catch {
     // no usable cache: check now
   }
-  if (typeof cache.checked === "number" && Date.now() - cache.checked < DAY_MS)
+  if (typeof cache.checked === "number" && Date.now() - cache.checked < DAY_MILLISECONDS)
     return cache.latest || undefined;
   let latest = cache.latest || undefined;
   try {
@@ -340,7 +340,7 @@ function promptRules(input: Input): string | undefined {
 }
 
 function runsTests(tool: string, command: unknown): boolean {
-  return tool === "Bash" && typeof command === "string" && TEST_CMD.test(command);
+  return tool === "Bash" && typeof command === "string" && TEST_COMMAND.test(command);
 }
 
 /** A reply to the job whose command permission the user has not been asked about yet; a reply naming no job counts. */
@@ -573,7 +573,7 @@ function isPlan(root: string, file: string) {
 /** Sonnet take-over: Bash is read-only when no part writes or runs tests, and every `&&`/`;`/`|` part starts with a reader. */
 function readOnly(command: string): boolean {
   if (command.includes(">")) return false;
-  if (TEST_CMD.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command))
+  if (TEST_COMMAND.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command))
     return false;
   if (BASH_WRITES.some((pattern) => command.match(pattern))) return false;
   const parts = command
