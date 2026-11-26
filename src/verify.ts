@@ -171,6 +171,12 @@ const NOISE =
   /^\s*(✓|√|PASS\b|ok\b)|^\s*(Tests?|Test Files|Suites?)\b.*\bpassed\b|^\s*[.·•⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+$/;
 const MAX_FAILURES = 3;
 const MAX_LINES = 25;
+// how many lines past a failure's marker its details and frame may sit
+const FAILURE_LOOKAHEAD = 12;
+// details stop once a failure's block holds this many lines; its frame may still follow
+const BLOCK_DETAIL_LIMIT = 5;
+// a headline and an error longer than this together are two failures, not one
+const JOINED_LENGTH_LIMIT = 400;
 
 type Failure = { key: string; lines: string[]; count: number };
 
@@ -235,10 +241,12 @@ function readFailure(lines: string[], start: number) {
     block.push(`  ${lines[next].trim()}`);
     next++;
   }
-  for (; next < lines.length && next <= start + 12 && !MARKER.test(lines[next]); next++) {
-    if (DETAIL.test(lines[next]) && block.length < 5) block.push(`  ${lines[next].trim()}`);
-    else if (!frame && isRepoFrame(lines[next])) {
-      block.push(`  ${lines[next].trim()}`);
+  const lastIndex = start + FAILURE_LOOKAHEAD;
+  for (; next < lines.length && next <= lastIndex && !MARKER.test(lines[next]); next++) {
+    const line = lines[next];
+    if (DETAIL.test(line) && block.length < BLOCK_DETAIL_LIMIT) block.push(`  ${line.trim()}`);
+    else if (!frame && isRepoFrame(line)) {
+      block.push(`  ${line.trim()}`);
       frame = true;
     }
   }
@@ -249,7 +257,7 @@ function readFailure(lines: string[], start: number) {
 function isHeadlineError(line: string, nextLine: string) {
   return (
     MARKER.test(nextLine) &&
-    line.trim().length + nextLine.length < 400 &&
+    line.trim().length + nextLine.length < JOINED_LENGTH_LIMIT &&
     /^\s*(FAIL|✗|×)/.test(line) &&
     /Error/.test(nextLine)
   );
