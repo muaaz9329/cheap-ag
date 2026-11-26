@@ -929,9 +929,7 @@ function runGroup(g: GroupRun) {
         write("finish.json", report);
         const label = `esc: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
         if (result.error || result.interrupted) {
-          tried.push(
-            `${label} → ${(stopped as Stop | undefined) ? `stopped: ${(stopped as Stop | undefined)!.reason}` : result.limit ? `usage limit: ${result.limit.message.slice(0, 80)}` : "worker error"}`,
-          );
+          tried.push(`${label} → ${escalationEnd(stopped as Stop | undefined, result)}`);
         } else {
           failing = await verify();
           tried.push(`${label} → ${verdict(before, failing)}`);
@@ -997,12 +995,7 @@ function runGroup(g: GroupRun) {
     if (stopped) {
       // the cap or cancel explains the stop, not the aborted prompt's error
       reason = stopped.reason;
-      status =
-        stopped.cap === "turns"
-          ? changed.length && !failing
-            ? "PARTIAL"
-            : "FAIL"
-          : STOPPED[stopped.cap];
+      status = stoppedStatus(stopped, changed.length > 0 && !failing);
       if (status === "PARTIAL") reason = undefined; // spec D5: PARTIAL says it through missing:
     } else if (conflict) status = "CONFLICT";
     const text = finalize(status);
@@ -1406,6 +1399,19 @@ const STOPPED = {
   provider: "BUDGET",
   down: "PROVIDER",
 } as const;
+
+/** A stopped job's status. Only a turn cap can leave usable work: PARTIAL when it changed files and its checks pass. */
+function stoppedStatus(stop: Stop, usable: boolean): JobRecord["status"] {
+  if (stop.cap !== "turns") return STOPPED[stop.cap];
+  return usable ? "PARTIAL" : "FAIL";
+}
+
+/** How the escalation after a turn cap ended when it did not finish, for its tried: line. */
+function escalationEnd(stop: Stop | undefined, result: RunResult) {
+  if (stop) return `stopped: ${stop.reason}`;
+  if (result.limit) return `usage limit: ${result.limit.message.slice(0, 80)}`;
+  return "worker error";
+}
 
 /**
  * Jobs running in this server process, by id, across every repository it runs jobs in: how `jobs cancel` and `jobs wait`
