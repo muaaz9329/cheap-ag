@@ -242,19 +242,25 @@ function parseLocal(local: unknown, file: string): LocalServer {
   };
 }
 
+/** The `ollama` entry's base URL, the endpoint's own by default; plain http may only reach a private host. */
+function parseOllamaUrl(endpoint: "local" | "cloud", baseUrl: unknown, file: string) {
+  const defaults = OLLAMA_URLS[endpoint];
+  const url = baseUrl === undefined ? defaults : baseUrl;
+  if (!isHttpUrl(url))
+    throw new Error(`${file}: ollama.base_url must be an http(s) URL, e.g. ${defaults}`);
+  if (url.startsWith("http:") && !privateHost(url))
+    throw new Error(
+      `${file}: ollama.base_url with plain http must be this machine or a private network; use https`,
+    );
+  return url.replace(/\/+$/, "");
+}
+
 function parseOllama(raw: unknown, file: string): OllamaConfig {
   if (!isPlainObject(raw)) throw new Error(`${file}: ollama must be an object`);
   const { endpoint, model, base_url, api_key_env } = raw;
   if (endpoint !== "local" && endpoint !== "cloud")
     throw new Error(`${file}: ollama.endpoint must be "local" or "cloud"`);
-  const defaults = OLLAMA_URLS[endpoint];
-  const base = base_url === undefined ? defaults : base_url;
-  if (!isHttpUrl(base))
-    throw new Error(`${file}: ollama.base_url must be an http(s) URL, e.g. ${defaults}`);
-  if (base.startsWith("http:") && !privateHost(base))
-    throw new Error(
-      `${file}: ollama.base_url with plain http must be this machine or a private network; use https`,
-    );
+  const baseUrl = parseOllamaUrl(endpoint, base_url, file);
   if (endpoint === "local" && !isNonEmptyString(model))
     throw new Error(`${file}: ollama.model must be the local server's model id, e.g. "llama3.2"`);
   if (model !== undefined && !isNonEmptyString(model))
@@ -267,7 +273,7 @@ function parseOllama(raw: unknown, file: string): OllamaConfig {
   const limits = parseModelLimits("ollama", raw, file);
   return {
     endpoint,
-    base_url: base.replace(/\/+$/, ""),
+    base_url: baseUrl,
     ...(model !== undefined && { model: model.trim() }),
     ...(keyEnv !== undefined && { api_key_env: keyEnv }),
     ...limits,
