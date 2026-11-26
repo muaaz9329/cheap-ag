@@ -309,7 +309,8 @@ export function ollamaIsLocal() {
 }
 
 export function loadConfig(root: string): Config {
-  const [mine, repo] = [read(userConfigFile()), read(join(root, "cheapag.json"))];
+  const mine = readConfigFile(userConfigFile());
+  const repo = readConfigFile(join(root, "cheapag.json"));
   // caps, retention and models merge key by key, so a repo can set one and keep the user's others
   return {
     ...DEFAULTS,
@@ -321,24 +322,37 @@ export function loadConfig(root: string): Config {
   };
 }
 
-function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
+/** The settings one config file sets: caps and retention key by key, everything else whole. */
+type FileConfig = Partial<Omit<Config, "limits" | "retention">> & {
   limits?: Partial<Limits>;
   retention?: Partial<Retention>;
-} {
+};
+
+/** The settings in `file`, checked; none when the file does not exist. */
+function readConfigFile(file: string): FileConfig {
   if (!existsSync(file)) return {};
-  let raw: string;
+  return parseConfig(readJsonObject(file), file);
+}
+
+/** The JSON object in `file`; the error names the file and why it could not be read. */
+function readJsonObject(file: string): Record<string, unknown> {
+  let text: string;
   try {
-    raw = readFileSync(file, "utf8");
-  } catch (err) {
-    throw new Error(`cannot read ${file}: ${(err as Error).message}`);
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw new Error(`cannot read ${file}: ${(error as Error).message}`);
   }
   let value: unknown;
   try {
-    value = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON: ${(error as Error).message}`);
   }
   if (!isPlainObject(value)) throw new Error(`${file} must hold a JSON object`);
+  return value;
+}
+
+function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
   const {
     test_cmd,
     integration_cmd,
@@ -356,7 +370,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
     ollama,
     preset,
     provider,
-  } = value as Record<string, unknown>;
+  } = value;
   if (provider !== undefined) {
     if (file !== userConfigFile())
       throw new Error(`${file}: provider can only be set in ${userConfigFile()}`);
