@@ -123,7 +123,13 @@ export async function provider(args: string[]): Promise<number> {
     out(`✓ already using ${providerLabel(target)}`);
     return 0;
   }
+  return switchProvider(target, current);
+}
 
+async function switchProvider(
+  target: ProviderId,
+  current: ProviderId | undefined,
+): Promise<number> {
   const root = repoRoot();
   const rollBack = saveRollBack(root);
 
