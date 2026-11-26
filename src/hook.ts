@@ -58,7 +58,9 @@ const READ_PARTS = [
 ];
 
 /** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
-const flag = (root: string) => join(root, ".cheapag", "hook.json");
+function flagFile(root: string) {
+  return join(root, ".cheapag", "hook.json");
+}
 
 /**
  * `cheapag hook [on|off]`: the user-only `/cheapag:hook` toggles the edit guard for the current repo; no argument
@@ -92,8 +94,8 @@ function toggle(args: string[]): number {
   }
   if (args[0] === "on") {
     mkdirSync(join(root, ".cheapag"), { recursive: true });
-    writeFileSync(flag(root), JSON.stringify({ on: true }) + "\n");
-  } else if (args[0] === "off") rmSync(flag(root), { force: true });
+    writeFileSync(flagFile(root), JSON.stringify({ on: true }) + "\n");
+  } else if (args[0] === "off") rmSync(flagFile(root), { force: true });
   print(guardState(root));
   return 0;
 }
@@ -106,7 +108,7 @@ function guardState(root: string): string {
   } catch (err) {
     lines = `? (${(err as Error).message})`;
   }
-  if (!existsSync(flag(root)))
+  if (!existsSync(flagFile(root)))
     return `✓ edit guard off for ${root}: Claude's edits are not limited.`;
   return `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`;
 }
@@ -123,7 +125,9 @@ const { version: INSTALLED } = createRequire(import.meta.url)("../package.json")
 const UPDATE_URL = "https://registry.npmjs.org/cheap-agent/latest";
 // once a day is enough for a notice the user cannot act on mid-session (Claude Code's own check is the same shape)
 const DAY_MS = 24 * 60 * 60 * 1000;
-const updateCacheFile = () => join(dirname(userConfigFile()), "update-check.json");
+function updateCacheFile() {
+  return join(dirname(userConfigFile()), "update-check.json");
+}
 type UpdateCache = { checked?: number; latest?: string };
 
 /**
@@ -177,8 +181,9 @@ async function context(host?: "claude" | "codex"): Promise<number> {
 }
 
 /** Wraps the notice in yellow, except in the desktop app, which does not render terminal colours. */
-const colour = (text: string) =>
-  process.env.CLAUDE_CODE_ENTRYPOINT === "claude-desktop" ? text : `\x1b[33m${text}\x1b[39m`;
+function colour(text: string) {
+  return process.env.CLAUDE_CODE_ENTRYPOINT === "claude-desktop" ? text : `\x1b[33m${text}\x1b[39m`;
+}
 
 /** The newer version to announce, or undefined when the installed version is current (or the check is opted out). */
 async function newerVersion(): Promise<string | undefined> {
@@ -277,9 +282,12 @@ type PromptState = {
 };
 
 /** Per-session state; the repo-wide marker lets the plugin's shell test skip node until a cheapag result was ever seen. */
-const stateFile = (root: string, session: string) =>
-  join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
-const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
+function stateFile(root: string, session: string) {
+  return join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
+}
+function markerFile(root: string) {
+  return join(root, ".cheapag", "hook", "takeover");
+}
 
 /**
  * The prompt rules (tickets 29, 30, 51), for the main loop only:
@@ -387,7 +395,7 @@ function result(): number {
       } satisfies PromptState),
     );
     // shortcut: the marker is never removed, so a repo that once had a cheapag result runs node on every tool call (~50 ms); drop it in `cheapag clean` if that shows
-    writeFileSync(marker(root), "");
+    writeFileSync(markerFile(root), "");
   } catch {
     // never block
   }
@@ -417,7 +425,7 @@ function check(input: Input): string | undefined {
       : undefined;
   if (typeof tool.file_path !== "string") return;
   const root = projectRoot(input.cwd);
-  if (!existsSync(flag(root))) return;
+  if (!existsSync(flagFile(root))) return;
   const file = resolve(input.cwd, tool.file_path);
   if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
@@ -491,7 +499,7 @@ function patchEdits(patch: string): { path: string; lines: number }[] {
 /** Each file in a Codex patch goes through the Edit/Write rules; a malformed patch yields no files and is allowed. */
 function patchCheck(cwd: string, patch: string, input: Input): string | undefined {
   const root = projectRoot(cwd);
-  if (!existsSync(flag(root))) return;
+  if (!existsSync(flagFile(root))) return;
   const edits = patchEdits(patch);
   if (!edits.length) return;
   const limit = loadConfig(root).guard_lines;
@@ -511,7 +519,9 @@ function patchCheck(cwd: string, patch: string, input: Input): string | undefine
 }
 
 /** Plans live in .plan/ and are how Claude delegates, so the guard never blocks them. */
-const isPlan = (root: string, file: string) => file.startsWith(join(root, ".plan") + sep);
+function isPlan(root: string, file: string) {
+  return file.startsWith(join(root, ".plan") + sep);
+}
 
 /** Sonnet take-over: Bash is read-only when no part writes or runs tests, and every `&&`/`;`/`|` part starts with a reader. */
 function readOnly(command: string): boolean {
@@ -537,8 +547,9 @@ function readPart(part: string): boolean {
 }
 
 /** Drops git's directory/pager options (`-C <dir>`, `--no-pager`, `-c k=v`) so the verb starts the part. */
-const stripGitOptions = (part: string) =>
-  part.replace(/^git\s+(?:(?:-C\s+\S+|--no-pager|-c\s+\S+)\s+)+/, "git ");
+function stripGitOptions(part: string) {
+  return part.replace(/^git\s+(?:(?:-C\s+\S+|--no-pager|-c\s+\S+)\s+)+/, "git ");
+}
 
 /** The first line says the worker did not finish, unless an env-kind FAIL could not run its check at all: nothing to take over. */
 function didNotFinish(out: string): boolean {
@@ -560,7 +571,7 @@ function outside(root: string, cwd: string, tool: Record<string, unknown> | unde
 /** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
 function bashCheck(cwd: string, command: string): string | undefined {
   const root = projectRoot(cwd);
-  if (!existsSync(flag(root))) return;
+  if (!existsSync(flagFile(root))) return;
   const targets: string[] = [];
   for (const re of BASH_WRITES)
     for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);
