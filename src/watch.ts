@@ -65,16 +65,7 @@ export function scan(state: WatchState): string[] {
 
     if (!job.started) {
       job.started = true;
-      const request = readJson(join(dir, "request.json"));
-      if (request) {
-        const model = typeof request.model === "string" ? request.model : undefined;
-        const short = model?.split("/").pop();
-        lines.push(
-          `▶ ${id}${request.steps !== undefined ? ` · steps ${request.steps}` : ""}${short ? ` · ${short}` : ""}`,
-        );
-      } else {
-        lines.push(`▶ ${id}`);
-      }
+      lines.push(startLine(id, dir));
     }
 
     const eventsFile = join(dir, "events.jsonl");
@@ -102,6 +93,17 @@ export function scan(state: WatchState): string[] {
     }
   }
   return lines;
+}
+
+/** The ▶ line that opens a job: its id, then the steps and the model's last segment when request.json has them. */
+function startLine(id: string, dir: string): string {
+  const request = readJson(join(dir, "request.json"));
+  if (!request) return `▶ ${id}`;
+  const model = typeof request.model === "string" ? request.model : undefined;
+  const modelName = model?.split("/").pop();
+  const steps = request.steps !== undefined ? ` · steps ${request.steps}` : "";
+  const modelText = modelName ? ` · ${modelName}` : "";
+  return `▶ ${id}${steps}${modelText}`;
 }
 
 /** Whether `path` is a directory; false when it cannot be examined, such as a dangling link. */
