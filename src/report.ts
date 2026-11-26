@@ -234,30 +234,7 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   const compacted = compact && COMPACTED.has(status);
   const has = (s: Section) => STATUS_SECTIONS[status].includes(s);
   // a compacted batch block drops summary/changed/review/log (OK's risks: survive)
-  const add = r.changed.reduce((n, x) => n + x.add, 0);
-  const del = r.changed.reduce((n, x) => n + x.del, 0);
-  const lines = [
-    [
-      r.status,
-      r.job,
-      `step=${r.steps}`,
-      `files=${r.changed.length}`,
-      `+${add}/-${del}`,
-      r.tests && `tests=${r.tests}`,
-      r.check && `check=${r.check}`,
-      `turns=${r.usage.turns}`,
-      `cost=$${r.usage.costUsd.toFixed(3)}`,
-      r.selfFix && `fix=${r.selfFix}`,
-      r.models.escalated && "esc=1",
-      r.models.final !== r.models.requested && `model=${r.models.final}`,
-      r.redo && "redo=1",
-      r.billing && `billing=${r.billing}`,
-      r.repro && `repro=${r.repro}`,
-      r.test && `test=${r.test}`,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  ];
+  const lines = [jobHeadline(r)];
   const keep = new Set<string>(); // question/options lines are never elided
   // a worker with no summary has nothing to put there: `found:` leads instead
   const lead = !compacted && r.summary === NO_SUMMARY && has("found") && r.found;
@@ -325,6 +302,33 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
     );
   if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map((l) => (keep.has(l) ? l.replaceAll("\t", "  ") : fit(l))).join("\n");
+}
+
+/** The first line: status, job, steps, file counts, then the optional tokens in D3 order. */
+function jobHeadline(record: JobRecord) {
+  const added = record.changed.reduce((total, file) => total + file.add, 0);
+  const deleted = record.changed.reduce((total, file) => total + file.del, 0);
+  const modelChanged = record.models.final !== record.models.requested;
+  return [
+    record.status,
+    record.job,
+    `step=${record.steps}`,
+    `files=${record.changed.length}`,
+    `+${added}/-${deleted}`,
+    record.tests && `tests=${record.tests}`,
+    record.check && `check=${record.check}`,
+    `turns=${record.usage.turns}`,
+    `cost=$${record.usage.costUsd.toFixed(3)}`,
+    record.selfFix && `fix=${record.selfFix}`,
+    record.models.escalated && "esc=1",
+    modelChanged && `model=${record.models.final}`,
+    record.redo && "redo=1",
+    record.billing && `billing=${record.billing}`,
+    record.repro && `repro=${record.repro}`,
+    record.test && `test=${record.test}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** D7. A research CONSENT renders through `renderConsent`. */
