@@ -2,6 +2,7 @@ import { emitKeypressEvents } from "node:readline";
 
 type Option = { label: string; hint?: string };
 type RawInput = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
+type Key = { name?: string; ctrl?: boolean };
 /** The selected row, and the digits typed so far to jump to a row by its number. */
 type Selection = { index: number; typedNumber: string };
 
@@ -73,22 +74,22 @@ export function select(
   return new Promise((resolve, reject) => {
     let selection: Selection = { index: clamp(initial, 0, options.length - 1), typedNumber: "" };
     let drawnLineCount = 0;
-    const draw = () => {
+
+    function draw() {
       const rows = visibleRows(options, selection.index, output.columns || DEFAULT_COLUMNS);
       if (drawnLineCount) output.write(eraseLinesAbove(drawnLineCount));
       output.write([question, ...rows].join("\n") + "\n");
       drawnLineCount = rows.length + 1;
-    };
-    const releaseTerminal = () => {
+    }
+
+    function releaseTerminal() {
       input.off("keypress", onKeypress);
       input.setRawMode?.(false);
       input.pause();
       output.write(SHOW_CURSOR);
-    };
-    function onKeypress(
-      character: string | undefined,
-      key: { name?: string; ctrl?: boolean } = {},
-    ) {
+    }
+
+    function onKeypress(character: string | undefined, key: Key = {}) {
       try {
         if (key.ctrl && key.name === "c") {
           releaseTerminal();
