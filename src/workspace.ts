@@ -347,13 +347,7 @@ export function land(
     copyFileSync(gitPath(root, "index"), index);
     const env = { GIT_INDEX_FILE: index };
     try {
-      // bring exactly the patch's paths into the throwaway index as they are on disk now, untracked files included:
-      // the job's baseline had them (carry-over), so the patch expects them
-      const tracked = new Set(
-        git(root, ["ls-files", "-z", "--", ...paths.map(literal)], env).split("\0"),
-      );
-      const present = paths.filter((path) => tracked.has(path) || existsSync(join(root, path)));
-      if (present.length) git(root, ["add", "-A", "--", ...present.map(literal)], env);
+      stageFromDisk(root, paths, env);
       const check = applyOutput(root, ["apply", "--3way", "--check", "-"], env, patch);
       // shortcut: `apply --3way --check` exits 0 even when it would leave conflict markers, so read its message; upgrade if git changes the wording
       if (check.failed || /with conflicts/.test(check.output))
@@ -366,6 +360,17 @@ export function land(
       rmSync(index, { force: true });
     }
   });
+}
+
+/**
+ * Brings exactly `paths` into the throwaway index as they are on disk now, untracked files included: the job's
+ * baseline had them (carry-over), so the patch expects them.
+ */
+function stageFromDisk(root: string, paths: string[], env: Record<string, string>) {
+  const listed = git(root, ["ls-files", "-z", "--", ...paths.map(literal)], env);
+  const tracked = new Set(listed.split("\0"));
+  const present = paths.filter((path) => tracked.has(path) || existsSync(join(root, path)));
+  if (present.length) git(root, ["add", "-A", "--", ...present.map(literal)], env);
 }
 
 /** git apply's verdict lives in stderr even when it exits 0. */
