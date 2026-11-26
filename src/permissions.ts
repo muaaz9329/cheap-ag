@@ -115,7 +115,7 @@ export const HARD_DENY = [
   "*/.env*",
   "rg*--no-ignore*",
   "rg* -u*",
-  // never asked about (ticket 69): a shell as a command or a pipe target, command substitution, installs written with extra spaces, rm flag spellings
+  // never asked about: a shell as a command or a pipe target, command substitution, installs written with extra spaces, rm flag spellings
   ...["sh", "bash", "zsh"].flatMap((sh) => [
     sh,
     `${sh} *`,
@@ -252,6 +252,7 @@ function bashRules(opts: {
     ...commands.flatMap((c) => stderr(c, true)),
     ...exact.flatMap((c) => stderr(c, false)),
     deny("bash", "*>*>*"),
+    // `*>*` already sits before the stderr allows: repeating it last would deny them again
     ...HARD_DENY.filter((p) => p !== "*>*").map((p) => deny("bash", p)),
   ];
 }
