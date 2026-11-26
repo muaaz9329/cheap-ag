@@ -8,7 +8,7 @@ import { localServer, ollamaEndpoint, type LocalServer, type OllamaConfig } from
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { gitBash, killProcessGroup, opencodePlatform } from "./platform.js";
-import { fullRoute, modelName, routeModels, type Route } from "./routing.js";
+import { fullRoute, modelName, routeModels, type Route, type WorkerModel } from "./routing.js";
 
 const require = createRequire(import.meta.url);
 export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: string }).version;
@@ -180,21 +180,12 @@ function opencodeConfig(provider: Provider, route: Route) {
       npm: "@ai-sdk/openai-compatible",
       name,
       options: { baseURL: at.base_url, ...(apiKey && { apiKey }) },
-      models: Object.fromEntries(
-        routeModels(route).map((model) => [
-          model.id,
-          { name: model.id, ...limit, ...cost, ...models[model.id] },
-        ]),
-      ),
+      models: routeModelEntries(route, models, { ...limit, ...cost }),
     };
   };
   // Command Code is not in OpenCode's catalog: declare it as an OpenAI-compatible provider (the key still comes from the auth store)
   if (provider.provider === "commandcode") {
-    Object.assign(providerConfig, COMMAND_CODE, {
-      models: Object.fromEntries(
-        routeModels(route).map((model) => [model.id, { name: model.id, ...models[model.id] }]),
-      ),
-    });
+    Object.assign(providerConfig, COMMAND_CODE, { models: routeModelEntries(route, models) });
   }
   // Ollama is declared as an OpenAI-compatible provider at the endpoint the user picked (this machine or ollama.com).
   // The cloud key is an {env:OLLAMA_API_KEY} reference OpenCode resolves itself; the local endpoint needs none
@@ -217,6 +208,12 @@ function opencodeConfig(provider: Provider, route: Route) {
     provider: Object.keys(providerConfig).length ? { [provider.provider]: providerConfig } : {},
   };
   return JSON.stringify(config, null, 2) + "\n";
+}
+
+/** Every route model as OpenCode declares it: named by its id, then `fields`, then the model's options. */
+function routeModelEntries(route: Route, models: Record<string, object>, fields: object = {}) {
+  const entry = (model: WorkerModel) => ({ name: model.id, ...fields, ...models[model.id] });
+  return Object.fromEntries(routeModels(route).map((model) => [model.id, entry(model)]));
 }
 
 /** Ollama Cloud's key as an {env:} reference; this machine's endpoint needs no key. */
