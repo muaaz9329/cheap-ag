@@ -7,6 +7,8 @@ import {
   mkdtempSync,
   openSync,
   rmSync,
+  statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -263,4 +265,250 @@ test("lastSession: undefined for a half-written transcript, and for one with no 
   expect(lastSession(root)).toBeUndefined();
   writeFileSync(join(dir, "a.jsonl"), JSON.stringify({ message: { id: "m1" } }) + "\n");
   expect(lastSession(root)).toBeUndefined();
+});
+
+/** Runs `cheapag status` and returns what a user sees: exit code, stdout and stderr. */
+function runStatus(cwd: string, env: Record<string, string>) {
+  const r = spawnSync(process.execPath, [serverEntry, "status"], { cwd, env, encoding: "utf8" });
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+/** The storage size depends on file sizes the test does not control; the rest of the line is pinned. */
+const anySize = (stdout: string) => stdout.replace(/^storage: [\d.]+ KB/m, "storage: <size> KB");
+
+function writeConsentFile(dir: string, consent: Record<string, unknown>) {
+  mkdirSync(join(dir, ".cheapag"), { recursive: true });
+  writeFileSync(join(dir, ".cheapag", "consent.json"), JSON.stringify(consent));
+}
+
+test("cheapag status pins the whole screen: another provider's consent, older jobs past five, a session, a foreign model, uncapped and redacted spend", () => {
+  const { repo, env, job, spend } = setup({ "opencode-go": "k" });
+  writeConsentFile(repo.dir, {
+    mode: "all",
+    provider: "openrouter",
+    approvedAt: "2026-01-02T03:04:05.000Z",
+  });
+  writeFileSync(
+    join(repo.dir, "cheapag.json"),
+    JSON.stringify({ models: { research: "openrouter/acme/coder" } }),
+  );
+  for (let n = 1; n <= 7; n++) job(`j${n}`, "OK", n);
+  const config = join(repo.dir, ".claude-config");
+  const projects = join(config, "projects", repo.dir.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(projects, { recursive: true });
+  const transcript = join(projects, "s.jsonl");
+  writeFileSync(
+    transcript,
+    JSON.stringify({ message: { id: "m1", usage: { input_tokens: 1500 } } }),
+  );
+  const sessionTime = new Date("2026-01-02T12:00:00Z");
+  utimesSync(transcript, sessionTime, sessionTime);
+  spend([
+    { hoursAgo: 1, model: "openrouter/sk-abcdefghijklmnop1234", costUsd: 1.5 },
+    { hoursAgo: 100, model: "openrouter/acme/coder", costUsd: 2 },
+  ]);
+  const r = runStatus(repo.dir, { ...env, CLAUDE_CONFIG_DIR: config });
+  expect([r.code, r.stderr]).toEqual([0, ""]);
+  expect(anySize(r.stdout)).toBe(
+    [
+      `cheapag ${version} provider=opencode-go preset=balanced`,
+      "consent: given for OpenRouter, not the current provider; run /cheapag:allow",
+      "storage: <size> KB in .cheapag (7 job folders, 0 worktrees)",
+      "running: none",
+      "recent:",
+      "  OK j1 step=1 files=0 +0/-0 tests=pass turns=3 cost=$0.010",
+      "  OK j2 step=1 files=0 +0/-0 tests=pass turns=3 cost=$0.010",
+      "  OK j3 step=1 files=0 +0/-0 tests=pass turns=3 cost=$0.010",
+      "  OK j4 step=1 files=0 +0/-0 tests=pass turns=3 cost=$0.010",
+      "  OK j5 step=1 files=0 +0/-0 tests=pass turns=3 cost=$0.010",
+      "  … +2 older (jobs list)",
+      'claude prefix: 1.5k tokens on the first turn of the last session here (2026-01-02); see "What it costs to keep in context" in the plugin README',
+      "claude cache: 1 requests, 0% of input from cache",
+      "! models.research names openrouter/acme/coder, which is not a model on OpenCode Go; it is ignored and the worker runs opencode-go/deepseek-v4.1-flash. Fix it in cheapag.json or run npx cheap-agent model",
+      "spend (tracked on this machine, all repos; Go windows where capped):",
+      "  openrouter/acme/coder  5h $0.00  weekly $2.00  monthly $2.00",
+      "  openrouter/[redacted]  5h $1.50  weekly $1.50  monthly $1.50",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("cheapag status with only live jobs: running lists them and recent is none", () => {
+  const { repo, env, job } = setup();
+  job("jrun1", "RUNNING", 0.1, process.pid);
+  const r = runStatus(repo.dir, env);
+  expect([r.code, r.stderr]).toEqual([0, ""]);
+  expect(anySize(r.stdout)).toBe(
+    [
+      `cheapag ${version} provider=none (run npx cheap-agent login)`,
+      "consent: not given; run /cheapag:allow",
+      "storage: <size> KB in .cheapag (1 job folders, 0 worktrees)",
+      "running:",
+      "  RUNNING jrun1 step=1 turns=3",
+      "recent: none",
+      "spend: none tracked in the last 30 days",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("a hand-edited consent without approvedAt crashes status for the current provider, but not for another one", () => {
+  const { repo, env } = setup({ "opencode-go": "k" });
+  writeConsentFile(repo.dir, { mode: "all", provider: "opencode-go" });
+  const crashed = runStatus(repo.dir, env);
+  expect([crashed.code, crashed.stdout]).toEqual([
+    1,
+    `cheapag ${version} provider=opencode-go preset=balanced\n`,
+  ]);
+  expect(crashed.stderr).toContain(
+    "TypeError: Cannot read properties of undefined (reading 'slice')",
+  );
+
+  writeConsentFile(repo.dir, { mode: "all", provider: "openrouter" });
+  const other = runStatus(repo.dir, env);
+  expect([other.code, other.stderr]).toEqual([0, ""]);
+  expect(other.stdout.split("\n")[1]).toBe(
+    "consent: given for OpenRouter, not the current provider; run /cheapag:allow",
+  );
+});
+
+test("cheapag status outside a repository: the whole screen, and model warnings from the config there", () => {
+  const { repo, status } = setup();
+  const outside = join(repo.dir, ".git"); // inside .git, rev-parse --show-toplevel fails
+  expect(status(outside)).toBe(
+    `cheapag ${version} provider=none (run npx cheap-agent login)\nrepo: not a git repository (no jobs or consent here)\nspend: none tracked in the last 30 days\n`,
+  );
+
+  // without a repo root the warnings read cheapag.json in the current directory
+  const loggedIn = setup({ "opencode-go": "k" });
+  const gitDir = join(loggedIn.repo.dir, ".git");
+  writeFileSync(
+    join(gitDir, "cheapag.json"),
+    JSON.stringify({ models: { research: "openrouter/acme/coder" } }),
+  );
+  const r = runStatus(gitDir, loggedIn.env);
+  expect([r.code, r.stderr]).toEqual([0, ""]);
+  expect(r.stdout).toBe(
+    [
+      `cheapag ${version} provider=opencode-go preset=balanced`,
+      "repo: not a git repository (no jobs or consent here)",
+      "! models.research names openrouter/acme/coder, which is not a model on OpenCode Go; it is ignored and the worker runs opencode-go/deepseek-v4.1-flash. Fix it in cheapag.json or run npx cheap-agent model",
+      "spend: none tracked in the last 30 days",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("storage: sizes round at the KB, MB and GB edges, and exactly 1GB does not ask for clean", () => {
+  const { repo, status } = setup();
+  const folder = join(repo.dir, ".cheapag", "worktrees", "jtree");
+  mkdirSync(folder, { recursive: true });
+  const sized = (bytes: number) => {
+    const fd = openSync(join(folder, "data.bin"), "w");
+    ftruncateSync(fd, bytes);
+    closeSync(fd);
+    return status()
+      .split("\n")
+      .find((line) => line.startsWith("storage: "));
+  };
+  const MB = 1024 * 1024;
+  const GB = 1024 * MB;
+  expect(sized(MB - 1)).toBe("storage: 1024.0 KB in .cheapag (0 job folders, 1 worktrees)");
+  expect(sized(MB)).toBe("storage: 1.0 MB in .cheapag (0 job folders, 1 worktrees)");
+  expect(sized(GB - 1)).toBe("storage: 1024.0 MB in .cheapag (0 job folders, 1 worktrees)");
+  expect(sized(GB)).toBe("storage: 1.0 GB in .cheapag (0 job folders, 1 worktrees)");
+  expect(sized(GB + 1)).toBe(
+    "storage: 1.0 GB in .cheapag (0 job folders, 1 worktrees) · run: npx cheap-agent clean",
+  );
+});
+
+// creating symlinks needs extra rights on Windows
+test.skipIf(process.platform === "win32")(
+  "storage: loose files count but are not folders, and symlinks are neither counted nor followed",
+  () => {
+    const { repo, status } = setup();
+    const jobs = join(repo.dir, ".cheapag", "jobs");
+    mkdirSync(jobs, { recursive: true });
+    writeFileSync(join(jobs, "loose.txt"), Buffer.alloc(2048));
+    const elsewhere = join(repo.dir, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "big.bin"), Buffer.alloc(3 * 1024 * 1024));
+    symlinkSync(elsewhere, join(jobs, "jlinked"));
+    symlinkSync(join(elsewhere, "big.bin"), join(jobs, "big-link.bin"));
+    expect(status()).toContain("\nstorage: 2.0 KB in .cheapag (0 job folders, 0 worktrees)\n");
+  },
+);
+
+test("lastSession: the newest transcript, every TTL, messages without an id, and no input at all", () => {
+  const config = mkdtempSync(join(tmpdir(), "cheapag-claude-"));
+  vi.stubEnv("CLAUDE_CONFIG_DIR", config);
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+    rmSync(config, { recursive: true, force: true });
+  });
+  const root = "/some/repo";
+  expect(lastSession(root)).toBeUndefined(); // no projects folder for this repo
+  const dir = join(config, "projects", "-some-repo");
+  mkdirSync(dir, { recursive: true });
+  expect(lastSession(root)).toBeUndefined(); // a folder with no transcript
+  writeFileSync(join(dir, "notes.txt"), "not a transcript");
+  expect(lastSession(root)).toBeUndefined();
+
+  const old = join(dir, "old.jsonl");
+  writeFileSync(old, JSON.stringify({ message: { id: "o", usage: { input_tokens: 999 } } }));
+  utimesSync(old, new Date(2020, 0, 1), new Date(2020, 0, 1));
+  const file = join(dir, "new.jsonl");
+  const write = (...usages: object[]) => {
+    writeFileSync(file, usages.map((usage) => JSON.stringify({ message: { usage } })).join("\n"));
+    return statSync(file).mtime.toISOString();
+  };
+  const cache = (m5: number, h1: number) => ({
+    input_tokens: 1,
+    cache_read_input_tokens: 3,
+    cache_creation: { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 },
+  });
+
+  let at = write(cache(0, 0), cache(0, 0)); // no id: each line is its own response
+  expect(lastSession(root)).toStrictEqual({
+    prefix: 4,
+    at,
+    requests: 2,
+    hitRate: 0.75,
+    ttl: undefined,
+  });
+  at = write(cache(5, 0));
+  expect(lastSession(root)).toStrictEqual({ prefix: 4, at, requests: 1, hitRate: 0.75, ttl: "5m" });
+  at = write(cache(0, 7));
+  expect(lastSession(root)).toStrictEqual({ prefix: 4, at, requests: 1, hitRate: 0.75, ttl: "1h" });
+  at = write(cache(5, 0), cache(0, 7));
+  expect(lastSession(root)).toStrictEqual({
+    prefix: 4,
+    at,
+    requests: 2,
+    hitRate: 0.75,
+    ttl: "5m+1h",
+  });
+  at = write({});
+  expect(lastSession(root)).toStrictEqual({
+    prefix: 0,
+    at,
+    requests: 1,
+    hitRate: 0,
+    ttl: undefined,
+  });
+});
+
+test("lastSession reads ~/.claude when CLAUDE_CONFIG_DIR is not set", () => {
+  const home = mkdtempSync(join(tmpdir(), "cheapag-home-"));
+  vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home); // homedir() reads this one on Windows
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+  const dir = join(home, ".claude", "projects", "-some-repo");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "a.jsonl"), JSON.stringify({ message: { usage: { input_tokens: 2 } } }));
+  expect(lastSession("/some/repo")).toMatchObject({ prefix: 2, requests: 1 });
 });
