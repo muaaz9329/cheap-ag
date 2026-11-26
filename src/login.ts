@@ -66,7 +66,9 @@ const LOCAL_URL = "http://127.0.0.1:8080/v1";
 
 const CHOICES = [...PRESET_NAMES, "custom"] as const;
 type Choice = (typeof CHOICES)[number];
-const isChoice = (s: string): s is Choice => (CHOICES as readonly string[]).includes(s);
+function isChoice(value: string): value is Choice {
+  return (CHOICES as readonly string[]).includes(value);
+}
 
 type Output = (line?: string) => void;
 type ProviderId = Provider["provider"];
@@ -81,7 +83,10 @@ export async function login(
   args: string[] = [],
   { setup = false }: { setup?: boolean } = {},
 ): Promise<number> {
-  const out = (line = "") => process.stdout.write(redact(line) + "\n");
+  // every line is redacted: a provider's error message can echo the key back
+  function out(line = ""): void {
+    process.stdout.write(redact(line) + "\n");
+  }
   const parsed = parseArgs(args);
   if ("error" in parsed) {
     out(parsed.error);
@@ -243,8 +248,8 @@ function updateUser(
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
     return true;
-  } catch (err) {
-    out(`✗ ${file}: ${(err as Error).message}${unsaved ? `; ${unsaved}` : ""}`);
+  } catch (error) {
+    out(`✗ ${file}: ${(error as Error).message}${unsaved ? `; ${unsaved}` : ""}`);
     return false;
   }
 }
@@ -317,7 +322,7 @@ function migratePreset(provider: Provider["provider"], out: Output) {
     if (config.preset !== undefined || config.models === undefined) return;
     // balanced first, as presetOf does: cheapest and balanced are often the same route
     const name = (["balanced", "cheapest", "strongest"] as const).find(
-      (p) => JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][p]),
+      (preset) => JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][preset]),
     );
     if (!name) return;
     const { models: _models, ...rest } = config;
@@ -673,12 +678,12 @@ function saveOllama(ollama: OllamaConfig, out: Output) {
 /** The server's model ids from GET /models, "auth" when it wants a key for that, "unreachable" when it does not answer as an OpenAI API. */
 async function listModels(base: string): Promise<ModelList> {
   try {
-    const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5_000) });
-    if (res.status === 401 || res.status === 403) return "auth";
-    if (!res.ok) return "unreachable";
-    const { data } = (await res.json()) as { data?: { id?: unknown }[] };
+    const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5_000) });
+    if (response.status === 401 || response.status === 403) return "auth";
+    if (!response.ok) return "unreachable";
+    const { data } = (await response.json()) as { data?: { id?: unknown }[] };
     if (!Array.isArray(data)) return "unreachable";
-    return data.map((m) => m.id).filter((id): id is string => typeof id === "string");
+    return data.map((entry) => entry.id).filter((id): id is string => typeof id === "string");
   } catch {
     return "unreachable";
   }
@@ -740,29 +745,30 @@ function dropLocal(out: Output, provider: string) {
     writeFileSync(userConfigFile(), JSON.stringify(rest, null, 2) + "\n");
     out(`✓ Custom endpoint setting removed from ${userConfigFile()}; ${provider} is used now`);
     return true;
-  } catch (err) {
-    out(`✗ ${userConfigFile()}: ${(err as Error).message}`);
+  } catch (error) {
+    out(`✗ ${userConfigFile()}: ${(error as Error).message}`);
     return false;
   }
 }
 
 /** One tiny real call to the implement model the user's config now picks, through the bundled OpenCode, in a throwaway directory. */
 export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: string }> {
-  const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
+  const directory = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;
   try {
     // a local model may first have to load from disk, and Ollama on this machine unloads it when idle
     const timeoutMs = localEndpoint(provider.provider) ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
-    // the throwaway dir has no cheapag.json, so this is the user's config alone
-    const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(dir)));
+    // the throwaway directory has no cheapag.json, so this is the user's config alone
+    const config = loadConfig(directory);
+    const route = fullRoute(provider.provider, effectiveModels(provider.provider, config));
     const model = route.implement;
     name = modelName(model);
     // with the route, OpenCode's config pins this model too (on OpenRouter: data collection denied)
-    const run = ensureOpencode(provider, dir, route).then((opencode) =>
+    const run = ensureOpencode(provider, directory, route).then((opencode) =>
       runSession({
         opencode,
-        directory: dir,
+        directory,
         model: { providerID: model.providerID, id: model.id },
         prompt: "Live check: reply with the single word OK. Do not use any tools.",
         onEvent: () => {},
@@ -778,12 +784,12 @@ export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line
     const result = await Promise.race([run, timeout]);
     if (result.error) return { ok: false, line: explain(result.error, name) };
     return { ok: true, line: `${name} answered (cost $${result.usage.costUsd.toFixed(4)})` };
-  } catch (err) {
-    return { ok: false, line: explain((err as Error).message, name) };
+  } catch (error) {
+    return { ok: false, line: explain((error as Error).message, name) };
   } finally {
     clearTimeout(timer);
     stopOpencode();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -886,7 +892,7 @@ function sameCommand(existing: string[] | undefined, current: string[]) {
   return (
     existing !== undefined &&
     existing.length === current.length &&
-    existing.every((arg, i) => arg === current[i])
+    existing.every((argument, index) => argument === current[index])
   );
 }
 
@@ -908,18 +914,18 @@ function serverCommand() {
 }
 
 // double quotes on Windows: cmd and PowerShell don't treat single quotes as quoting
-function quote(arg: string): string {
-  if (/^[\w@%+=:,./-]+$/.test(arg)) return arg;
-  if (process.platform === "win32") return `"${arg.replace(/"/g, '\\"')}"`;
-  return `'${arg.replace(/'/g, `'\\''`)}'`;
+function quote(argument: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(argument)) return argument;
+  if (process.platform === "win32") return `"${argument.replace(/"/g, '\\"')}"`;
+  return `'${argument.replace(/'/g, `'\\''`)}'`;
 }
 
 /** One question on a fresh readline, closed before anything else (OpenCode's login) reads the terminal. */
 async function ask(question: string) {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const reader = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    return (await rl.question(question)).trim();
+    return (await reader.question(question)).trim();
   } finally {
-    rl.close();
+    reader.close();
   }
 }
