@@ -19,17 +19,7 @@ export type CatalogModel = {
 export async function catalog(provider: Provider, cwd: string): Promise<CatalogModel[]> {
   // Ollama is not in OpenCode's catalog: ask its own API, which is also what `cheapag login` offers
   if (provider.provider === "ollama") return configuredOllamaModels();
-  const opencode = await ensureOpencode(provider, cwd);
-  const client = createOpencodeClient({
-    baseUrl: opencode.url,
-    directory: cwd,
-    headers: authHeaders(opencode.password),
-  });
-  const response = await client.config.providers({ directory: cwd });
-  if (!response.data)
-    throw new Error(`could not read OpenCode's model catalog: ${JSON.stringify(response.error)}`);
-  const entry = response.data.providers.find((listed) => listed.id === provider.provider);
-  if (!entry) throw new Error(`OpenCode lists no models for ${provider.provider}`);
+  const entry = await opencodeCatalogEntry(provider, cwd);
   return Object.values(entry.models)
     .filter((model) => model.capabilities.toolcall)
     .map((model) => ({
@@ -41,6 +31,22 @@ export async function catalog(provider: Provider, cwd: string): Promise<CatalogM
       efforts: Object.keys(model.variants ?? {}),
     }))
     .sort((left, right) => left.input - right.input);
+}
+
+/** The provider's entry in the catalog of the OpenCode server for this dir, started if needed. */
+async function opencodeCatalogEntry(provider: Provider, cwd: string) {
+  const opencode = await ensureOpencode(provider, cwd);
+  const client = createOpencodeClient({
+    baseUrl: opencode.url,
+    directory: cwd,
+    headers: authHeaders(opencode.password),
+  });
+  const response = await client.config.providers({ directory: cwd });
+  if (!response.data)
+    throw new Error(`could not read OpenCode's model catalog: ${JSON.stringify(response.error)}`);
+  const entry = response.data.providers.find((listed) => listed.id === provider.provider);
+  if (!entry) throw new Error(`OpenCode lists no models for ${provider.provider}`);
+  return entry;
 }
 
 /** The models of the Ollama endpoint the user config sets up, with the key from the env variable it names. */
