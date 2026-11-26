@@ -1,31 +1,54 @@
 #!/usr/bin/env node
-// `cheapag login` (or no arguments in a terminal) sets up a provider and Claude Code, `cheapag allow` records the repo's consent, `cheapag model` picks the worker's main and fallback models, `cheapag provider` switches between providers already set up, `cheapag clean` tidies .cheapag/, `cheapag status` reports jobs and spend, `cheapag watch` tails them live, `cheapag hook` toggles or runs the edit guard, `cheapag codex` runs the server with Codex instructions; anything else (including no arguments) runs the MCP server
-// `npx cheap-agent` typed in a terminal is setup (ticket 31); Claude Code starts the server with no arguments and a piped stdin
-if (process.argv[2] === "login" || (process.argv[2] === undefined && process.stdin.isTTY))
-  process.exit(
-    await (
-      await import("./login.js")
-    ).login(process.argv.slice(3), { setup: process.argv[2] === undefined }),
-  );
-else if (process.argv[2] === "allow")
-  process.exit((await import("./allow.js")).allow(process.argv.slice(3)));
-else if (process.argv[2] === "model")
-  process.exit(await (await import("./model.js")).model(process.argv.slice(3)));
-else if (process.argv[2] === "provider")
-  process.exit(await (await import("./provider.js")).provider(process.argv.slice(3)));
-else if (process.argv[2] === "clean")
-  process.exit((await import("./cleanup.js")).clean(process.argv.slice(3)));
-else if (process.argv[2] === "status")
-  process.exit((await import("./status.js")).status(process.argv.slice(3)));
-else if (process.argv[2] === "watch") {
-  const ids = process.argv.slice(3).filter((arg) => !arg.startsWith("-"));
-  const live = await import("./watch.js");
-  process.exit(
-    ids.length
-      ? await live.follow((await import("./workspace.js")).projectRoot(process.cwd()), ids)
-      : await live.watch(),
-  );
-} else if (process.argv[2] === "hook")
-  process.exit(await (await import("./hook.js")).hook(process.argv.slice(3)));
-else if (process.argv[2] === "codex") await (await import("./server.js")).serve("codex");
-else await (await import("./server.js")).serve();
+// `cheapag login` (or no arguments in a terminal) sets up a provider and Claude Code,
+// `cheapag allow` records the repo's consent,
+// `cheapag model` picks the worker's main and fallback models,
+// `cheapag provider` switches between providers already set up,
+// `cheapag clean` tidies .cheapag/,
+// `cheapag status` reports jobs and spend,
+// `cheapag watch` tails them live,
+// `cheapag hook` toggles or runs the edit guard,
+// `cheapag codex` runs the server with Codex instructions;
+// anything else (including no arguments) runs the MCP server.
+// Each branch imports its module only when it runs: the MCP server starts without the
+// CLI-only modules (login, model, ...), and a CLI command starts without the server.
+const command = process.argv[2];
+const args = process.argv.slice(3);
+
+// `npx cheap-agent` typed in a terminal is setup; Claude Code starts the server with no arguments and a piped stdin
+if (command === "login" || (command === undefined && process.stdin.isTTY)) {
+  const { login } = await import("./login.js");
+  process.exit(await login(args, { setup: command === undefined }));
+} else if (command === "allow") {
+  const { allow } = await import("./allow.js");
+  process.exit(allow(args));
+} else if (command === "model") {
+  const { model } = await import("./model.js");
+  process.exit(await model(args));
+} else if (command === "provider") {
+  const { provider } = await import("./provider.js");
+  process.exit(await provider(args));
+} else if (command === "clean") {
+  const { clean } = await import("./cleanup.js");
+  process.exit(clean(args));
+} else if (command === "status") {
+  const { status } = await import("./status.js");
+  process.exit(status(args));
+} else if (command === "watch") {
+  const ids = args.filter((arg) => !arg.startsWith("-"));
+  const { follow, watch } = await import("./watch.js");
+  if (ids.length) {
+    const { projectRoot } = await import("./workspace.js");
+    process.exit(await follow(projectRoot(process.cwd()), ids));
+  } else {
+    process.exit(await watch());
+  }
+} else if (command === "hook") {
+  const { hook } = await import("./hook.js");
+  process.exit(await hook(args));
+} else if (command === "codex") {
+  const { serve } = await import("./server.js");
+  await serve("codex");
+} else {
+  const { serve } = await import("./server.js");
+  await serve();
+}
