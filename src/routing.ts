@@ -234,25 +234,31 @@ export function foreignModels(provider: ProviderId, models: ModelsConfig = {}): 
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {
   const roles = rolesOf(provider);
-  const own = (name?: string) =>
-    name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined;
-  const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
+  const prefix = `${provider}/`;
+  const ownId = (name?: string) =>
+    name?.startsWith(prefix) ? name.slice(prefix.length) : undefined;
+  const fallbackIds = models.fallback
+    ? models.fallback.map(ownId).filter((id): id is string => !!id)
+    : roles.implement.slice(1);
   const [research, ...researchFallbacks] = [
-    own(models.research) ?? roles.research[0],
+    ownId(models.research) ?? roles.research[0],
     ...roles.research.slice(1),
   ];
   // a full model name's effort (an OpenCode variant), attached wherever a role or fallback is built from a name
-  const withVariant = (m: WorkerModel) => {
-    const variant = models.variants?.[modelName(m)];
-    return variant === undefined ? m : { ...m, variant };
+  const withVariant = (model: WorkerModel) => {
+    const variant = models.variants?.[modelName(model)];
+    return variant === undefined ? model : { ...model, variant };
   };
   const routed = (id: string) => withVariant(workerModel(provider, id));
-  const tier = (name?: string) => (own(name) ? routed(own(name)!) : undefined);
+  const tier = (name?: string) => {
+    const id = ownId(name);
+    return id ? routed(id) : undefined;
+  };
   return {
-    implement: routed(own(models.implement) ?? roles.implement[0]),
+    implement: routed(ownId(models.implement) ?? roles.implement[0]),
     medium: tier(models.medium),
     hard: tier(models.hard),
-    fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map(routed),
+    fallbacks: fallbackIds.map(routed),
     escalation:
       tier(models.escalation) ?? (roles.escalation ? routed(roles.escalation) : undefined),
     research: routed(research),
