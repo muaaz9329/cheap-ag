@@ -12,12 +12,15 @@ const KINDS = ["fix", "change"];
 export const PLAN_FORMAT =
   'Plan format: one "# <title>" line, then per step a "## <id> <title>" heading followed by "files: <paths>", "do: <what>", "done-when: <check>" (optional "dont:", "needs: <step ids>", "difficulty: easy|medium|hard", "kind: fix|change" (fix: a bug to reproduce, change: no reproduction expected)), each key at the start of its line, not a bullet. In done-when, `backticked` text is run as a shell command that must succeed; put only commands in backticks. Numbered or lettered list items count as separate changes, and a step or task with three or more is refused; write the details of one change as - bullets or prose.';
 
+/** A step while it is parsed: the lines of its heading and of its last `do:` and `files:`, for error messages. */
+type DraftStep = PlanStep & { line: number; doLine?: number; filesLine?: number };
+
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
   const lines = source.split(/\r?\n/);
   let title: string | undefined;
   const context: string[] = [];
-  const steps: (PlanStep & { line: number; doLine?: number; filesLine?: number })[] = [];
+  const steps: DraftStep[] = [];
   let field: string | undefined;
 
   lines.forEach((line, i) => {
@@ -61,41 +64,65 @@ export function parsePlan(source: string): Plan {
 
   if (title === undefined) throw new Error('plan has no H1 title ("# <title>")');
   if (!steps.length) throw new Error('plan has no steps ("## <id> <title>")');
-  for (const step of steps) {
-    const missing = REQUIRED.filter((key) => !step.fields[key]);
-    if (missing.length)
-      throw new Error(
-        `step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`,
-      );
-    const d = step.fields.difficulty;
-    if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty))
-      throw new Error(
-        `step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`,
-      );
-    const kind = step.fields.kind;
-    if (kind !== undefined && !KINDS.includes(kind))
-      throw new Error(
-        `step ${step.id} (line ${step.line}): kind: must be ${KINDS.join(", ")} or left out`,
-      );
-    const hidden = step.fields.files
-      .split(/[,\n]/)
-      .map((f) => f.trim().replace(/^\.\//, ""))
-      .find((f) => f.split("/")[0] === ".cheapag");
-    if (hidden)
-      throw new Error(
-        `line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`,
-      );
-    const changes = countChanges(step.fields.do ?? "");
-    if (changes >= 3)
-      throw new Error(
-        `line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them), or use - bullets for the details of one change`,
-      );
-  }
+  for (const step of steps) checkStep(step);
   return {
     title,
     context: context.join("\n").trim(),
     steps: steps.map(({ line: _line, ...step }) => ({ ...step, text: step.text.trim() })),
   };
+}
+
+/** Throws the first way a step breaks the format. The order of the checks decides which error the user sees. */
+function checkStep(step: DraftStep): void {
+  checkRequiredFields(step);
+  checkDifficulty(step);
+  checkKind(step);
+  checkFilesVisible(step);
+  checkChangeCount(step);
+}
+
+function checkRequiredFields(step: DraftStep): void {
+  const missing = REQUIRED.filter((key) => !step.fields[key]);
+  if (missing.length)
+    throw new Error(
+      `step ${step.id} (line ${step.line}): missing ${missing.map((k) => `${k}:`).join(", ")}`,
+    );
+}
+
+function checkDifficulty(step: DraftStep): void {
+  const d = step.fields.difficulty;
+  if (d !== undefined && !DIFFICULTIES.includes(d as Difficulty))
+    throw new Error(
+      `step ${step.id} (line ${step.line}): difficulty: must be ${DIFFICULTIES.join(", ")} or left out`,
+    );
+}
+
+function checkKind(step: DraftStep): void {
+  const kind = step.fields.kind;
+  if (kind !== undefined && !KINDS.includes(kind))
+    throw new Error(
+      `step ${step.id} (line ${step.line}): kind: must be ${KINDS.join(", ")} or left out`,
+    );
+}
+
+/** Workers cannot see `.cheapag/`, so a step aimed at a file there could never succeed. */
+function checkFilesVisible(step: DraftStep): void {
+  const hidden = step.fields.files
+    .split(/[,\n]/)
+    .map((f) => f.trim().replace(/^\.\//, ""))
+    .find((f) => f.split("/")[0] === ".cheapag");
+  if (hidden)
+    throw new Error(
+      `line ${step.filesLine}: step ${step.id} files: ${hidden} is under .cheapag/, Cheap Agent's state folder, which workers cannot see; keep plans in .plan/ and targets in the repo`,
+    );
+}
+
+function checkChangeCount(step: DraftStep): void {
+  const changes = countChanges(step.fields.do ?? "");
+  if (changes >= 3)
+    throw new Error(
+      `line ${step.doLine}: step ${step.id} lists ${changes} changes; one change per step: split it into ${step.id}a, ${step.id}b, … (needs: orders them), or use - bullets for the details of one change`,
+    );
 }
 
 const MARK = "(?:\\d+[.)]|\\(\\d+\\)|[a-z][.)])";
