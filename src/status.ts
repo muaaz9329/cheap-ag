@@ -152,48 +152,51 @@ function storageLine(root: string): string {
   const state = join(root, ".cheapag");
   const jobs = join(state, "jobs");
   const trees = join(state, "worktrees");
-  let bytes = 0;
-  const walk = (path: string) => {
-    let info;
-    try {
-      info = lstatSync(path);
-    } catch {
-      return;
-    }
-    // never follow symlinks: a worktree links dependency dirs, which are not its own storage
-    if (info.isSymbolicLink()) return;
-    if (info.isFile()) {
-      bytes += info.size;
-      return;
-    }
-    if (!info.isDirectory()) return;
-    let names: string[];
-    try {
-      names = readdirSync(path);
-    } catch {
-      return;
-    }
-    for (const name of names) walk(join(path, name));
-  };
-  walk(jobs);
-  walk(trees);
-  const folders = (dir: string) => {
-    try {
-      return readdirSync(dir).filter((name) => {
-        try {
-          return lstatSync(join(dir, name)).isDirectory();
-        } catch {
-          return false;
-        }
-      }).length;
-    } catch {
-      return 0;
-    }
-  };
+  const bytes = sizeOf(jobs) + sizeOf(trees);
   const size = formatSize(bytes);
-  const counts = `${folders(jobs)} job folders, ${folders(trees)} worktrees`;
+  const counts = `${countFolders(jobs)} job folders, ${countFolders(trees)} worktrees`;
   const hint = bytes > GB ? " · run: npx cheap-agent clean" : "";
   return `storage: ${size} in .cheapag (${counts})${hint}`;
+}
+
+/** The bytes of every file under `path`; what cannot be read or entered counts as nothing, never an error. */
+function sizeOf(path: string): number {
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch {
+    return 0;
+  }
+  // never follow symlinks: a worktree links dependency dirs, which are not its own storage
+  if (info.isSymbolicLink()) return 0;
+  if (info.isFile()) return info.size;
+  if (!info.isDirectory()) return 0;
+  let names: string[];
+  try {
+    names = readdirSync(path);
+  } catch {
+    return 0;
+  }
+  return names.reduce((sum, name) => sum + sizeOf(join(path, name)), 0);
+}
+
+/** How many folders `dir` holds; a folder that cannot be listed or examined counts as none. */
+function countFolders(dir: string): number {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  return names.filter((name) => isFolder(join(dir, name))).length;
+}
+
+function isFolder(path: string): boolean {
+  try {
+    return lstatSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** `bytes` in KB, MB or GB, one decimal. */
