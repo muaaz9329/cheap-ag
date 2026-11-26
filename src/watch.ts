@@ -49,17 +49,7 @@ export function scan(state: WatchState): string[] {
   for (const id of readdirSync(base).sort()) {
     const dir = join(base, id);
     if (!isDirectory(dir)) continue;
-    const resultFile = join(dir, "result.txt");
-    let job = state.jobs.get(dir);
-    if (!job) {
-      // a job that already finished before watch started is never shown; one still RUNNING (or BLOCKED) was just created
-      if (hasFinalResult(resultFile)) {
-        state.jobs.set(dir, { offset: 0, started: true, verdict: true, skipped: true });
-        continue;
-      }
-      job = { offset: 0, started: false, verdict: false, skipped: false };
-      state.jobs.set(dir, job);
-    }
+    const job = trackedJob(state.jobs, dir);
     if (job.skipped) continue;
 
     if (!job.started) {
@@ -73,6 +63,7 @@ export function scan(state: WatchState): string[] {
     }
 
     // result.txt is rewritten each turn (RUNNING …): only a final first word is the verdict
+    const resultFile = join(dir, "result.txt");
     if (!job.verdict && hasFinalResult(resultFile)) {
       job.verdict = true;
       const first = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
@@ -80,6 +71,18 @@ export function scan(state: WatchState): string[] {
     }
   }
   return lines;
+}
+
+/** The watch record for a job dir, made the first time a scan sees the dir. */
+function trackedJob(jobs: Map<string, JobWatch>, dir: string): JobWatch {
+  const known = jobs.get(dir);
+  if (known) return known;
+  // a job that already finished before watch started is never shown; one still RUNNING (or BLOCKED) was just created
+  const job = hasFinalResult(join(dir, "result.txt"))
+    ? { offset: 0, started: true, verdict: true, skipped: true }
+    : { offset: 0, started: false, verdict: false, skipped: false };
+  jobs.set(dir, job);
+  return job;
 }
 
 /** The ▶ line that opens a job: its id, then the steps and the model's last segment when request.json has them. */
