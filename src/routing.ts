@@ -91,8 +91,11 @@ function ollamaRoles(): { implement: string[]; research: string[]; escalation?: 
   return { implement: [ollama.model!], research: [ollama.model!] };
 }
 
-const rolesOf = (provider: ProviderId) =>
-  provider === "local" ? localRoles() : provider === "ollama" ? ollamaRoles() : ROLES[provider];
+function rolesOf(provider: ProviderId) {
+  if (provider === "local") return localRoles();
+  if (provider === "ollama") return ollamaRoles();
+  return ROLES[provider];
+}
 
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
 export const PRESET_NAMES = ["cheapest", "balanced", "strongest"] as const;
