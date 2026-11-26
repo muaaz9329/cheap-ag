@@ -34,27 +34,28 @@ export function allow(args: string[]): number {
     out(`✗ ${USAGE}`);
     return 1;
   }
-  const provider = detectProvider();
-  if (!provider) {
+  const detected = detectProvider();
+  if (!detected) {
     out(`✗ no worker provider; run ${LOGIN_COMMAND} first`);
     return 1;
   }
+  const { provider } = detected;
   let root: string;
   try {
     root = projectRoot(process.cwd());
-  } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+  } catch (error) {
+    out(`✗ ${(error as Error).message}`);
     return 1;
   }
   const record: Consent = {
     ...choice,
-    provider: provider.provider,
+    provider,
     approvedAt: new Date().toISOString(),
   };
   writeConsent(root, record);
-  out(`✓ ${root}: code may go to ${providerLabel(provider.provider)} (${describe(record)})`);
+  out(`✓ ${root}: code may go to ${providerLabel(provider)} (${describe(record)})`);
   // the same gate delegate uses, so what this prints is what jobs will run
-  const gate = consentGate(root, provider.provider);
+  const gate = consentGate(root, provider);
   if ("block" in gate) out(`! ${gate.block}`);
   else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
   if (!isStateFolderIgnored(root)) {
