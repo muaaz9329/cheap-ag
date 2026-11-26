@@ -18,37 +18,43 @@ export type CatalogModel = {
 /** The provider's tool-calling models from the bundled OpenCode's own catalog, cheapest input price first. */
 export async function catalog(provider: Provider, cwd: string): Promise<CatalogModel[]> {
   // Ollama is not in OpenCode's catalog: ask its own API, which is also what `cheapag login` offers
-  if (provider.provider === "ollama") {
-    const ollama = ollamaEndpoint();
-    if (!ollama) throw new Error("no Ollama endpoint configured; run npx cheap-agent login");
-    return ollamaModels(
-      ollama.endpoint,
-      ollama.base_url,
-      ollama.api_key_env ? process.env[ollama.api_key_env] : undefined,
-    );
-  }
+  if (provider.provider === "ollama") return configuredOllamaModels();
+  const entry = await opencodeCatalogEntry(provider, cwd);
+  return Object.values(entry.models)
+    .filter((model) => model.capabilities.toolcall)
+    .map((model) => ({
+      id: model.id,
+      name: model.name,
+      input: model.cost.input,
+      output: model.cost.output,
+      context: model.limit.context,
+      efforts: Object.keys(model.variants ?? {}),
+    }))
+    .sort((left, right) => left.input - right.input);
+}
+
+/** The provider's entry in the catalog of the OpenCode server for this dir, started if needed. */
+async function opencodeCatalogEntry(provider: Provider, cwd: string) {
   const opencode = await ensureOpencode(provider, cwd);
   const client = createOpencodeClient({
     baseUrl: opencode.url,
     directory: cwd,
     headers: authHeaders(opencode.password),
   });
-  const res = await client.config.providers({ directory: cwd });
-  if (!res.data)
-    throw new Error(`could not read OpenCode's model catalog: ${JSON.stringify(res.error)}`);
-  const entry = res.data.providers.find((p) => p.id === provider.provider);
+  const response = await client.config.providers({ directory: cwd });
+  if (!response.data)
+    throw new Error(`could not read OpenCode's model catalog: ${JSON.stringify(response.error)}`);
+  const entry = response.data.providers.find((listed) => listed.id === provider.provider);
   if (!entry) throw new Error(`OpenCode lists no models for ${provider.provider}`);
-  return Object.values(entry.models)
-    .filter((m) => m.capabilities.toolcall)
-    .map((m) => ({
-      id: m.id,
-      name: m.name,
-      input: m.cost.input,
-      output: m.cost.output,
-      context: m.limit.context,
-      efforts: Object.keys(m.variants ?? {}),
-    }))
-    .sort((a, b) => a.input - b.input);
+  return entry;
+}
+
+/** The models of the user config's Ollama endpoint, with the key from the env variable it names. */
+async function configuredOllamaModels(): Promise<CatalogModel[]> {
+  const ollama = ollamaEndpoint();
+  if (!ollama) throw new Error("no Ollama endpoint configured; run npx cheap-agent login");
+  const apiKey = ollama.api_key_env ? process.env[ollama.api_key_env] : undefined;
+  return ollamaModels(ollama.endpoint, ollama.base_url, apiKey);
 }
 
 /**
@@ -66,49 +72,60 @@ export async function ollamaModels(
 
 async function localModels(base: string): Promise<CatalogModel[]> {
   const root = base.replace(/\/v1$/, "");
-  let res: Response;
-  try {
-    res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(5_000) });
-  } catch (err) {
-    throw new Error(
-      `could not reach Ollama at ${root} (${(err as Error).message}); is it running?`,
-    );
-  }
-  if (!res.ok) throw new Error(`Ollama at ${root} answered ${res.status}; is it running?`);
-  const { models } = (await res.json()) as { models?: { name?: unknown; model?: unknown }[] };
-  const ids = [
-    ...new Set(
-      (models ?? []).flatMap((m) =>
-        typeof m.name === "string" ? [m.name] : typeof m.model === "string" ? [m.model] : [],
-      ),
-    ),
-  ].sort();
-  if (!ids.length)
-    throw new Error(
-      `Ollama at ${root} has no models pulled; run ollama pull <model>, then try again`,
-    );
+  const ids = await pulledModelIds(root);
   const contexts = await Promise.all(ids.map((id) => localContext(root, id)));
-  return ids.map((id, i) => ({
+  return ids.map((id, index) => ({
     id,
     name: id,
     input: 0,
     output: 0,
-    context: contexts[i] ?? 0,
+    context: contexts[index] ?? 0,
     efforts: [],
   }));
+}
+
+/** The ids of the models pulled on this machine (GET /api/tags), deduplicated and sorted. */
+async function pulledModelIds(root: string): Promise<string[]> {
+  let response: Response;
+  try {
+    response = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(5_000) });
+  } catch (error) {
+    throw new Error(
+      `could not reach Ollama at ${root} (${(error as Error).message}); is it running?`,
+    );
+  }
+  if (!response.ok)
+    throw new Error(`Ollama at ${root} answered ${response.status}; is it running?`);
+  const { models } = (await response.json()) as { models?: PulledModel[] };
+  const ids = [...new Set((models ?? []).flatMap(pulledModelId))].sort();
+  if (!ids.length)
+    throw new Error(
+      `Ollama at ${root} has no models pulled; run ollama pull <model>, then try again`,
+    );
+  return ids;
+}
+
+/** One entry of GET /api/tags, unchecked. */
+type PulledModel = { name?: unknown; model?: unknown };
+
+/** The entry's name, else its model; an empty list when it has neither, so flatMap skips it. */
+function pulledModelId(entry: PulledModel): string[] {
+  if (typeof entry.name === "string") return [entry.name];
+  if (typeof entry.model === "string") return [entry.model];
+  return [];
 }
 
 /** A local model's context window from POST /api/show, when Ollama reports one. */
 async function localContext(root: string, model: string): Promise<number | undefined> {
   try {
-    const res = await fetch(`${root}/api/show`, {
+    const response = await fetch(`${root}/api/show`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model }),
       signal: AbortSignal.timeout(3_000),
     });
-    if (!res.ok) return undefined;
-    const { model_info } = (await res.json()) as { model_info?: Record<string, unknown> };
+    if (!response.ok) return undefined;
+    const { model_info } = (await response.json()) as { model_info?: Record<string, unknown> };
     const entry = Object.entries(model_info ?? {}).find(
       ([key, value]) => key.endsWith(".context_length") && typeof value === "number" && value > 0,
     );
@@ -119,22 +136,21 @@ async function localContext(root: string, model: string): Promise<number | undef
 }
 
 async function cloudModels(base: string, apiKey: string | undefined): Promise<CatalogModel[]> {
-  let res: Response;
+  let response: Response;
   try {
-    res = await fetch(`${base}/models`, {
+    response = await fetch(`${base}/models`, {
       headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
       signal: AbortSignal.timeout(10_000),
     });
-  } catch (err) {
-    throw new Error(
-      `could not reach Ollama Cloud at ${base} (${(err as Error).message}); is this machine online?`,
-    );
+  } catch (error) {
+    const reason = (error as Error).message;
+    throw new Error(`could not reach Ollama Cloud at ${base} (${reason}); is this machine online?`);
   }
-  if (res.status === 401 || res.status === 403)
-    throw new Error(`Ollama Cloud rejected the key (${res.status}); check OLLAMA_API_KEY`);
-  if (!res.ok) throw new Error(`Ollama Cloud answered ${res.status}`);
-  const { data } = (await res.json()) as { data?: { id?: unknown }[] };
-  const ids = (data ?? []).flatMap((m) => (typeof m.id === "string" ? [m.id] : []));
+  if (response.status === 401 || response.status === 403)
+    throw new Error(`Ollama Cloud rejected the key (${response.status}); check OLLAMA_API_KEY`);
+  if (!response.ok) throw new Error(`Ollama Cloud answered ${response.status}`);
+  const { data } = (await response.json()) as { data?: { id?: unknown }[] };
+  const ids = (data ?? []).flatMap((model) => (typeof model.id === "string" ? [model.id] : []));
   if (!ids.length) throw new Error("Ollama Cloud listed no models");
   return ids.map((id) => ({ id, name: id, input: 0, output: 0, context: 0, efforts: [] }));
 }
@@ -152,15 +168,15 @@ export function saveModels(provider: Provider, pick: Pick) {
   const file = userConfigFile();
   const config = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const name = (id: string) => `${provider.provider}/${id}`;
-  const { fallback: _old, variants: _variants, ...models } = config.models ?? {};
+  const { fallback: _fallback, variants: _variants, ...models } = config.models ?? {};
   const efforts = [
     [pick.main, pick.mainEffort],
     [pick.fallback, pick.fallbackEffort],
   ] as const;
   const variants = Object.fromEntries(
     efforts
-      .filter((e): e is readonly [string, string] => !!e[0] && !!e[1])
-      .map(([id, e]) => [name(id), e]),
+      .filter((pair): pair is readonly [string, string] => !!pair[0] && !!pair[1])
+      .map(([id, effort]) => [name(id), effort]),
   );
   const { preset: _preset, ...rest } = config;
   const next = {
