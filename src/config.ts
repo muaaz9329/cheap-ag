@@ -423,6 +423,39 @@ function parseAllowCommands(commands: unknown, file: string): string[] | undefin
   return (commands as string[]).map((command) => command.trim());
 }
 
+const MODEL_ROLES = ["implement", "medium", "hard", "research", "escalation"];
+const MODEL_NAME = /^[\w.-]+\/\S+$/;
+
+/** Whether a value is a full provider/model name, e.g. opencode-go/glm-5.3. */
+function isModelName(value: unknown): value is string {
+  return typeof value === "string" && MODEL_NAME.test(value);
+}
+
+/** The worker models a file names per role, with fallbacks and efforts; the object is kept as written. */
+function parseModels(models: unknown, file: string): ModelsConfig | undefined {
+  if (models === undefined) return undefined;
+  if (!isPlainObject(models)) throw new Error(`${file}: models must be an object`);
+  for (const role of MODEL_ROLES) {
+    if (models[role] !== undefined && !isModelName(models[role]))
+      throw new Error(
+        `${file}: models.${role} must be a provider/model name, e.g. opencode-go/deepseek-v4.1-flash`,
+      );
+  }
+  const { fallback, variants } = models;
+  if (fallback !== undefined && (!Array.isArray(fallback) || !fallback.every(isModelName)))
+    throw new Error(`${file}: models.fallback must be a list of provider/model names`);
+  const isEffort = (effort: unknown) => typeof effort === "string";
+  if (
+    variants !== undefined &&
+    (!isPlainObject(variants) || !Object.values(variants).every(isEffort))
+  ) {
+    throw new Error(
+      `${file}: models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}`,
+    );
+  }
+  return models as ModelsConfig;
+}
+
 /** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
 function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
   const { provider, local, ollama, preset } = value;
@@ -472,29 +505,7 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
   const caps = parseJobLimits(limits, file);
   const keep = parseRetention(retention, file);
   const commands = parseAllowCommands(allow_commands, file);
-  if (models !== undefined && !isPlainObject(models))
-    throw new Error(`${file}: models must be an object`);
-  const roles = (models ?? {}) as Record<string, unknown>;
-  const name = (v: unknown) => typeof v === "string" && /^[\w.-]+\/\S+$/.test(v);
-  for (const role of ["implement", "medium", "hard", "research", "escalation"]) {
-    if (roles[role] !== undefined && !name(roles[role]))
-      throw new Error(
-        `${file}: models.${role} must be a provider/model name, e.g. opencode-go/deepseek-v4.1-flash`,
-      );
-  }
-  if (
-    roles.fallback !== undefined &&
-    (!Array.isArray(roles.fallback) || !roles.fallback.every(name))
-  )
-    throw new Error(`${file}: models.fallback must be a list of provider/model names`);
-  if (roles.variants !== undefined) {
-    const variants = roles.variants;
-    if (!isPlainObject(variants) || Object.values(variants).some((v) => typeof v !== "string")) {
-      throw new Error(
-        `${file}: models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}`,
-      );
-    }
-  }
+  const roles = parseModels(models, file);
   if (
     escalation_skip_at !== undefined &&
     (typeof escalation_skip_at !== "number" || !(escalation_skip_at > 0 && escalation_skip_at <= 1))
@@ -538,7 +549,7 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
     ...(commands && { allow_commands: commands }),
     limits: caps,
     retention: keep,
-    ...(models !== undefined && { models: roles as ModelsConfig }),
+    ...(roles && { models: roles }),
     ...(preset !== undefined && { preset: preset as Preset }),
     ...(escalation_skip_at !== undefined && { escalation_skip_at }),
     ...(guard_lines !== undefined && { guard_lines }),
