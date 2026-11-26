@@ -8,6 +8,20 @@ import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]";
 
+type ConsentChoice = Omit<Consent, "provider" | "approvedAt">;
+
+function parseConsentChoice(args: string[]): ConsentChoice | undefined {
+  if (!args.length) return { mode: "all" };
+  if (args.length === 1 && args[0] === "--zdr-only") return { mode: "zdr-only" };
+  if (args.length !== 2 || args[0] !== "--models") return undefined;
+  const models = args[1]
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  if (!models.length) return undefined;
+  return { mode: "models", models };
+}
+
 /**
  * `cheapag allow`: the developer's opt-in for the current repo (spec: Consent). Non-interactive, so the plugin's
  * user-only `/cheapag:allow` can wrap it. No MCP tool calls this. Modes: all models (no flag), zero-retention only,
@@ -15,55 +29,49 @@ const USAGE = "usage: cheapag allow [--zdr-only | --models <provider/model,…>]
  */
 export function allow(args: string[]): number {
   const out = (line: string) => process.stdout.write(redact(line) + "\n");
-  let consent: Omit<Consent, "provider" | "approvedAt">;
-  if (!args.length) consent = { mode: "all" };
-  else if (args.length === 1 && args[0] === "--zdr-only") consent = { mode: "zdr-only" };
-  else if (
-    args.length === 2 &&
-    args[0] === "--models" &&
-    args[1].split(",").some((m) => m.trim())
-  ) {
-    consent = {
-      mode: "models",
-      models: args[1]
-        .split(",")
-        .map((m) => m.trim())
-        .filter(Boolean),
-    };
-  } else {
+  const choice = parseConsentChoice(args);
+  if (!choice) {
     out(`✗ ${USAGE}`);
     return 1;
   }
-  const provider = detectProvider();
-  if (!provider) {
+  const detected = detectProvider();
+  if (!detected) {
     out(`✗ no worker provider; run ${LOGIN_COMMAND} first`);
     return 1;
   }
+  const { provider } = detected;
   let root: string;
   try {
     root = projectRoot(process.cwd());
-  } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+  } catch (error) {
+    out(`✗ ${(error as Error).message}`);
     return 1;
   }
   const record: Consent = {
-    ...consent,
-    provider: provider.provider,
+    ...choice,
+    provider,
     approvedAt: new Date().toISOString(),
   };
   writeConsent(root, record);
-  out(`✓ ${root}: code may go to ${providerLabel(provider.provider)} (${describe(record)})`);
+  out(`✓ ${root}: code may go to ${providerLabel(provider)} (${describe(record)})`);
   // the same gate delegate uses, so what this prints is what jobs will run
-  const gate = consentGate(root, provider.provider);
+  const gate = consentGate(root, provider);
   if ("block" in gate) out(`! ${gate.block}`);
   else out(`  models: ${routeModels(gate.route).map(modelName).join(", ")}`);
-  // .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
-  if (
-    spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" }).status !== 0
-  ) {
-    mkdirSync(join(root, ".git", "info"), { recursive: true });
-    appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
+  if (!isStateFolderIgnored(root)) {
+    excludeStateFolder(root);
     out("✓ .cheapag/ added to .git/info/exclude (local, never committed)");
   }
   return 0;
+}
+
+function isStateFolderIgnored(root: string): boolean {
+  const check = spawnSync("git", ["check-ignore", "-q", ".cheapag"], { cwd: root, stdio: "pipe" });
+  return check.status === 0;
+}
+
+// .cheapag/ state is local: keep it out of `git status` without touching the repo's tracked .gitignore
+function excludeStateFolder(root: string) {
+  mkdirSync(join(root, ".git", "info"), { recursive: true });
+  appendFileSync(join(root, ".git", "info", "exclude"), ".cheapag/\n");
 }
