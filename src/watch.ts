@@ -8,9 +8,13 @@ import { projectRoot } from "./workspace.js";
 export function toolTarget(tool: string, input: unknown, base?: string): string {
   if (tool === "edit" || tool === "write" || tool === "read") {
     const filePath = stringField(input, "filePath") ?? "";
-    return base && filePath.startsWith(base + sep) ? filePath.slice(base.length + 1) : filePath;
+    const insideBase = base && filePath.startsWith(base + sep);
+    return insideBase ? filePath.slice(base.length + 1) : filePath;
   }
-  if (tool === "bash") return (stringField(input, "command") ?? "").split(/\r?\n/)[0].slice(0, 40);
+  if (tool === "bash") {
+    const command = stringField(input, "command") ?? "";
+    return command.split(/\r?\n/)[0].slice(0, 40);
+  }
   return "";
 }
 
