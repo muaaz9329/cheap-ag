@@ -24,9 +24,11 @@ const UNKNOWN_GRACE_MS = 60 * 60_000;
 
 export type Cleaned = { removed: string[]; kept: string[] };
 
-/** One cleanup run: its rules, its clock, the state folders it cleans, and the report it fills in. */
+/** One cleanup run: the repo and its rules, the clock, the state folders it cleans, and the report it fills in. */
 type Sweep = {
+  root: string;
   retention: Config["retention"];
+  linkDirs: string[];
   all: boolean | undefined;
   now: number;
   jobsDir: string;
@@ -52,39 +54,52 @@ export function cleanup(
   const state = join(root, ".cheapag");
   // a symlinked state dir (or subdir) would put what we delete outside the repo: leave it alone
   if (!realDir(state)) return out;
-  const jobsDir = join(state, "jobs");
-  const treesDir = join(state, "worktrees");
-  const sweep: Sweep = { retention, all: opts.all, now, jobsDir, treesDir, out };
-
-  let removedTree = false;
-  for (const id of entries(treesDir, LOG_ID)) {
-    // r…: a research worktree left by a crash
-    const path = join(treesDir, id);
-    const j = readJob(sweep, id);
-    if (j.live) out.kept.push(`worktree ${id}: ${j.status} job in flight`);
-    else if (!isOld(sweep, j.since, retention.unlanded_worktree_days))
-      out.kept.push(
-        `worktree ${id}: ${ageInDays(sweep, j.since)}d old, kept ${retention.unlanded_worktree_days}d`,
-      );
-    else {
-      // unlink first, so nothing can reach through into the real dependency dirs
-      for (const dir of linkDirs) removeLink(join(path, dir));
-      try {
-        git(root, ["worktree", "remove", "--force", path]);
-      } catch {
-        rmSync(path, { recursive: true, force: true }); // git no longer knows it; rm never follows symlinks
-      }
-      removedTree = true;
-      out.removed.push(
-        `worktree ${id}: ${opts.all ? "--all" : `unlanded, ${ageInDays(sweep, j.since)}d old`}`,
-      );
-    }
-  }
-  if (removedTree) git(root, ["worktree", "prune"]);
-
+  const sweep: Sweep = {
+    root,
+    retention,
+    linkDirs,
+    all: opts.all,
+    now,
+    jobsDir: join(state, "jobs"),
+    treesDir: join(state, "worktrees"),
+    out,
+  };
+  sweepWorktrees(sweep);
   sweepJobLogs(sweep);
   sweepBatches(sweep, join(state, "batches"));
   return out;
+}
+
+/** Removes unlanded worktrees past `unlanded_worktree_days`, then prunes git's metadata for them. */
+function sweepWorktrees(sweep: Sweep) {
+  const limit = sweep.retention.unlanded_worktree_days;
+  let removedTree = false;
+  for (const id of entries(sweep.treesDir, LOG_ID)) {
+    // r…: a research worktree left by a crash
+    const job = readJob(sweep, id);
+    if (job.live) {
+      sweep.out.kept.push(`worktree ${id}: ${job.status} job in flight`);
+    } else if (!isOld(sweep, job.since, limit)) {
+      sweep.out.kept.push(`worktree ${id}: ${ageInDays(sweep, job.since)}d old, kept ${limit}d`);
+    } else {
+      deleteWorktree(sweep, join(sweep.treesDir, id));
+      removedTree = true;
+      const reason = sweep.all ? "--all" : `unlanded, ${ageInDays(sweep, job.since)}d old`;
+      sweep.out.removed.push(`worktree ${id}: ${reason}`);
+    }
+  }
+  if (removedTree) git(sweep.root, ["worktree", "prune"]);
+}
+
+/** Deletes one worktree folder through git, else directly when git no longer knows it. */
+function deleteWorktree(sweep: Sweep, path: string) {
+  // unlink first, so nothing can reach through into the real dependency dirs
+  for (const dir of sweep.linkDirs) removeLink(join(path, dir));
+  try {
+    git(sweep.root, ["worktree", "remove", "--force", path]);
+  } catch {
+    rmSync(path, { recursive: true, force: true }); // git no longer knows it; rm never follows symlinks
+  }
 }
 
 /** Removes job and research log folders past `job_log_days`, unless in flight or explaining a kept worktree. */
