@@ -411,46 +411,47 @@ function changedLine(file: Changed) {
 
 /** D7. A research CONSENT renders through `renderConsent`. */
 export function renderResearch(r: ResearchRecord) {
-  const lines = [
-    [
-      r.status,
-      r.job,
-      `files_read=${r.filesRead}`,
-      `turns=${r.usage.turns}`,
-      `cost=$${r.usage.costUsd.toFixed(3)}`,
-      r.models && r.models.final !== r.models.requested && `model=${r.models.final}`,
-      r.partial && "status=partial",
-    ]
-      .filter(Boolean)
-      .join(" "),
-  ];
+  const lines = [researchHeadline(r)];
   // a scout brief: ranked files, the reproduction, dead ends, then the prose
-  if (r.refs.length)
-    lines.push(
-      `files: ${r.refs.map((v) => `${v.path}:${v.start}${v.end !== v.start ? `-${v.end}` : ""}`).join(", ")}`,
-    );
+  if (r.refs.length) lines.push(`files: ${r.refs.map(refText).join(", ")}`);
   if (r.repro) lines.push(`repro: ${oneLine(r.repro)}`);
   if (r.deadEnds) lines.push(`dead ends: ${oneLine(r.deadEnds)}`);
+  const notes = r.answer.trim();
   // prose is word-wrapped, not elided like other long lines
-  if (r.answer.trim())
-    lines.push(
-      "notes:",
-      ...r.answer
-        .trim()
-        .split("\n")
-        .flatMap((l) => wrap(l.trimEnd())),
-    );
+  if (notes) lines.push("notes:", ...notes.split("\n").flatMap((line) => wrap(line.trimEnd())));
   if (r.confidence) lines.push(`confidence: ${r.confidence}`);
   if (r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
   if (r.cleanupError) lines.push(`cleanup error: ${oneLine(r.cleanupError)}`);
   if (r.worktree) lines.push(`worktree: ${r.worktree}/`);
-  const n = r.unlanded.length;
-  if (n)
+  const count = r.unlanded.length;
+  if (count)
     lines.push(
-      `note: ${n} job${n > 1 ? "s" : ""} not yet landed (${r.unlanded.join(", ")}); their changes are not visible to research`,
+      `note: ${count} job${count > 1 ? "s" : ""} not yet landed (${r.unlanded.join(", ")}); their changes are not visible to research`,
     );
   lines.push(`log: .cheapag/jobs/${r.job}/`);
   return lines.map(fit).join("\n");
+}
+
+/** The first line: status, job, files read, turns, cost, then a fallback model and a partial answer. */
+function researchHeadline(record: ResearchRecord) {
+  const { models } = record;
+  return [
+    record.status,
+    record.job,
+    `files_read=${record.filesRead}`,
+    `turns=${record.usage.turns}`,
+    `cost=$${record.usage.costUsd.toFixed(3)}`,
+    models && models.final !== models.requested && `model=${models.final}`,
+    record.partial && "status=partial",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** `path:start`, or `path:start-end` when the range spans lines. */
+function refText(ref: Range) {
+  const end = ref.end !== ref.start ? `-${ref.end}` : "";
+  return `${ref.path}:${ref.start}${end}`;
 }
 
 /**
