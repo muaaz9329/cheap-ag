@@ -24,12 +24,14 @@ const UNKNOWN_GRACE_MS = 60 * 60_000;
 
 export type Cleaned = { removed: string[]; kept: string[] };
 
-/** One cleanup run: its clock, whether it is --all, and the state folders it cleans. */
+/** One cleanup run: its rules, its clock, the state folders it cleans, and the report it fills in. */
 type Sweep = {
+  retention: Config["retention"];
   all: boolean | undefined;
   now: number;
   jobsDir: string;
   treesDir: string;
+  out: Cleaned;
 };
 
 /** What cleanup reads from a job folder's record. */
@@ -52,7 +54,7 @@ export function cleanup(
   if (!realDir(state)) return out;
   const jobsDir = join(state, "jobs");
   const treesDir = join(state, "worktrees");
-  const sweep: Sweep = { all: opts.all, now, jobsDir, treesDir };
+  const sweep: Sweep = { retention, all: opts.all, now, jobsDir, treesDir, out };
 
   let removedTree = false;
   for (const id of entries(treesDir, LOG_ID)) {
@@ -94,23 +96,32 @@ export function cleanup(
       out.removed.push(`job ${id}: ${opts.all ? "--all" : `${ageInDays(sweep, j.since)}d old`}`);
     }
   }
-  // a batch record goes with its last job folder; one that never got a job (a crashed start) goes by age
-  const batchesDir = join(state, "batches");
-  if (realDir(batchesDir)) {
-    for (const name of readdirSync(batchesDir).filter((n) => BATCH_FILE.test(n))) {
-      const file = join(batchesDir, name);
-      const jobs = readBatchJobs(file);
-      const id = name.slice(0, -".json".length);
-      if (jobs.some((j) => JOB_ID.test(j) && existsSync(join(jobsDir, j)))) continue; // its jobs say what it was: kept silently
-      const since = mtime(file) ?? now;
-      if (jobs.length === 0 && !isOld(sweep, since, retention.job_log_days)) continue;
-      rmSync(file, { force: true });
-      out.removed.push(
-        `batch ${id}: ${jobs.length ? "its jobs are gone" : opts.all ? "--all" : `${ageInDays(sweep, since)}d old`}`,
-      );
-    }
-  }
+  sweepBatches(sweep, join(state, "batches"));
   return out;
+}
+
+/** A batch record goes with its last job folder; one that never got a job (a crashed start) goes by age. */
+function sweepBatches(sweep: Sweep, batchesDir: string) {
+  if (!realDir(batchesDir)) return;
+  const names = readdirSync(batchesDir).filter((entry) => BATCH_FILE.test(entry));
+  for (const name of names) {
+    const file = join(batchesDir, name);
+    const jobs = readBatchJobs(file);
+    const id = name.slice(0, -".json".length);
+    // its jobs say what it was: kept silently
+    if (jobs.some((job) => JOB_ID.test(job) && existsSync(join(sweep.jobsDir, job)))) continue;
+    const since = mtime(file) ?? sweep.now;
+    if (jobs.length === 0 && !isOld(sweep, since, sweep.retention.job_log_days)) continue;
+    rmSync(file, { force: true });
+    sweep.out.removed.push(`batch ${id}: ${batchRemovalReason(sweep, jobs, since)}`);
+  }
+}
+
+/** Why a batch record went: its jobs are gone, else --all, else its age. */
+function batchRemovalReason(sweep: Sweep, jobs: string[], since: number) {
+  if (jobs.length) return "its jobs are gone";
+  if (sweep.all) return "--all";
+  return `${ageInDays(sweep, since)}d old`;
 }
 
 /**
