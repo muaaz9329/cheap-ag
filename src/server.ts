@@ -107,6 +107,50 @@ export function hostInstructions(host: "claude" | "codex" = "claude", cwd = proc
   return instructions(hard, takeover, host);
 }
 
+/** Every tool answers through here, so no key value can reach Claude. */
+function safeText(text: string) {
+  return { content: [{ type: "text" as const, text: redact(text) }] };
+}
+
+/**
+ * A `models` entry naming another provider never reaches the route, so the job runs on something else than the
+ * config says. Say it after the block, naming the model that actually runs; a clean config adds nothing.
+ */
+function withWarnings(text: string, provider: Provider, root?: string) {
+  const warnings = modelWarnings(provider.provider, root);
+  if (!warnings.length) return text;
+  const lines = warnings.map((warning) => `! ${warning}`).join("\n");
+  return `${text}\n\n${lines}`;
+}
+
+/** The part of a tool handler's `extra` that progress notifications need. */
+type Extra = {
+  _meta?: { progressToken?: string | number };
+  sendNotification: (notification: ServerNotification) => Promise<void>;
+};
+
+/** Worker progress as MCP progress notifications to the calling request, when it asked for them. */
+function progressTo(extra: Extra) {
+  return (progress: number, message: string) => {
+    const progressToken = extra._meta?.progressToken;
+    if (progressToken === undefined) return;
+    void extra.sendNotification({
+      method: "notifications/progress",
+      params: { progressToken, progress, message },
+    });
+  };
+}
+
+/** What a call that may run a worker needs. */
+function workerContext(provider: Provider, root: string, extra: Extra) {
+  return {
+    provider,
+    // OpenCode boots once per process; its config goes under the repo of the call that boots it
+    opencode: (route: Route) => ensureOpencode(provider, root, route),
+    progress: progressTo(extra),
+  };
+}
+
 /** The MCP server over stdio: what Claude Code runs; Codex starts it with `cheap-agent codex`. */
 export async function serve(host: "claude" | "codex" = "claude") {
   const server = new McpServer(
@@ -114,8 +158,6 @@ export async function serve(host: "claude" | "codex" = "claude") {
     { instructions: hostInstructions(host, process.cwd()) },
   );
 
-  /** Every tool answers through here, so no key value can reach Claude. */
-  const safeText = (s: string) => ({ content: [{ type: "text" as const, text: redact(s) }] });
   let hinted = false;
   /** The first job result of this process carries the gitignore offer, on its own line after the block (outside the renderer's contract). */
   const withHint = (text: string, root: string) => {
@@ -123,14 +165,6 @@ export async function serve(host: "claude" | "codex" = "claude") {
     hinted = true;
     const hint = gitignoreHint(root);
     return hint ? `${text}\n\n${hint}` : text;
-  };
-  /**
-   * A `models` entry naming another provider never reaches the route, so the job runs on something else than the
-   * config says. Say it after the block, naming the model that actually runs; a clean config adds nothing.
-   */
-  const withWarnings = (text: string, provider: Provider, root?: string) => {
-    const warnings = modelWarnings(provider.provider, root);
-    return warnings.length ? `${text}\n\n${warnings.map((w) => `! ${w}`).join("\n")}` : text;
   };
   /** Repositories this process has recovered and cleaned: the cwd's at start, each `root` on its first call. */
   const prepared = new Set<string>();
@@ -166,28 +200,6 @@ export async function serve(host: "claude" | "codex" = "claude") {
     prepare(dir);
     return dir;
   };
-  /** OpenCode boots once per process; its config goes under the repo of the call that boots it. */
-  const opencodeFor = (provider: Provider, root: string) => (route: Route) =>
-    ensureOpencode(provider, root, route);
-  type Extra = {
-    _meta?: { progressToken?: string | number };
-    sendNotification: (n: ServerNotification) => Promise<void>;
-  };
-  /** Worker progress as MCP progress notifications to the calling request, when it asked for them. */
-  const progressTo = (extra: Extra) => (progress: number, message: string) => {
-    const progressToken = extra._meta?.progressToken;
-    if (progressToken !== undefined)
-      void extra.sendNotification({
-        method: "notifications/progress",
-        params: { progressToken, progress, message },
-      });
-  };
-  /** What a call that may run a worker needs. */
-  const workerContext = (provider: Provider, root: string, extra: Extra) => ({
-    provider,
-    opencode: opencodeFor(provider, root),
-    progress: progressTo(extra),
-  });
   /** Every repo-bound tool: needs a provider, resolves the call's repository, and answers any error as a FAIL block. */
   const inRepo = async (
     root: string | undefined,
