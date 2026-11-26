@@ -4,6 +4,7 @@ import {
   type Event,
   type EventQuestionAsked,
   type Part,
+  type PermissionRequest,
   type SessionStatus,
   type ToolPart,
 } from "@opencode-ai/sdk/v2";
@@ -254,35 +255,8 @@ export async function openSession(opts: {
             } else {
               permissionAsks++;
               opts.onEvent(event, rounds.size); // logged now: the answer may be a long way off
-              const call = props.tool?.callID ? toolInputs.get(props.tool.callID) : undefined;
-              const description =
-                typeof call?.description === "string" && call.description.trim()
-                  ? call.description
-                  : typeof metadata?.description === "string" && metadata.description.trim()
-                    ? metadata.description
-                    : undefined;
-              const stepTitle = opts.step?.title.trim().slice(0, 60);
-              const title =
-                description ??
-                (opts.step
-                  ? `${prefix} for step ${opts.step.label}: ${stepTitle}`
-                  : (command.split(/\s+/)[0] ?? command));
-              const messageID = props.tool?.messageID;
-              const whyText = [...current.texts.values()]
-                .filter((t) => t.messageID === messageID)
-                .map((t) => t.text)
-                .join(" ")
-                .replace(/\s+/g, " ")
-                .trim();
-              const reasoningText = whyText
-                ? ""
-                : [...current.reasonings.values()]
-                    .filter((t) => t.messageID === messageID)
-                    .map((t) => t.text)
-                    .join(" ")
-                    .replace(/\s+/g, " ")
-                    .trim();
-              const why = (whyText || reasoningText).slice(0, 200) || "the worker gave no reason";
+              const title = askTitle(props, command, prefix);
+              const why = askReason(current, props.tool?.messageID);
               const stopped = untilAborted(signal);
               const answer = await Promise.race([
                 opts.onPermission({
@@ -338,6 +312,18 @@ export async function openSession(opts: {
       clearTimeout(backstop);
       abort.abort();
     }
+  }
+
+  /** An ask's title: the bash call's own description, else the request's, else one naming the plan step, else the program. */
+  function askTitle(request: PermissionRequest, command: string, prefix: string): string {
+    const callID = request.tool?.callID;
+    const call = callID ? toolInputs.get(callID) : undefined;
+    const metadata = request.metadata as Record<string, unknown> | undefined;
+    const description = nonBlank(call?.description) ?? nonBlank(metadata?.description);
+    if (description !== undefined) return description;
+    if (!opts.step) return command.split(/\s+/)[0] ?? command;
+    const stepTitle = opts.step.title.trim().slice(0, 60);
+    return `${prefix} for step ${opts.step.label}: ${stepTitle}`;
   }
 
   /** Puts the worker's questions to Claude, or rejects them when they have nowhere to go or the session stopped. */
@@ -541,6 +527,23 @@ export async function runSession(
   const session = await openSession(opts);
   const result = await session.run(opts.prompt);
   return { ...session.totals(), ...result };
+}
+
+/** Why the worker asks: the asking message's text, else its reasoning, cut to 200 characters; else a placeholder. */
+function askReason(current: PromptState, messageID: string | undefined): string {
+  const reason =
+    messageText(current.texts, messageID) || messageText(current.reasonings, messageID);
+  return reason.slice(0, 200) || "the worker gave no reason";
+}
+
+/** The parts of one message joined on one line, runs of whitespace made single spaces. */
+function messageText(parts: Map<string, PartText>, messageID: string | undefined): string {
+  return [...parts.values()]
+    .filter((part) => part.messageID === messageID)
+    .map((part) => part.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** Resolves with undefined when `signal` aborts, at once if it already has; without a signal, never. */
