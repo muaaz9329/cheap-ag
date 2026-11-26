@@ -1,11 +1,15 @@
 import { describe, expect, test } from "vitest";
 import {
+  failBlock,
+  NO_SUMMARY,
+  permissionOptions,
   renderBatch,
   renderConsent,
   renderJob,
   renderResearch,
   type BatchRecord,
   type JobRecord,
+  type PermissionBlock,
 } from "../src/report.js";
 
 // Golden renderings (spec D5–D7, D9). Where the D5 text conflicts with D3's written rules, D3 wins and the comment says how.
@@ -1121,5 +1125,488 @@ describe("D9 line rules", () => {
     expect(text).toContain("\n  - one two\n");
     expect(text).toContain("\n  indented by a tab\n");
     expect(text).not.toContain("\t");
+  });
+});
+
+// Pins exact blocks for the paths the goldens above leave open, so a refactor of src/report.ts cannot move a byte.
+describe("pinned blocks", () => {
+  const batch = (b: Partial<BatchRecord>): BatchRecord => ({
+    format: "cheapag/1",
+    batch: "b4k1x",
+    groups: ["1"],
+    notes: [],
+    integration: "pending",
+    jobs: [],
+    ...b,
+  });
+  const NEXT_PERMISSION =
+    "next: ask the user with AskUserQuestion, then reply(job, letter). Never pick for them.";
+  const ALWAYS_SED = "b) always allow `sed` in this repo (adds it to cheapag.json allow_commands)";
+
+  test("failBlock, permissionOptions and NO_SUMMARY", () => {
+    expect(failBlock("bad input")).toBe("FAIL reason: bad input");
+    expect(permissionOptions("npm run")).toEqual([
+      "allow once",
+      "always allow `npm run` in this repo (adds it to cheapag.json allow_commands)",
+      "refuse",
+    ]);
+    expect(NO_SUMMARY).toBe("(worker gave no summary)");
+  });
+
+  test("a permission block: one-line fields, b) unless always is false, same text compacted or over budget", () => {
+    const blocked = (extra: Partial<PermissionBlock> = {}) =>
+      job({
+        job: "jp1",
+        status: "BLOCKED",
+        steps: "2",
+        usage: { turns: 3, costUsd: 0.001 },
+        summary: "ignored",
+        changed: [ch("M", "a.ts", 1)],
+        question: { text: "ignored", options: ["x"] },
+        permission: {
+          title: " Peek\n at f ",
+          command: "sed -n 1,2p f",
+          why: "need\tto see it",
+          prefix: "sed",
+          ...extra,
+        },
+      });
+    const head = [
+      "BLOCKED jp1 step=2 permission",
+      "title: Peek at f",
+      "command: sed -n 1,2p f",
+      "why: need  to see it",
+      "a) allow once",
+    ];
+    const withAlways = block(...head, ALWAYS_SED, "c) refuse", NEXT_PERMISSION);
+    expect(renderJob(blocked())).toBe(withAlways);
+    expect(renderJob(blocked({ always: true }))).toBe(withAlways);
+    expect(renderJob(blocked(), 1, true)).toBe(withAlways);
+    expect(renderJob(blocked({ always: false }))).toBe(
+      block(...head, "c) refuse", NEXT_PERMISSION),
+    );
+    const long = renderJob(blocked({ command: "x".repeat(300) })).split("\n")[2];
+    expect(long).toBe(`command: ${"x".repeat(91)}…${"x".repeat(99)}`);
+    const ok = job({ job: "j1", status: "OK", permission: blocked().permission });
+    expect(renderJob(ok)).toBe(
+      block("OK j1 step=1 files=0 +0/-0 turns=0 cost=$0.000", "log: .cheapag/jobs/j1/"),
+    );
+  });
+
+  test("headline: repro= and test= come last; any redo shows redo=1; check= without tests=", () => {
+    const headline = (extra: Partial<JobRecord>) =>
+      renderJob(job({ job: "j1", status: "OK", ...extra })).split("\n")[0];
+    expect(
+      headline({
+        tests: "pass",
+        usage: { turns: 1, costUsd: 0.0004 },
+        selfFix: 1,
+        models: { requested: FLASH, final: "x/pro", escalated: true },
+        redo: 2,
+        billing: "zen",
+        repro: "fail→pass",
+        test: "test/a.test.ts",
+      }),
+    ).toBe(
+      "OK j1 step=1 files=0 +0/-0 tests=pass turns=1 cost=$0.000 fix=1 esc=1 model=x/pro redo=1 billing=zen repro=fail→pass test=test/a.test.ts",
+    );
+    expect(headline({ redo: null })).toBe("OK j1 step=1 files=0 +0/-0 turns=0 cost=$0.000");
+    expect(headline({ redo: 0 })).toBe("OK j1 step=1 files=0 +0/-0 turns=0 cost=$0.000");
+    expect(headline({ status: "FAIL", check: "env" })).toBe(
+      "FAIL j1 step=1 files=0 +0/-0 check=env turns=0 cost=$0.000",
+    );
+  });
+
+  test("OK with a cleanup error: counts only when non-zero, a risk clipped at 120, no worktree: line", () => {
+    expect(
+      renderJob(
+        job({
+          job: "j1c2d",
+          status: "OK",
+          landed: true,
+          tests: "pass",
+          usage: { turns: 4, costUsd: 0.002 },
+          summary: "renamed\tthe helper",
+          changed: [
+            ch("D", "src/old.ts", 0, 12),
+            ch("A", "src/empty.ts", 0),
+            ch("R", "src/new.ts", 5, 1),
+          ],
+          risks: [`r${"k".repeat(129)}`],
+          cleanupError: "EBUSY: resource busy\nor locked",
+          worktree: ".cheapag/worktrees/j1c2d",
+        }),
+      ),
+    ).toBe(
+      block(
+        "OK j1c2d step=1 files=3 +5/-13 tests=pass turns=4 cost=$0.002",
+        "summary: renamed  the helper",
+        "changed:",
+        "  D src/old.ts -12",
+        "  A src/empty.ts",
+        "  R src/new.ts +5 -1",
+        "risks:",
+        `  - r${"k".repeat(118)}…`,
+        "cleanup error: EBUSY: resource busy or locked (the change landed; only its worktree folder was left behind)",
+        "log: .cheapag/jobs/j1c2d/",
+      ),
+    );
+  });
+
+  test("TIMEOUT with no summary: found: leads, before changed:", () => {
+    expect(
+      renderJob(
+        job({
+          job: "jt1",
+          status: "TIMEOUT",
+          steps: "3",
+          usage: { turns: 30, costUsd: 0.01 },
+          summary: NO_SUMMARY,
+          found: "a.ts:12 loops forever",
+          changed: [ch("M", "a.ts", 2, 1)],
+          reason: "20-minute job cap hit",
+          missing: ["the fix"],
+          worktree: ".cheapag/worktrees/jt1",
+        }),
+      ),
+    ).toBe(
+      block(
+        "TIMEOUT jt1 step=3 files=1 +2/-1 turns=30 cost=$0.010",
+        "found: a.ts:12 loops forever",
+        "changed:",
+        "  M a.ts +2 -1",
+        "reason: 20-minute job cap hit",
+        "missing:",
+        "  - the fix",
+        "worktree: .cheapag/worktrees/jt1/",
+        "log: .cheapag/jobs/jt1/",
+      ),
+    );
+  });
+
+  test("BUDGET with a summary and found:", () => {
+    expect(
+      renderJob(
+        job({
+          job: "jb1",
+          status: "BUDGET",
+          usage: { turns: 2, costUsd: 0.001 },
+          summary: "half done",
+          found: "b.ts:3 is the culprit",
+          reason: "Go 5h window exhausted (resets ~16:40)",
+          worktree: ".cheapag/worktrees/jb1",
+        }),
+      ),
+    ).toBe(
+      block(
+        "BUDGET jb1 step=1 files=0 +0/-0 turns=2 cost=$0.001",
+        "summary: half done",
+        "found: b.ts:3 is the culprit",
+        "reason: Go 5h window exhausted (resets ~16:40)",
+        "worktree: .cheapag/worktrees/jb1/",
+        "log: .cheapag/jobs/jb1/",
+      ),
+    );
+  });
+
+  test("PROVIDER: found leads, next: sits between reason: and worktree:, missing is not its section", () => {
+    expect(
+      renderJob(
+        job({
+          job: "jp2",
+          status: "PROVIDER",
+          usage: { turns: 1, costUsd: 0 },
+          summary: NO_SUMMARY,
+          found: "c.ts:9",
+          reason: "x is failing",
+          missing: ["ignored"],
+          worktree: ".cheapag/worktrees/jp2",
+        }),
+      ),
+    ).toBe(
+      block(
+        "PROVIDER jp2 step=1 files=0 +0/-0 turns=1 cost=$0.000",
+        "found: c.ts:9",
+        "reason: x is failing",
+        "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)",
+        "worktree: .cheapag/worktrees/jp2/",
+        "log: .cheapag/jobs/jp2/",
+      ),
+    );
+  });
+
+  test("CANCELLED has no found section: the no-summary line stays and found: is dropped", () => {
+    expect(
+      renderJob(
+        job({
+          job: "jc1",
+          status: "CANCELLED",
+          summary: NO_SUMMARY,
+          found: "d.ts",
+          reason: "stopped",
+        }),
+      ),
+    ).toBe(
+      block(
+        "CANCELLED jc1 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "summary: (worker gave no summary)",
+        "reason: stopped",
+        "log: .cheapag/jobs/jc1/",
+      ),
+    );
+  });
+
+  test("questions: at most 4 options, tabs become 2 spaces, an empty questions list hides question, only BLOCKED shows it", () => {
+    expect(
+      renderJob(
+        job({
+          job: "jq1",
+          status: "BLOCKED",
+          question: { text: "pick\tone", options: ["1", "2", "3", "4", "5"] },
+        }),
+      ),
+    ).toBe(
+      block(
+        "BLOCKED jq1 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "question: pick  one",
+        "options:",
+        "  a) 1",
+        "  b) 2",
+        "  c) 3",
+        "  d) 4",
+        "log: .cheapag/jobs/jq1/",
+      ),
+    );
+    expect(
+      renderJob(
+        job({
+          job: "jq2",
+          status: "BLOCKED",
+          question: { text: "hidden", options: [] },
+          questions: [],
+        }),
+      ),
+    ).toBe(
+      block("BLOCKED jq2 step=1 files=0 +0/-0 turns=0 cost=$0.000", "log: .cheapag/jobs/jq2/"),
+    );
+    expect(
+      renderJob(job({ job: "jq3", status: "FAIL", question: { text: "hidden", options: ["x"] } })),
+    ).toBe(block("FAIL jq3 step=1 files=0 +0/-0 turns=0 cost=$0.000", "log: .cheapag/jobs/jq3/"));
+  });
+
+  test("a found: note that is one word over 200 chars: the label stands alone, the word is middle-elided", () => {
+    expect(renderJob(job({ job: "jf1", status: "PARTIAL", found: "f".repeat(300) }))).toBe(
+      block(
+        "PARTIAL jf1 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "found:",
+        `${"f".repeat(100)}…${"f".repeat(99)}`,
+        "log: .cheapag/jobs/jf1/",
+      ),
+    );
+  });
+
+  test("an env error cut to the 12-line floor keeps the environment line first and the count last", () => {
+    const error = [
+      "exit 127: not found",
+      ...Array.from({ length: 24 }, (_, i) => `  line ${i} ${"z".repeat(150)}`),
+    ];
+    expect(renderJob(job({ job: "je1", status: "FAIL", check: "env", error }), 100)).toBe(
+      block(
+        "FAIL je1 step=1 files=0 +0/-0 check=env turns=0 cost=$0.000",
+        "error: environment: the check could not run (exit 127: not found)",
+        ...error.slice(1, 11),
+        "  … +14 more lines (see log)",
+        "log: .cheapag/jobs/je1/",
+      ),
+    );
+  });
+
+  test("research: every section in order, status=partial, one-line repro and dead ends, notes word-wrapped", () => {
+    const words = Array.from({ length: 60 }, (_, i) => `w${String(i).padStart(2, "0")}`);
+    expect(
+      renderResearch({
+        format: "cheapag/1",
+        job: "r9",
+        status: "ANSWER",
+        partial: true,
+        filesRead: 4,
+        usage: { turns: 6, costUsd: 0.002 },
+        models: { requested: "a/flash", final: "a/flash" },
+        answer: `  first line\n\n    indented\tline  \n${words.join(" ")}\n`,
+        refs: [
+          { path: "a.ts", start: 3, end: 3 },
+          { path: "b.ts", start: 1, end: 9 },
+        ],
+        repro: "`npm test`\n→ 1 failed",
+        deadEnds: "not the cache\nnot the router",
+        confidence: "medium",
+        reason: "turn cap",
+        cleanupError: "EBUSY\nlocked",
+        worktree: ".cheapag/worktrees/r9",
+        unlanded: ["j1", "j2", "j3"],
+      }),
+    ).toBe(
+      block(
+        "ANSWER r9 files_read=4 turns=6 cost=$0.002 status=partial",
+        "files: a.ts:3, b.ts:1-9",
+        "repro: `npm test` → 1 failed",
+        "dead ends: not the cache not the router",
+        "notes:",
+        "first line",
+        "",
+        "indented  line",
+        words.slice(0, 50).join(" "),
+        words.slice(50).join(" "),
+        "confidence: medium",
+        "reason: turn cap",
+        "cleanup error: EBUSY locked",
+        "worktree: .cheapag/worktrees/r9/",
+        "note: 3 jobs not yet landed (j1, j2, j3); their changes are not visible to research",
+        "log: .cheapag/jobs/r9/",
+      ),
+    );
+    expect(
+      renderResearch({
+        format: "cheapag/1",
+        job: "r8",
+        status: "UNSURE",
+        filesRead: 0,
+        usage: { turns: 1, costUsd: 0 },
+        answer: "  \n ",
+        refs: [],
+        unlanded: [],
+      }),
+    ).toBe(block("UNSURE r8 files_read=0 turns=1 cost=$0.000", "log: .cheapag/jobs/r8/"));
+  });
+
+  test("batch: compacted PARTIAL/FAIL/OK blocks, full CONFLICT/TIMEOUT/BLOCKED blocks, notes joined, reply then wait", () => {
+    const jobs = [
+      job({
+        job: "j1",
+        status: "OK",
+        landed: true,
+        summary: "done",
+        changed: [ch("M", "a.ts", 1)],
+        cleanupError: "EBUSY",
+      }),
+      job({
+        job: "j2",
+        status: "PARTIAL",
+        summary: "half",
+        found: "b.ts:4",
+        missing: ["the rest"],
+        changed: [ch("M", "b.ts", 2)],
+        worktree: ".cheapag/worktrees/j2",
+      }),
+      job({
+        job: "j3",
+        status: "FAIL",
+        summary: NO_SUMMARY,
+        error: ["`npm test`"],
+        found: "c.ts:1",
+        reason: "turn cap",
+        worktree: ".cheapag/worktrees/j3",
+      }),
+      job({
+        job: "j4",
+        status: "TIMEOUT",
+        summary: "slow",
+        reason: "cap hit",
+        worktree: ".cheapag/worktrees/j4",
+      }),
+      job({
+        job: "j5",
+        status: "CONFLICT",
+        conflict: ["a.ts (also changed by j1)"],
+        worktree: ".cheapag/worktrees/j5",
+      }),
+      job({
+        job: "j6",
+        status: "BLOCKED",
+        question: { text: "which one?", options: ["this", "that"] },
+      }),
+    ];
+    const groups = ["1", "2", "3", "4", "5", "6"];
+    expect(renderBatch(batch({ batch: "b1", groups, notes: ["note one", "note two"] }), jobs)).toBe(
+      block(
+        "BATCH b1 groups=6 BLOCKED=1 CONFLICT=1 FAIL=1 TIMEOUT=1 PARTIAL=1 OK=1 landed=1 integration=pending cost=$0.000",
+        "note: note one; note two",
+        "BLOCKED j6 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "question: which one?",
+        "options:",
+        "  a) this",
+        "  b) that",
+        "log: .cheapag/jobs/j6/",
+        "",
+        "CONFLICT j5 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "conflict:",
+        "  a.ts (also changed by j1)",
+        "worktree: .cheapag/worktrees/j5/",
+        "log: .cheapag/jobs/j5/",
+        "",
+        "FAIL j3 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "error: `npm test`",
+        "found: c.ts:1",
+        "reason: turn cap",
+        "worktree: .cheapag/worktrees/j3/",
+        "",
+        "TIMEOUT j4 step=1 files=0 +0/-0 turns=0 cost=$0.000",
+        "summary: slow",
+        "reason: cap hit",
+        "worktree: .cheapag/worktrees/j4/",
+        "log: .cheapag/jobs/j4/",
+        "",
+        "PARTIAL j2 step=1 files=1 +2/-0 turns=0 cost=$0.000",
+        "found: b.ts:4",
+        "missing:",
+        "  - the rest",
+        "worktree: .cheapag/worktrees/j2/",
+        "",
+        "OK j1 step=1 files=1 +1/-0 turns=0 cost=$0.000",
+        "cleanup error: EBUSY (the change landed; only its worktree folder was left behind)",
+        "full blocks: jobs show j3, j2, j1",
+        'next: reply(job="j6", ...) then jobs(action="wait", job="b1")',
+      ),
+    );
+  });
+
+  test("batch: a RUNNING fix job and a RUNNING group job are separate chunks; no jobs gives the header alone", () => {
+    expect(
+      renderBatch(
+        batch({ integration: "running", fix: "j9" }),
+        [job({ job: "j1", status: "RUNNING", usage: { turns: 2, costUsd: 0.001 } })],
+        job({ job: "j9", status: "RUNNING", usage: { turns: 1, costUsd: 0.002 } }),
+      ),
+    ).toBe(
+      block(
+        "BATCH b4k1x groups=1 RUNNING=1 landed=0 integration=running cost=$0.003",
+        "RUNNING j9 step=1 turns=1",
+        "",
+        "RUNNING j1 step=1 turns=2",
+        'next: jobs(action="wait", job="b4k1x")',
+      ),
+    );
+    expect(renderBatch(batch({ groups: [] }), [])).toBe(
+      "BATCH b4k1x groups=0 landed=0 integration=pending cost=$0.000",
+    );
+  });
+
+  test("header and consent lines over 200 chars are middle-elided", () => {
+    const head = renderBatch(batch({ notes: ["n".repeat(300)] }), []).split("\n")[1];
+    expect(head).toBe(`note: ${"n".repeat(94)}…${"n".repeat(99)}`);
+    const consent = renderConsent({
+      repo: "r",
+      send: "s".repeat(300),
+      retention: "x",
+      approve: "y",
+    });
+    expect(consent).toBe(
+      block(
+        "CONSENT repo=r",
+        `send: ${"s".repeat(94)}…${"s".repeat(99)}`,
+        "retention: x",
+        "approve: y",
+      ),
+    );
   });
 });
