@@ -111,11 +111,16 @@ export function routeMoved(root: string, consent: Consent) {
 
 /** `preset=` for ping and status: the preset the effective `models` here match (the repo's config too, inside one). */
 export function presetHere(provider: Provider["provider"], cwd = process.cwd()) {
-  let root = cwd;
+  return presetOf(provider, configuredModels(configRoot(cwd), provider));
+}
+
+/** The root of the repo `cwd` is in, or `cwd` itself outside a repo. */
+function configRoot(cwd: string) {
   try {
-    root = projectRoot(root);
-  } catch {} // outside a repo only the user's config applies
-  return presetOf(provider, configuredModels(root, provider));
+    return projectRoot(cwd);
+  } catch {
+    return cwd; // outside a repo only the user's config applies
+  }
 }
 
 /**
