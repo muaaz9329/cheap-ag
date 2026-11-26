@@ -97,34 +97,12 @@ export async function research(
     release(); // the session is done: a config change may reboot OpenCode now
   }
 
-  const recovered =
-    run.stopped?.cap === "turns" && run.partialText
-      ? verifyRepro(parseAnswer(run.partialText, root, scope, maxWords), run.ran)
-      : undefined;
-  const none = (status: Answer["status"]): Answer => ({ status, answer: "", refs: [] });
-  let answer: Answer = recovered
-    ? { ...recovered, partial: true }
-    : run.stopped
-      ? none(run.stopped.status)
-      : run.providerDown
-        ? none("FAIL")
-        : run.budget
-          ? none("BUDGET")
-          : run.error
-            ? none("FAIL")
-            : (verifyRepro(parseAnswer(run.text, root, scope, maxWords), run.ran) ?? none("FAIL"));
+  const parse = (text: string) => verifyRepro(parseAnswer(text, root, scope, maxWords), run.ran);
+  let answer = workerAnswer(run, parse);
   // a path resolved by basename says so in the notes, so Claude learns the entry was approximate
   if (resolvedPaths.length)
     answer = { ...answer, answer: [...resolvedPaths, answer.answer].filter(Boolean).join("\n") };
-  const reason =
-    run.stopped?.reason ??
-    (run.providerDown ? `provider down: ${run.providerDown}` : undefined) ??
-    run.budget ??
-    (run.error
-      ? `worker error: ${run.error}`
-      : answer.status === "FAIL"
-        ? "the research worker gave no answer"
-        : undefined);
+  const reason = failureReason(run, answer.status);
   const final = models.current;
   const record = {
     format: "cheapag/1" as const,
@@ -250,6 +228,39 @@ async function askWorker(job: WorkerJob, run: WorkerRun, directory: string) {
       // the ledger only steers later escalations: never fail an answer over it
     }
   }
+}
+
+/** The answer of a run that gave none. */
+function noAnswer(status: Answer["status"]): Answer {
+  return { status, answer: "", refs: [] };
+}
+
+/**
+ * The run's answer: what a turn-capped worker recovered, else the status its cap, provider, budget or error gives,
+ * else its parsed reply.
+ */
+function workerAnswer(run: WorkerRun, parse: (text: string) => Answer | undefined): Answer {
+  const turnCapped = run.stopped?.cap === "turns";
+  const recovered = turnCapped && run.partialText ? parse(run.partialText) : undefined;
+  if (recovered) return { ...recovered, partial: true };
+  if (run.stopped) return noAnswer(run.stopped.status);
+  if (run.providerDown) return noAnswer("FAIL");
+  if (run.budget) return noAnswer("BUDGET");
+  if (run.error) return noAnswer("FAIL");
+  return parse(run.text) ?? noAnswer("FAIL");
+}
+
+/** The record's reason: the cap that stopped the run, a provider down, its budget, or the error or missing answer. */
+function failureReason(run: WorkerRun, status: Answer["status"]): string | undefined {
+  const providerReason = run.providerDown ? `provider down: ${run.providerDown}` : undefined;
+  return run.stopped?.reason ?? providerReason ?? run.budget ?? errorReason(run.error, status);
+}
+
+/** A worker error, else "no answer" for a FAIL with nothing else to blame. */
+function errorReason(error: string | undefined, status: Answer["status"]) {
+  if (error) return `worker error: ${error}`;
+  if (status === "FAIL") return "the research worker gave no answer";
+  return undefined;
 }
 
 /** The worker's read-only ruleset, allowing the project's own scripts and its test command. */
