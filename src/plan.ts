@@ -15,53 +15,14 @@ export const PLAN_FORMAT =
 /** A step while it is parsed: the lines of its heading and of its last `do:` and `files:`, for error messages. */
 type DraftStep = PlanStep & { line: number; doLine?: number; filesLine?: number };
 
+/** What parsePlan has read so far. `field` is the key that an indented line continues. */
+type PlanDraft = { title?: string; context: string[]; steps: DraftStep[]; field?: string };
+
 /** Parses a plan; throws with a precise, line-numbered reason when it does not follow the format. */
 export function parsePlan(source: string): Plan {
-  const lines = source.split(/\r?\n/);
-  let title: string | undefined;
-  const context: string[] = [];
-  const steps: DraftStep[] = [];
-  let field: string | undefined;
-
-  lines.forEach((line, i) => {
-    const at = `line ${i + 1}`;
-    if (line.startsWith("# ")) {
-      if (title !== undefined) throw new Error(`${at}: a plan has exactly one H1 title`);
-      title = line.slice(2).trim();
-      return;
-    }
-    if (line.startsWith("## ")) {
-      if (title === undefined) throw new Error(`${at}: step before the plan's H1 title`);
-      // s1, step2, step-2 and plain 3 all normalise to the digits (plus an optional letter, like 3a)
-      const m = line.match(/^## +(?:step-?|s)?(\d+[a-z]?)(?: +(.*))?$/);
-      if (!m)
-        throw new Error(
-          `${at}: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")`,
-        );
-      if (steps.some((s) => s.id === m[1])) throw new Error(`${at}: duplicate step id ${m[1]}`);
-      steps.push({ id: m[1], title: (m[2] ?? "").trim(), fields: {}, text: line, line: i + 1 });
-      field = undefined;
-      return;
-    }
-    const step = steps.at(-1);
-    if (!step) {
-      if (title !== undefined && line.trim()) context.push(line);
-      return;
-    }
-    step.text += `\n${line}`;
-    const kv = line.match(/^([a-z][a-z-]*):\s?(.*)$/);
-    if (kv) {
-      field = kv[1];
-      if (field === "do") step.doLine = i + 1;
-      if (field === "files") step.filesLine = i + 1;
-      step.fields[field] = kv[2].trim();
-    } else if (/^ {2,}\S/.test(line) && field) {
-      step.fields[field] += `\n${line.trim()}`;
-    } else if (line.trim()) {
-      field = undefined; // free prose inside a step is kept in its text, not a field
-    }
-  });
-
+  const draft: PlanDraft = { context: [], steps: [] };
+  source.split(/\r?\n/).forEach((line, i) => readLine(draft, line, i + 1));
+  const { title, context, steps } = draft;
   if (title === undefined) throw new Error('plan has no H1 title ("# <title>")');
   if (!steps.length) throw new Error('plan has no steps ("## <id> <title>")');
   for (const step of steps) checkStep(step);
@@ -70,6 +31,59 @@ export function parsePlan(source: string): Plan {
     context: context.join("\n").trim(),
     steps: steps.map(({ line: _line, ...step }) => ({ ...step, text: step.text.trim() })),
   };
+}
+
+/** Reads one line into the draft: the H1 title, a step heading, a line of the current step, or context. */
+function readLine(draft: PlanDraft, line: string, lineNumber: number): void {
+  if (line.startsWith("# ")) readTitle(draft, line, lineNumber);
+  else if (line.startsWith("## ")) readStepHeading(draft, line, lineNumber);
+  else if (draft.steps.length) readStepLine(draft, line, lineNumber);
+  else if (draft.title !== undefined && line.trim()) draft.context.push(line);
+}
+
+function readTitle(draft: PlanDraft, line: string, lineNumber: number): void {
+  if (draft.title !== undefined)
+    throw new Error(`line ${lineNumber}: a plan has exactly one H1 title`);
+  draft.title = line.slice(2).trim();
+}
+
+function readStepHeading(draft: PlanDraft, line: string, lineNumber: number): void {
+  if (draft.title === undefined)
+    throw new Error(`line ${lineNumber}: step before the plan's H1 title`);
+  // s1, step2, step-2 and plain 3 all normalise to the digits (plus an optional letter, like 3a)
+  const m = line.match(/^## +(?:step-?|s)?(\d+[a-z]?)(?: +(.*))?$/);
+  if (!m)
+    throw new Error(
+      `line ${lineNumber}: step heading needs an id (e.g. "## 3", "## s1", "## step-2", optionally with a letter like "3a")`,
+    );
+  if (draft.steps.some((s) => s.id === m[1]))
+    throw new Error(`line ${lineNumber}: duplicate step id ${m[1]}`);
+  draft.steps.push({
+    id: m[1],
+    title: (m[2] ?? "").trim(),
+    fields: {},
+    text: line,
+    line: lineNumber,
+  });
+  draft.field = undefined;
+}
+
+/** Adds a line to the last step: a `key:` line starts a field and an indented line continues it. */
+function readStepLine(draft: PlanDraft, line: string, lineNumber: number): void {
+  const step = draft.steps[draft.steps.length - 1];
+  step.text += `\n${line}`;
+  const kv = line.match(/^([a-z][a-z-]*):\s?(.*)$/);
+  if (kv) {
+    const field = kv[1];
+    draft.field = field;
+    if (field === "do") step.doLine = lineNumber;
+    if (field === "files") step.filesLine = lineNumber;
+    step.fields[field] = kv[2].trim();
+  } else if (/^ {2,}\S/.test(line) && draft.field) {
+    step.fields[draft.field] += `\n${line.trim()}`;
+  } else if (line.trim()) {
+    draft.field = undefined; // free prose inside a step is kept in its text, not a field
+  }
 }
 
 /** Throws the first way a step breaks the format. The order of the checks decides which error the user sees. */
