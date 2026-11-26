@@ -183,28 +183,33 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
+function isPositiveWholeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 /** The optional price and token limits a `local` and an `ollama` entry share; `entry` names it in the errors. */
-function parseLimits(entry: "local" | "ollama", raw: Record<string, unknown>, file: string) {
+function parseModelLimits(entry: "local" | "ollama", raw: Record<string, unknown>, file: string) {
   const { context, output } = raw;
-  const p = raw.price as { input?: unknown; output?: unknown } | undefined;
+  const price = raw.price as { input?: unknown; output?: unknown } | undefined;
+  const isUsdAmount = (amount: unknown) => typeof amount === "number" && amount >= 0;
   if (
-    p !== undefined &&
-    (typeof p !== "object" ||
-      p === null ||
-      ![p.input, p.output].every((v) => typeof v === "number" && v >= 0))
+    price !== undefined &&
+    (typeof price !== "object" || price === null || ![price.input, price.output].every(isUsdAmount))
   )
     throw new Error(
       `${file}: ${entry}.price must be { "input": <USD per million tokens>, "output": <USD per million tokens> }`,
     );
-  for (const [key, v] of [
+  for (const [key, tokens] of [
     ["context", context],
     ["output", output],
   ] as const) {
-    if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v <= 0))
+    if (tokens !== undefined && !isPositiveWholeNumber(tokens))
       throw new Error(`${file}: ${entry}.${key} must be a positive whole number of tokens`);
   }
   return {
-    ...(p !== undefined && { price: { input: p.input as number, output: p.output as number } }),
+    ...(price !== undefined && {
+      price: { input: price.input as number, output: price.output as number },
+    }),
     ...(context !== undefined && { context: context as number }),
     ...(output !== undefined && { output: output as number }),
   };
@@ -227,12 +232,12 @@ function parseLocal(local: unknown, file: string): LocalServer {
     );
   if (api_key_file !== undefined && api_key_env !== undefined)
     throw new Error(`${file}: local takes api_key_file or api_key_env, not both`);
-  const limits = parseLimits("local", local, file);
+  const limits = parseModelLimits("local", local, file);
   return {
     base_url: base_url.replace(/\/+$/, ""),
     model: model.trim(),
     ...(api_key_file !== undefined && { api_key_file }),
-    ...(api_key_env !== undefined && { api_key_env: api_key_env as string }),
+    ...(api_key_env !== undefined && { api_key_env }),
     ...limits,
   };
 }
@@ -259,11 +264,11 @@ function parseOllama(raw: unknown, file: string): OllamaConfig {
     throw new Error(
       `${file}: ollama.api_key_env must be an environment variable name, e.g. ${OLLAMA_KEY_ENV}`,
     );
-  const limits = parseLimits("ollama", raw, file);
+  const limits = parseModelLimits("ollama", raw, file);
   return {
     endpoint,
     base_url: base.replace(/\/+$/, ""),
-    ...(model !== undefined && { model: (model as string).trim() }),
+    ...(model !== undefined && { model: model.trim() }),
     ...(keyEnv !== undefined && { api_key_env: keyEnv }),
     ...limits,
   };
@@ -459,12 +464,8 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   ) {
     throw new Error(`${file}: on_blocked_command must be one of ${ON_BLOCKED_COMMAND.join(", ")}`);
   }
-  if (
-    guard_lines !== undefined &&
-    (typeof guard_lines !== "number" || !Number.isInteger(guard_lines) || guard_lines <= 0)
-  ) {
+  if (guard_lines !== undefined && !isPositiveWholeNumber(guard_lines))
     throw new Error(`${file}: guard_lines must be a positive whole number`);
-  }
   if (test_cmd !== undefined && !isNonEmptyString(test_cmd))
     throw new Error(`${file}: test_cmd must be a non-empty string`);
   // null is E4's written default: test_cmd
