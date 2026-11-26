@@ -32,9 +32,15 @@ function print(line: string) {
 /** `cheapag model`: choose the worker's main and fallback models, each with an effort, from the provider's own catalog. */
 export async function model(args: string[]): Promise<number> {
   const flags = parse(args);
-  if (typeof flags === "string") return (print(`✗ ${flags}\n${USAGE}`), 1);
+  if (typeof flags === "string") {
+    print(`✗ ${flags}\n${USAGE}`);
+    return 1;
+  }
   const provider = detectProvider();
-  if (!provider) return (print(`✗ no worker provider; run ${LOGIN_COMMAND} first`), 1);
+  if (!provider) {
+    print(`✗ no worker provider; run ${LOGIN_COMMAND} first`);
+    return 1;
+  }
   process.on("exit", () => stopOpencode(true));
   const dir = mkdtempSync(join(tmpdir(), "cheapag-model-"));
   try {
@@ -145,18 +151,21 @@ function save(provider: Provider, models: CatalogModel[], flags: Required<Flags>
   const label = providerLabel(provider.provider);
   const check = (id: string, wanted?: string) => {
     const found = models.find((m) => m.id === bare(provider, id));
-    if (!found)
-      return (
-        print(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`),
-        undefined
-      );
-    if (wanted !== undefined && !found.efforts.includes(wanted))
-      return (print(`✗ ${id} has no effort ${wanted}; it has: ${list(found.efforts)}`), undefined);
+    if (!found) {
+      print(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`);
+      return undefined;
+    }
+    if (wanted !== undefined && !found.efforts.includes(wanted)) {
+      print(`✗ ${id} has no effort ${wanted}; it has: ${list(found.efforts)}`);
+      return undefined;
+    }
     return found;
   };
   const none = flags.fallback === undefined || flags.fallback === "none";
-  if (none && flags.fallbackEffort !== undefined)
-    return (print("✗ --fallback-effort needs --fallback <id>"), 1);
+  if (none && flags.fallbackEffort !== undefined) {
+    print("✗ --fallback-effort needs --fallback <id>");
+    return 1;
+  }
   const main = check(flags.main, flags.effort);
   const fallback = none ? null : check(flags.fallback, flags.fallbackEffort);
   if (!main || fallback === undefined) return 1;
