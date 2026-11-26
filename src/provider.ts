@@ -16,13 +16,17 @@ import { projectRoot } from "./workspace.js";
 
 const USAGE = "usage: cheapag provider [<provider id>]";
 
+/** Redacts every line: a provider's error message can echo the key back. */
+function out(line = ""): void {
+  process.stdout.write(redact(line) + "\n");
+}
+
 /**
  * `cheapag provider`: lists the providers already set up, or switches the worker to one of them with no key prompt
  * (ticket 47). The switch moves this repo's consent to the new provider with the same mode and prints what it now
  * covers, then live-checks the new provider; a failed check puts the previous provider and consent back.
  */
 export async function provider(args: string[]): Promise<number> {
-  const out = (line = "") => process.stdout.write(redact(line) + "\n");
   const usable = usableProviders();
   const current = detectProvider()?.provider;
   if (!args.length || (args.length === 1 && args[0] === "--list")) {
