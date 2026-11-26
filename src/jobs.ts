@@ -1527,18 +1527,16 @@ function escalationEnd(stop: Stop | undefined, result: RunResult) {
  * reach them (a call's lookups go through `liveJob` for its root). `done` resolves to the final block, `settles()` at the
  * next settlement (BLOCKED or final); `block()` is the current block.
  */
-const running = new Map<
-  string,
-  {
-    root: string;
-    stop: (why: Stop) => void;
-    done: Promise<string>;
-    batch: string | null;
-    settles: () => Promise<void>;
-    block: () => string;
-    parked: () => boolean;
-  }
->();
+const running = new Map<string, LiveJob>();
+type LiveJob = {
+  root: string;
+  stop: (why: Stop) => void;
+  done: Promise<string>;
+  batch: string | null;
+  settles: () => Promise<void>;
+  block: () => string;
+  parked: () => boolean;
+};
 /** The live job `id` in `root`, if one runs there in this server. */
 const liveJob = (root: string, id: string) => {
   const live = running.get(id);
@@ -1555,38 +1553,53 @@ export type JobsInput = {
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
   const root = callRoot(input.root);
-  if (input.action === "list") {
-    const all = newestFirst(root);
-    if (!all.length) return "no jobs yet";
-    const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0] + blockedFor(r));
-    if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
-    return lines.join("\n");
-  }
+  if (input.action === "list") return listJobs(root);
   if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job))
     return waitBatch(root, input.job, progress, input.seconds);
-  // the id becomes a path: only well-formed ids get that far
-  if (!input.job || !JOB_ID.test(input.job))
+  if (!hasJobId(input))
     return failBlock(
       `jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`,
     );
   const live = liveJob(root, input.job);
-  if (input.action === "wait" && live) {
-    // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
-    if (!blocked.has(input.job)) {
-      if (input.seconds === undefined) await live.settles();
-      else {
-        const waited = await waitOrTimeout(live.settles(), input.seconds);
-        // settled just as the timer fired: the final block is more useful than a stale RUNNING line
-        if (waited.timedOut && running.has(input.job))
-          return runningCheckin(root, input.job, input.job, input.seconds);
-      }
-    }
-    return live.block();
-  }
+  if (input.action === "wait" && live) return waitLiveJob(root, input, live);
   if (input.action === "cancel" && live) {
     live.stop({ cap: "cancel", reason: "cancelled on request" });
     return live.done;
   }
+  return recordAnswer(root, input);
+}
+
+/** `jobs list`: the newest jobs' headlines, each BLOCKED one with how long it has waited. */
+function listJobs(root: string) {
+  const all = newestFirst(root);
+  if (!all.length) return "no jobs yet";
+  const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0] + blockedFor(r));
+  if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
+  return lines.join("\n");
+}
+
+/** Whether the call names a well-formed job id: the id becomes a path, so only those get that far. */
+function hasJobId(input: JobsInput): input is JobsInput & { job: string } {
+  return !!input.job && JOB_ID.test(input.job);
+}
+
+/** `jobs wait` on a job live in this process: its block at its next settlement, or a check-in once `seconds` run out. */
+async function waitLiveJob(root: string, input: JobsInput & { job: string }, live: LiveJob) {
+  // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
+  if (blocked.has(input.job)) return live.block();
+  if (input.seconds === undefined) {
+    await live.settles();
+    return live.block();
+  }
+  const waited = await waitOrTimeout(live.settles(), input.seconds);
+  // settled just as the timer fired: the final block is more useful than a stale RUNNING line
+  if (waited.timedOut && running.has(input.job))
+    return runningCheckin(root, input.job, input.job, input.seconds);
+  return live.block();
+}
+
+/** A job that is not live in this process, from its record: show, and wait on a finished job, give its block; the rest is refused. */
+function recordAnswer(root: string, input: JobsInput & { job: string }) {
   const dir = jobDir(root, input.job);
   const record = readRecord(dir);
   if (!record) return failBlock(`job ${input.job} not found`);
