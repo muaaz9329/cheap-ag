@@ -86,6 +86,168 @@ const ROOT = z
 /** Claude Code defers MCP tools behind tool search unless a tool's `_meta` asks to load upfront; delegate and research always load. */
 const ALWAYS_LOAD = { "anthropic/alwaysLoad": true };
 
+const PING_TOOL = {
+  description: "Check that the Cheap Agent server is running and report its version.",
+  inputSchema: { root: ROOT },
+};
+
+const DELEGATE_TOOL = {
+  description: `Make any code change: use this for every edit, including small, mechanical, "quick" or multi-file ones; those are exactly what the cheap worker is for, and your tokens cost the user far more than its. One call: task = what to change, which files, how to check. The worker edits an isolated worktree, runs the checks, and lands an OK result (uncommitted) in your working tree; read the result block instead of re-checking. ${DIFFICULTY_HINT} For multi-step work pass plan + steps instead of task. ${PLAN_FORMAT}`,
+  inputSchema: {
+    task: z
+      .string()
+      .max(4000)
+      .optional()
+      .describe(
+        "The change in plain words: what to change, which files, how to check. One step, no plan file needed",
+      ),
+    files: z
+      .string()
+      .optional()
+      .describe(
+        "With task: files or directories it touches, comma-separated (default: the whole repo)",
+      ),
+    done_when: z
+      .string()
+      .optional()
+      .describe(
+        "With task: how to check it; `backticked` shell commands must succeed (default: the repo's tests)",
+      ),
+    plan: z
+      .string()
+      .optional()
+      .describe("Instead of task: plan file path, relative to the repository root"),
+    steps: z
+      .string()
+      .optional()
+      .describe(
+        'With plan: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them',
+      ),
+    note: z
+      .string()
+      .max(300)
+      .optional()
+      .describe("Extra guidance for this run, at most 300 characters"),
+    brief: z
+      .string()
+      .max(6000)
+      .optional()
+      .describe(
+        "A research result to start from: its id (e.g. r5k2q) or its text. The worker gets it instead of re-exploring",
+      ),
+    source: z
+      .string()
+      .max(8000)
+      .optional()
+      .describe(
+        "The user's request or the issue text, verbatim, or the repo-relative path of a file holding it. The worker checks the task against it and reports where they disagree",
+      ),
+    difficulty: z
+      .enum(DIFFICULTIES)
+      .optional()
+      .describe(
+        "Time an engineer new to the code needs: easy < 15 min, medium < 1 h, hard > 1 h. Picks the worker model; a plan step's difficulty: wins",
+      ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        "A worker model to use instead of the default, e.g. after PROVIDER: an id the repo's consent allows, like qwen3.7-plus or opencode-go/qwen3.7-plus",
+      ),
+    wait: z
+      .boolean()
+      .optional()
+      .describe(
+        'Default true: return when every group settles or one is BLOCKED. false: return RUNNING at once; then jobs(action="wait")',
+      ),
+    root: ROOT,
+  },
+  _meta: ALWAYS_LOAD,
+};
+
+const RESEARCH_TOOL = {
+  description:
+    "Find and explain code in this repository: asks the cheap read-only research worker a question (it reads the working tree, uncommitted changes included). Returns a short answer with path:line refs and a confidence; verify low-confidence answers before acting.",
+  inputSchema: {
+    question: z
+      .string()
+      .min(1)
+      .max(2000)
+      .describe("The question, e.g. where is JWT validated and how are expiry errors mapped?"),
+    paths: z
+      .string()
+      .optional()
+      .describe(
+        'Comma-separated repo-relative paths to limit the search to, e.g. "src/auth, src/app.ts"',
+      ),
+    max_words: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(`Answer length cap in words; default 200, at most ${MAX_WORDS}`),
+    root: ROOT,
+  },
+  _meta: ALWAYS_LOAD,
+};
+
+const REPLY_TOOL = {
+  description:
+    "Answer a BLOCKED job's question and resume its worker in the same session. Returns the job's next result block (OK, FAIL, or BLOCKED again); for a job in a batch, the batch block at its next settlement.",
+  inputSchema: {
+    job: z.string().describe('The BLOCKED job id, e.g. "j6a90"'),
+    answer: z
+      .string()
+      .max(500)
+      .describe(
+        'An option letter (a-d), or a short free-text answer; for several numbered questions, one answer each: "1a, 2b" or "1a, 2: use redis"',
+      ),
+    root: ROOT,
+  },
+};
+
+const JOBS_TOOL = {
+  description:
+    "List jobs, show a job's last result block again, wait for a job or batch to settle, or cancel a running job (keeps its worktree).",
+  inputSchema: {
+    action: z
+      .enum(["list", "show", "wait", "cancel"])
+      .describe(
+        "list: one line per job; show: a job's last block; wait: block until the job's or batch's next result, then return it; cancel: stop a running job",
+      ),
+    job: z
+      .string()
+      .optional()
+      .describe("Job id, e.g. j7f3a (show, wait, cancel), or batch id, e.g. b4k1x (wait)"),
+    seconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(600)
+      .optional()
+      .describe(
+        "wait only: give up after this many seconds and return the job's latest progress if it is still running",
+      ),
+    root: ROOT,
+  },
+};
+
+const LAND_TOOL = {
+  description:
+    "Land or discard finished jobs that did not land (PARTIAL, FAIL, CONFLICT…). apply: 3-way applies a job's worktree changes to your working tree, uncommitted (a conflict leaves the tree untouched); discard: deletes its worktree. One line per job.",
+  inputSchema: {
+    job: z
+      .string()
+      .describe(
+        'Job id, or several comma-separated in landing order, e.g. "j3d55" or "j3d54,j3d55" (apply stops at the first that fails)',
+      ),
+    action: z
+      .enum(["apply", "discard"])
+      .describe("apply: land the job's changes; discard: delete its worktree"),
+    root: ROOT,
+  },
+};
+
 /**
  * The instructions the server publishes for a host, from this repo's config. Codex has no Sonnet subagent, so hard
  * tasks map to self and a sonnet take-over is self; its ask take-over asks in chat. A missing repo or bad config falls
@@ -239,215 +401,47 @@ export async function serve(host: "claude" | "codex" = "claude") {
     }
   };
 
-  server.registerTool(
-    "ping",
-    {
-      description: "Check that the Cheap Agent server is running and report its version.",
-      inputSchema: { root: ROOT },
-    },
-    ({ root }) => ping(root),
+  // tools/list shows the tools in this registration order
+  server.registerTool("ping", PING_TOOL, ({ root }) => ping(root));
+
+  server.registerTool("delegate", DELEGATE_TOOL, (input, extra) =>
+    inRepo(input.root, async (root, provider) => {
+      const req = { ...input, root, ...(host === "codex" && { wait: false }) };
+      return withWarnings(
+        withHint(await delegate(req, workerContext(provider, root, extra)), root),
+        provider,
+        root,
+      );
+    }),
   );
 
-  server.registerTool(
-    "delegate",
-    {
-      description: `Make any code change: use this for every edit, including small, mechanical, "quick" or multi-file ones; those are exactly what the cheap worker is for, and your tokens cost the user far more than its. One call: task = what to change, which files, how to check. The worker edits an isolated worktree, runs the checks, and lands an OK result (uncommitted) in your working tree; read the result block instead of re-checking. ${DIFFICULTY_HINT} For multi-step work pass plan + steps instead of task. ${PLAN_FORMAT}`,
-      inputSchema: {
-        task: z
-          .string()
-          .max(4000)
-          .optional()
-          .describe(
-            "The change in plain words: what to change, which files, how to check. One step, no plan file needed",
-          ),
-        files: z
-          .string()
-          .optional()
-          .describe(
-            "With task: files or directories it touches, comma-separated (default: the whole repo)",
-          ),
-        done_when: z
-          .string()
-          .optional()
-          .describe(
-            "With task: how to check it; `backticked` shell commands must succeed (default: the repo's tests)",
-          ),
-        plan: z
-          .string()
-          .optional()
-          .describe("Instead of task: plan file path, relative to the repository root"),
-        steps: z
-          .string()
-          .optional()
-          .describe(
-            'With plan: "3" one step, "3-5" a range in one job, "1-2,3,4" comma-separated groups, each its own job, run in parallel unless files overlap or needs: orders them',
-          ),
-        note: z
-          .string()
-          .max(300)
-          .optional()
-          .describe("Extra guidance for this run, at most 300 characters"),
-        brief: z
-          .string()
-          .max(6000)
-          .optional()
-          .describe(
-            "A research result to start from: its id (e.g. r5k2q) or its text. The worker gets it instead of re-exploring",
-          ),
-        source: z
-          .string()
-          .max(8000)
-          .optional()
-          .describe(
-            "The user's request or the issue text, verbatim, or the repo-relative path of a file holding it. The worker checks the task against it and reports where they disagree",
-          ),
-        difficulty: z
-          .enum(DIFFICULTIES)
-          .optional()
-          .describe(
-            "Time an engineer new to the code needs: easy < 15 min, medium < 1 h, hard > 1 h. Picks the worker model; a plan step's difficulty: wins",
-          ),
-        model: z
-          .string()
-          .optional()
-          .describe(
-            "A worker model to use instead of the default, e.g. after PROVIDER: an id the repo's consent allows, like qwen3.7-plus or opencode-go/qwen3.7-plus",
-          ),
-        wait: z
-          .boolean()
-          .optional()
-          .describe(
-            'Default true: return when every group settles or one is BLOCKED. false: return RUNNING at once; then jobs(action="wait")',
-          ),
-        root: ROOT,
-      },
-      _meta: ALWAYS_LOAD,
-    },
-    (input, extra) =>
-      inRepo(input.root, async (root, provider) => {
-        const req = { ...input, root, ...(host === "codex" && { wait: false }) };
-        return withWarnings(
-          withHint(await delegate(req, workerContext(provider, root, extra)), root),
-          provider,
-          root,
-        );
-      }),
-  );
-
-  server.registerTool(
-    "research",
-    {
-      description:
-        "Find and explain code in this repository: asks the cheap read-only research worker a question (it reads the working tree, uncommitted changes included). Returns a short answer with path:line refs and a confidence; verify low-confidence answers before acting.",
-      inputSchema: {
-        question: z
-          .string()
-          .min(1)
-          .max(2000)
-          .describe("The question, e.g. where is JWT validated and how are expiry errors mapped?"),
-        paths: z
-          .string()
-          .optional()
-          .describe(
-            'Comma-separated repo-relative paths to limit the search to, e.g. "src/auth, src/app.ts"',
-          ),
-        max_words: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe(`Answer length cap in words; default 200, at most ${MAX_WORDS}`),
-        root: ROOT,
-      },
-      _meta: ALWAYS_LOAD,
-    },
-    (input, extra) =>
-      inRepo(input.root, async (root, provider) =>
-        withWarnings(
-          withHint(await research({ ...input, root }, workerContext(provider, root, extra)), root),
-          provider,
-          root,
-        ),
+  server.registerTool("research", RESEARCH_TOOL, (input, extra) =>
+    inRepo(input.root, async (root, provider) =>
+      withWarnings(
+        withHint(await research({ ...input, root }, workerContext(provider, root, extra)), root),
+        provider,
+        root,
       ),
+    ),
   );
 
-  server.registerTool(
-    "reply",
-    {
-      description:
-        "Answer a BLOCKED job's question and resume its worker in the same session. Returns the job's next result block (OK, FAIL, or BLOCKED again); for a job in a batch, the batch block at its next settlement.",
-      inputSchema: {
-        job: z.string().describe('The BLOCKED job id, e.g. "j6a90"'),
-        answer: z
-          .string()
-          .max(500)
-          .describe(
-            'An option letter (a-d), or a short free-text answer; for several numbered questions, one answer each: "1a, 2b" or "1a, 2: use redis"',
-          ),
-        root: ROOT,
-      },
-    },
-    (input, extra) =>
-      inRepo(input.root, async (root) =>
-        withHint(await reply({ ...input, root }, progressTo(extra)), root),
-      ),
+  server.registerTool("reply", REPLY_TOOL, (input, extra) =>
+    inRepo(input.root, async (root) =>
+      withHint(await reply({ ...input, root }, progressTo(extra)), root),
+    ),
   );
 
-  server.registerTool(
-    "jobs",
-    {
-      description:
-        "List jobs, show a job's last result block again, wait for a job or batch to settle, or cancel a running job (keeps its worktree).",
-      inputSchema: {
-        action: z
-          .enum(["list", "show", "wait", "cancel"])
-          .describe(
-            "list: one line per job; show: a job's last block; wait: block until the job's or batch's next result, then return it; cancel: stop a running job",
-          ),
-        job: z
-          .string()
-          .optional()
-          .describe("Job id, e.g. j7f3a (show, wait, cancel), or batch id, e.g. b4k1x (wait)"),
-        seconds: z
-          .number()
-          .int()
-          .min(1)
-          .max(600)
-          .optional()
-          .describe(
-            "wait only: give up after this many seconds and return the job's latest progress if it is still running",
-          ),
-        root: ROOT,
-      },
-    },
-    (input, extra) =>
-      inRepo(input.root, async (root) =>
-        withHint(await jobs({ ...input, root }, progressTo(extra)), root),
-      ),
+  server.registerTool("jobs", JOBS_TOOL, (input, extra) =>
+    inRepo(input.root, async (root) =>
+      withHint(await jobs({ ...input, root }, progressTo(extra)), root),
+    ),
   );
 
-  server.registerTool(
-    "land",
-    {
-      description:
-        "Land or discard finished jobs that did not land (PARTIAL, FAIL, CONFLICT…). apply: 3-way applies a job's worktree changes to your working tree, uncommitted (a conflict leaves the tree untouched); discard: deletes its worktree. One line per job.",
-      inputSchema: {
-        job: z
-          .string()
-          .describe(
-            'Job id, or several comma-separated in landing order, e.g. "j3d55" or "j3d54,j3d55" (apply stops at the first that fails)',
-          ),
-        action: z
-          .enum(["apply", "discard"])
-          .describe("apply: land the job's changes; discard: delete its worktree"),
-        root: ROOT,
-      },
-    },
-    // landing a batch's last group runs its integration check, which may start a fix job
-    (input, extra) =>
-      inRepo(input.root, (root, provider) =>
-        landJobs({ ...input, root }, workerContext(provider, root, extra)),
-      ),
+  // landing a batch's last group runs its integration check, which may start a fix job
+  server.registerTool("land", LAND_TOOL, (input, extra) =>
+    inRepo(input.root, (root, provider) =>
+      landJobs({ ...input, root }, workerContext(provider, root, extra)),
+    ),
   );
 
   try {
