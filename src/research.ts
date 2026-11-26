@@ -6,6 +6,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { type Event, type ToolPart } from "@opencode-ai/sdk/v2";
 import { isAbsolute, basename, join, relative } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
@@ -15,7 +16,7 @@ import { holdOpencode, type Opencode } from "./opencode.js";
 import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
-import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
+import { chain, modelName, recordSpend, runRouted, type Chain, type Route } from "./routing.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
 import {
   callRoot,
@@ -55,60 +56,17 @@ export async function research(
     progress: (turns: number, message: string) => void;
   },
 ): Promise<string> {
-  const root = callRoot(input.root);
-  // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
-  const gate = consentGate(root, ctx.provider.provider);
-  if ("block" in gate) return gate.block;
-  const scope: string[] = [];
-  const resolvedPaths: string[] = [];
-  for (const path of (input.paths ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean)) {
-    const rel = normalisePath(relative(root, join(root, path)));
-    if (isAbsolute(path) || rel === ".." || rel.startsWith("../"))
-      return failBlock(`path ${path} must be inside the repository, relative to its root`);
-    if (existsSync(join(root, path))) {
-      if (rel) scope.push(rel); // "." is the whole repo: no scope
-      continue;
-    }
-    // a miss may just be the wrong directory: find the file by basename among the tracked files
-    const name = basename(path);
-    const matches = git(root, ["ls-files", "-z", "--", `*/${name}`, name])
-      .split("\0")
-      .filter(Boolean);
-    if (!matches.length) return failBlock(`path ${path} not found`);
-    if (matches.length > 1)
-      return failBlock(`path ${path} not found; did you mean: ${matches.join(", ")}`);
-    const found = normalisePath(matches[0]);
-    scope.push(found);
-    resolvedPaths.push(`${path} resolved to ${found}`);
-  }
-  let config: Config;
-  try {
-    config = loadConfig(root);
-  } catch (err) {
-    return failBlock((err as Error).message);
-  }
-  if (!hasCommits(root))
-    return failBlock(
-      `this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"`,
-    );
-  const { limits } = config;
-  const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
+  const checked = checkRequest(input, ctx.provider);
+  if ("block" in checked) return checked.block;
+  const { root, route, scope, resolvedPaths, config, maxWords } = checked;
 
-  const opencode = await ctx.opencode(gate.route);
+  const opencode = await ctx.opencode(route);
   const release = holdOpencode();
-  const { id, dir } = newResearch(root);
-  const write = (name: string, value: unknown) =>
-    writeFileSync(
-      join(dir, name),
-      redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"),
-    );
+  const { id, directory } = newResearch(root);
   // the research model, then its fallbacks, each only if the repo's allowlist kept it (src/consent.ts)
-  const models = chain(gate.route.research ?? gate.route.implement, gate.route.researchFallbacks);
+  const models = chain(route.research ?? route.implement, route.researchFallbacks);
   const startedAt = new Date();
-  write("request.json", {
+  writeLog(directory, "request.json", {
     ...input,
     scope,
     maxWords,
@@ -116,138 +74,20 @@ export async function research(
     startedAt,
   });
 
-  const prompt = [
-    `Question: ${input.question}`,
-    scope.length && `Scope: look only under ${scope.join(", ")}; cite only files there.`,
-    REPRO_RULE,
-    `Answer in at most ${maxWords} words.`,
-    // repeated here because real models skipped the agent prompt's format (seen live): without it a right answer is UNSURE
-    BRIEF_FORMAT,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const files = new Set<string>();
-  const ran: string[] = []; // the commands the worker actually ran: a claimed reproduction must be one of them
-  const spent = { turns: 0, calls: 0, costUsd: 0 };
-  let text = "";
-  let error: string | undefined;
-  let budget: string | undefined;
-  let providerDown: string | undefined;
-  // set from event callbacks: keep TS from narrowing it to undefined
-  let stopped = undefined as
-    { status: "FAIL" | "BUDGET"; reason: string; cap?: "turns" } | undefined;
-  let partialText = "";
-  let worktree: Worktree | undefined;
+  const prompt = researchPrompt(input.question, scope, maxWords);
+  let run: WorkerRun;
   try {
-    worktree = createWorktree(root, id, config.link_dirs);
-    const { scripts, exact } = projectScripts(worktree.path);
-    const permission = researchRuleset({
-      scripts,
-      exact: [...exact, ...(config.test_cmd ? checkAllows(config.test_cmd) : [])],
-      allowCommands: config.allow_commands,
-    });
-    const halt = new AbortController();
-    const stop = (why: NonNullable<typeof stopped>) => {
-      stopped ??= why;
-      if (why.cap !== "turns") halt.abort(); // a turn cap lets the turn end: partialAnswer() needs a live session (as src/jobs.ts)
-    };
-    const timer = setTimeout(
-      () => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }),
-      limits.max_minutes * 60_000,
-    );
-    const session: Session = await openSession({
-      opencode,
-      directory: worktree.path,
-      model: models.first,
-      agent: RESEARCH_AGENT,
-      permission,
-      signal: halt.signal,
-      onEvent: (event, turns) => {
-        appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
-        if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
-          const { tool, state } = event.properties.part;
-          if (state.status === "completed" && tool === "read")
-            files.add(String(state.input.filePath));
-          if (state.status === "completed" && tool === "bash")
-            // oxlint-disable-next-line typescript/no-base-to-string -- safer cast changes the text
-            ran.push(String(state.input.command ?? ""));
-          if (state.status === "completed" || state.status === "error") {
-            ctx.progress(turns, `turn ${turns}: ${tool}`);
-            if (turns >= limits.max_turns)
-              stop({
-                status: "FAIL",
-                reason: `turn cap (${limits.max_turns}) reached`,
-                cap: "turns",
-              });
-          }
-        }
-        if (
-          event.type === "message.updated" &&
-          session.totals().usage.costUsd >= limits.max_cost_usd
-        ) {
-          stop({
-            status: "BUDGET",
-            reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached`,
-          });
-        }
-      },
-    });
-    try {
-      // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
-      ({
-        text,
-        error,
-        budget,
-        provider: providerDown,
-      } = await runRouted(session, prompt, models, ctx.provider.provider));
-      // only a turn cap recovers: the worker read the code, so one no-tool prompt gets what it found (minute/cost caps are about spend)
-      if (stopped?.cap === "turns") partialText = await partialAnswer(session);
-    } finally {
-      clearTimeout(timer);
-      const totals = session.totals();
-      spent.turns = totals.turns;
-      spent.calls = totals.calls;
-      spent.costUsd = totals.usage.costUsd;
-      try {
-        recordSpend(totals.spend); // research draws on the same Go windows as jobs
-      } catch {
-        // the ledger only steers later escalations: never fail an answer over it
-      }
-    }
-  } catch (err) {
-    error = (err as Error).message;
+    run = await runWorker({ root, id, directory, config, opencode, models, prompt, ctx });
   } finally {
     release(); // the session is done: a config change may reboot OpenCode now
   }
 
-  const recovered =
-    stopped?.cap === "turns" && partialText
-      ? verifyRepro(parseAnswer(partialText, root, scope, maxWords), ran)
-      : undefined;
-  const none = (status: Answer["status"]): Answer => ({ status, answer: "", refs: [] });
-  let answer: Answer = recovered
-    ? { ...recovered, partial: true }
-    : stopped
-      ? none(stopped.status)
-      : providerDown
-        ? none("FAIL")
-        : budget
-          ? none("BUDGET")
-          : error
-            ? none("FAIL")
-            : (verifyRepro(parseAnswer(text, root, scope, maxWords), ran) ?? none("FAIL"));
+  const parse = (text: string) => verifyRepro(parseAnswer(text, root, scope, maxWords), run.ran);
+  let answer = workerAnswer(run, parse);
   // a path resolved by basename says so in the notes, so Claude learns the entry was approximate
   if (resolvedPaths.length)
     answer = { ...answer, answer: [...resolvedPaths, answer.answer].filter(Boolean).join("\n") };
-  const reason =
-    stopped?.reason ??
-    (providerDown ? `provider down: ${providerDown}` : undefined) ??
-    budget ??
-    (error
-      ? `worker error: ${error}`
-      : answer.status === "FAIL"
-        ? "the research worker gave no answer"
-        : undefined);
+  const reason = failureReason(run, answer.status);
   const final = models.current;
   const record = {
     format: "cheapag/1" as const,
@@ -258,35 +98,304 @@ export async function research(
     scope,
     ...answer,
     reason,
-    filesRead: files.size,
+    filesRead: run.files.size,
     unlanded: unlandedJobs(root),
     models: { requested: modelName(models.first), final: modelName(final) },
-    usage: spent,
+    usage: run.spent,
     timing: { startedAt, endedAt: new Date(), ms: Date.now() - startedAt.getTime() },
     cleanupError: undefined as string | undefined,
     worktree: undefined as string | undefined,
   };
-  let block = "";
-  const save = () => {
-    block = renderResearch(record);
-    // research.json, not result.json: `jobs list` reads only job records
-    write("research.json", record);
-    write("result.txt", block + "\n");
-  };
-  save();
-  if (worktree) {
+  let block = writeRecord(directory, record);
+  if (run.worktree) {
     try {
-      await releaseDirectory(worktree.path); // release before the worktree is removed
-      removeWorktree(root, worktree);
-    } catch (err) {
+      await releaseDirectory(run.worktree.path); // release before the worktree is removed
+      removeWorktree(root, run.worktree);
+    } catch (error) {
       // Cleanup failure must not replace the worker's answer or its original error.
-      record.cleanupError = (err as Error).message;
-      record.worktree = normalisePath(relative(root, worktree.path));
-      save();
+      record.cleanupError = (error as Error).message;
+      record.worktree = normalisePath(relative(root, run.worktree.path));
+      block = writeRecord(directory, record);
     }
   }
-  if (answer.status === "ANSWER") gzipEvents(dir);
+  if (answer.status === "ANSWER") gzipEvents(directory);
   return block;
+}
+
+/** A request that passed its checks: its repo, the consented route, its scope, the config and the word cap. */
+type CheckedRequest = {
+  root: string;
+  route: Route;
+  scope: string[];
+  resolvedPaths: string[];
+  config: Config;
+  maxWords: number;
+};
+
+/** Checks a request before anything is created or sent. A failed check gives the block to answer with. */
+function checkRequest(
+  input: ResearchInput,
+  provider: Provider,
+): CheckedRequest | { block: string } {
+  const root = callRoot(input.root);
+  // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
+  const gate = consentGate(root, provider.provider);
+  if ("block" in gate) return { block: gate.block };
+  const resolved = resolveScope(root, input.paths ?? "");
+  if ("block" in resolved) return { block: resolved.block };
+  let config: Config;
+  try {
+    config = loadConfig(root);
+  } catch (error) {
+    return { block: failBlock((error as Error).message) };
+  }
+  if (!hasCommits(root))
+    return {
+      block: failBlock(
+        `this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"`,
+      ),
+    };
+  const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
+  const { scope, resolvedPaths } = resolved;
+  return { root, route: gate.route, scope, resolvedPaths, config, maxWords };
+}
+
+/** A cap that stopped the worker early, and the status it gives the answer. */
+type Stop = { status: "FAIL" | "BUDGET"; reason: string; cap?: "turns" };
+
+/** What one research run needs once its inputs are checked. */
+type WorkerJob = {
+  root: string;
+  id: string;
+  /** The research log folder. */
+  directory: string;
+  config: Config;
+  opencode: Opencode;
+  models: Chain;
+  prompt: string;
+  ctx: Parameters<typeof research>[1];
+};
+
+/** What the worker left behind: its reply or error, the cap that stopped it, and what it read, ran and spent. */
+type WorkerRun = {
+  text: string;
+  error?: string;
+  budget?: string;
+  providerDown?: string;
+  stopped?: Stop;
+  partialText: string;
+  worktree?: Worktree;
+  files: Set<string>;
+  /** The commands the worker actually ran: a claimed reproduction must be one of them. */
+  ran: string[];
+  spent: { turns: number; calls: number; costUsd: number };
+};
+
+/** Runs the worker in a throwaway worktree. Any error is kept in the run, not thrown, so the record still gets written. */
+async function runWorker(job: WorkerJob): Promise<WorkerRun> {
+  const run: WorkerRun = {
+    text: "",
+    partialText: "",
+    files: new Set<string>(),
+    ran: [],
+    spent: { turns: 0, calls: 0, costUsd: 0 },
+  };
+  try {
+    run.worktree = createWorktree(job.root, job.id, job.config.link_dirs);
+    await askWorker(job, run, run.worktree.path);
+  } catch (error) {
+    run.error = (error as Error).message;
+  }
+  return run;
+}
+
+/** Asks the question in a read-only session in `directory`, under the run's caps, and records what the session spent. */
+async function askWorker(job: WorkerJob, run: WorkerRun, directory: string) {
+  const permission = researchPermission(directory, job.config);
+  const caps = startCaps(run, job.config.limits);
+  const watch: EventWatch = { job, run, stop: caps.stop, totals: () => session.totals() };
+  const session: Session = await openSession({
+    opencode: job.opencode,
+    directory,
+    model: job.models.first,
+    agent: RESEARCH_AGENT,
+    permission,
+    signal: caps.signal,
+    onEvent: (event, turns) => watchEvent(watch, event, turns),
+  });
+  try {
+    // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
+    const result = await runRouted(session, job.prompt, job.models, job.ctx.provider.provider);
+    run.text = result.text;
+    run.error = result.error;
+    run.budget = result.budget;
+    run.providerDown = result.provider;
+    // only a turn cap recovers: the worker read the code, so one no-tool prompt gets what it found (minute/cost caps are about spend)
+    if (run.stopped?.cap === "turns") run.partialText = await partialAnswer(session);
+  } finally {
+    clearTimeout(caps.timer);
+    const totals = session.totals();
+    run.spent.turns = totals.turns;
+    run.spent.calls = totals.calls;
+    run.spent.costUsd = totals.usage.costUsd;
+    try {
+      recordSpend(totals.spend); // research draws on the same Go windows as jobs
+    } catch {
+      // the ledger only steers later escalations: never fail an answer over it
+    }
+  }
+}
+
+/** The answer of a run that gave none. */
+function noAnswer(status: Answer["status"]): Answer {
+  return { status, answer: "", refs: [] };
+}
+
+/**
+ * The run's answer: what a turn-capped worker recovered, else the status its cap, provider, budget or error gives,
+ * else its parsed reply.
+ */
+function workerAnswer(run: WorkerRun, parse: (text: string) => Answer | undefined): Answer {
+  const turnCapped = run.stopped?.cap === "turns";
+  const recovered = turnCapped && run.partialText ? parse(run.partialText) : undefined;
+  if (recovered) return { ...recovered, partial: true };
+  if (run.stopped) return noAnswer(run.stopped.status);
+  if (run.providerDown) return noAnswer("FAIL");
+  if (run.budget) return noAnswer("BUDGET");
+  if (run.error) return noAnswer("FAIL");
+  return parse(run.text) ?? noAnswer("FAIL");
+}
+
+/** The record's reason: the cap that stopped the run, a provider down, its budget, or the error or missing answer. */
+function failureReason(run: WorkerRun, status: Answer["status"]): string | undefined {
+  const providerReason = run.providerDown ? `provider down: ${run.providerDown}` : undefined;
+  return run.stopped?.reason ?? providerReason ?? run.budget ?? errorReason(run.error, status);
+}
+
+/** A worker error, else "no answer" for a FAIL with nothing else to blame. */
+function errorReason(error: string | undefined, status: Answer["status"]) {
+  if (error) return `worker error: ${error}`;
+  if (status === "FAIL") return "the research worker gave no answer";
+  return undefined;
+}
+
+/** The worker's read-only ruleset, allowing the project's own scripts and its test command. */
+function researchPermission(directory: string, config: Config) {
+  const { scripts, exact } = projectScripts(directory);
+  return researchRuleset({
+    scripts,
+    exact: [...exact, ...(config.test_cmd ? checkAllows(config.test_cmd) : [])],
+    allowCommands: config.allow_commands,
+  });
+}
+
+/** Starts the minute cap. `stop` records the first cap reached; every cap but the turn cap also aborts the session. */
+function startCaps(run: WorkerRun, limits: Config["limits"]) {
+  const halt = new AbortController();
+  const stop = (why: Stop) => {
+    run.stopped ??= why;
+    if (why.cap !== "turns") halt.abort(); // a turn cap lets the turn end: partialAnswer() needs a live session (as src/jobs.ts)
+  };
+  const timer = setTimeout(
+    () => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }),
+    limits.max_minutes * 60_000,
+  );
+  return { signal: halt.signal, stop, timer };
+}
+
+/** What a session event can reach: the job, the run it records into, the caps and the session's totals. */
+type EventWatch = {
+  job: WorkerJob;
+  run: WorkerRun;
+  stop: (why: Stop) => void;
+  totals: () => ReturnType<Session["totals"]>;
+};
+
+/** Handles one session event: it is logged, a finished tool call is progress, and the turn and cost caps are checked. */
+function watchEvent(watch: EventWatch, event: Event, turns: number) {
+  const { job, run, stop } = watch;
+  const { limits } = job.config;
+  appendFileSync(join(job.directory, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+  if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+    const part = event.properties.part;
+    recordToolCall(run, part);
+    if (part.state.status === "completed" || part.state.status === "error") {
+      job.ctx.progress(turns, `turn ${turns}: ${part.tool}`);
+      if (turns >= limits.max_turns)
+        stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached`, cap: "turns" });
+    }
+  }
+  if (event.type === "message.updated" && watch.totals().usage.costUsd >= limits.max_cost_usd) {
+    stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
+  }
+}
+
+/** Records a completed read or bash call: the files read count in the record, the commands run back a repro. */
+function recordToolCall(run: WorkerRun, part: ToolPart) {
+  const { tool, state } = part;
+  if (state.status !== "completed") return;
+  if (tool === "read") run.files.add(String(state.input.filePath));
+  if (tool === "bash")
+    // oxlint-disable-next-line typescript/no-base-to-string -- safer cast changes the text
+    run.ran.push(String(state.input.command ?? ""));
+}
+
+/**
+ * The comma-separated `paths` as repo-relative scope entries. A path that does not exist is looked up by basename, and
+ * `resolvedPaths` notes each one found that way. A path outside the repo, or one not found, gives a FAIL block instead.
+ */
+function resolveScope(
+  root: string,
+  paths: string,
+): { scope: string[]; resolvedPaths: string[] } | { block: string } {
+  const scope: string[] = [];
+  const resolvedPaths: string[] = [];
+  const entries = paths
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (const path of entries) {
+    const relativePath = normalisePath(relative(root, join(root, path)));
+    if (isAbsolute(path) || relativePath === ".." || relativePath.startsWith("../")) {
+      const message = `path ${path} must be inside the repository, relative to its root`;
+      return { block: failBlock(message) };
+    }
+    if (existsSync(join(root, path))) {
+      if (relativePath) scope.push(relativePath); // "." is the whole repo: no scope
+      continue;
+    }
+    const found = findByBasename(root, path);
+    if ("block" in found) return found;
+    scope.push(found.path);
+    resolvedPaths.push(`${path} resolved to ${found.path}`);
+  }
+  return { scope, resolvedPaths };
+}
+
+/** A path that does not exist, found by its basename among the tracked files: a miss may just be the wrong directory. */
+function findByBasename(root: string, path: string): { path: string } | { block: string } {
+  const name = basename(path);
+  const matches = git(root, ["ls-files", "-z", "--", `*/${name}`, name])
+    .split("\0")
+    .filter(Boolean);
+  if (!matches.length) return { block: failBlock(`path ${path} not found`) };
+  if (matches.length > 1)
+    return { block: failBlock(`path ${path} not found; did you mean: ${matches.join(", ")}`) };
+  return { path: normalisePath(matches[0]) };
+}
+
+/** The worker's prompt: the question, its scope, the repro rule, the word cap, then the brief format. */
+function researchPrompt(question: string, scope: string[], maxWords: number) {
+  return [
+    `Question: ${question}`,
+    scope.length && `Scope: look only under ${scope.join(", ")}; cite only files there.`,
+    REPRO_RULE,
+    `Answer in at most ${maxWords} words.`,
+    // repeated here because real models skip the agent prompt's format: without it a right answer is UNSURE
+    BRIEF_FORMAT,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 const PARTIAL_PROMPT =
@@ -295,8 +404,9 @@ const PARTIAL_PROMPT =
 /** One last no-tool prompt on a turn-capped session; any error, timeout or interruption gives no text. */
 async function partialAnswer(session: Session): Promise<string> {
   try {
-    const r = await session.run(PARTIAL_PROMPT, undefined, AbortSignal.timeout(30_000), true);
-    return r.error || r.interrupted ? "" : r.text;
+    const timeout = AbortSignal.timeout(30_000);
+    const result = await session.run(PARTIAL_PROMPT, undefined, timeout, true);
+    return result.error || result.interrupted ? "" : result.text;
   } catch {
     return "";
   }
@@ -316,13 +426,20 @@ export function verifyRepro(answer: Answer | undefined, ran: string[]): Answer |
   const repro = answer?.repro?.trim();
   if (!answer || !repro || /^not attempted|^none$/i.test(repro))
     return answer && { ...answer, repro: repro || undefined };
-  const norm = (c: string) => c.replace(/\s+/g, " ").trim();
-  const claimed = norm(repro.match(/`([^`]+)`/)?.[1] ?? "");
-  const verified =
-    !!claimed && ran.some((c) => norm(c).includes(claimed) || claimed.includes(norm(c)));
+  const claimed = collapseSpaces(repro.match(/`([^`]+)`/)?.[1] ?? "");
+  const matchesClaim = (command: string) => {
+    const normalised = collapseSpaces(command);
+    return normalised.includes(claimed) || claimed.includes(normalised);
+  };
+  const verified = !!claimed && ran.some(matchesClaim);
   return verified
     ? { ...answer, repro }
     : { ...answer, repro: `unverified (not run): ${repro}`, confidence: "low" };
+}
+
+/** The text with each run of whitespace made one space, trimmed. */
+function collapseSpaces(text: string) {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -334,16 +451,18 @@ export function verifyRepro(answer: Answer | undefined, ran: string[]): Answer |
 export function unlandedJobs(root: string): string[] {
   return records(root)
     .filter(
-      (r) =>
-        !r.landed &&
-        (r.status === "RUNNING" ||
-          r.status === "BLOCKED" ||
-          (!!r.worktree && !!r.changed?.length && existsSync(join(root, r.worktree)))),
+      (record) =>
+        !record.landed &&
+        (record.status === "RUNNING" ||
+          record.status === "BLOCKED" ||
+          (!!record.worktree &&
+            !!record.changed?.length &&
+            existsSync(join(root, record.worktree)))),
     )
-    .sort((a, b) =>
-      String(a.timing?.startedAt ?? "").localeCompare(String(b.timing?.startedAt ?? "")),
+    .sort((left, right) =>
+      String(left.timing?.startedAt ?? "").localeCompare(String(right.timing?.startedAt ?? "")),
     )
-    .map((r) => r.job);
+    .map((record) => record.job);
 }
 
 /**
@@ -366,47 +485,61 @@ export function parseAnswer(
           confidence: "low",
         }
       : undefined;
-  const fields: Record<string, string> = {};
-  let key: string | undefined;
-  for (const line of block.split("\n")) {
-    const kv = line.match(
-      /^\s*(status|confidence|refs|files|repro|dead[ _]ends|answer|notes):\s*(.*)$/i,
-    );
-    // files/notes are the brief's names (ticket 23.4); refs/answer still read
-    if (kv)
-      fields[
-        (key =
-          (
-            {
-              files: "refs",
-              notes: "answer",
-              "dead ends": "deadEnds",
-              dead_ends: "deadEnds",
-            } as Record<string, string>
-          )[kv[1].toLowerCase()] ?? kv[1].toLowerCase())
-      ] = kv[2];
-    else if (key === "answer") fields.answer += `\n${line}`; // the answer is prose: it may span lines
-  }
+  const fields = briefFields(block);
   const answer = (fields.answer ?? "").trim();
   if (!answer) return undefined;
   const listed = refs(fields.refs ?? "", root, scope);
-  const confidence = fields.confidence
-    ?.trim()
-    .toLowerCase()
-    .match(/^(high|medium|low)/)?.[1] as Answer["confidence"];
+  const status = fields.status?.trim() ?? "";
   return {
-    status: /^unsure/i.test(fields.status?.trim() ?? "") ? "UNSURE" : "ANSWER",
-    partial: /^partial/i.test(fields.status?.trim() ?? "") || undefined,
+    status: /^unsure/i.test(status) ? "UNSURE" : "ANSWER",
+    partial: /^partial/i.test(status) || undefined,
     answer: capWords(answer, maxWords),
     // refs from the refs line; failing that, any cited in the prose
     refs: listed.length ? listed : refs(answer, root, scope),
-    confidence: confidence ?? "low",
+    confidence: confidenceLevel(fields.confidence),
     repro: fields.repro?.trim() || undefined,
-    deadEnds:
-      fields.deadEnds?.trim() && !/^none\.?$/i.test(fields.deadEnds.trim())
-        ? fields.deadEnds.trim()
-        : undefined,
+    deadEnds: ruledOut(fields.deadEnds),
   };
+}
+
+/** A brief line: one of the field names, a colon, then its value. */
+const FIELD_LINE = /^\s*(status|confidence|refs|files|repro|dead[ _]ends|answer|notes):\s*(.*)$/i;
+/** The brief's names that the record names differently; the older refs and answer are still read as they are. */
+const RECORD_NAMES: Record<string, string> = {
+  files: "refs",
+  notes: "answer",
+  "dead ends": "deadEnds",
+  dead_ends: "deadEnds",
+};
+
+/** The brief's fields under their record names. Lines that are not a field belong to the answer when it came last. */
+function briefFields(block: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  let key: string | undefined;
+  for (const line of block.split("\n")) {
+    const field = line.match(FIELD_LINE);
+    if (field) {
+      const name = field[1].toLowerCase();
+      key = RECORD_NAMES[name] ?? name;
+      fields[key] = field[2];
+    } else if (key === "answer") fields.answer += `\n${line}`; // the answer is prose: it may span lines
+  }
+  return fields;
+}
+
+/** The rated confidence, read from the start of the field; low when it is missing or not a level. */
+function confidenceLevel(rated: string | undefined): NonNullable<Answer["confidence"]> {
+  const level = rated
+    ?.trim()
+    .toLowerCase()
+    .match(/^(high|medium|low)/)?.[1];
+  return (level as Answer["confidence"]) ?? "low";
+}
+
+/** What the worker ruled out, unless it wrote none. */
+function ruledOut(deadEnds: string | undefined) {
+  const trimmed = deadEnds?.trim();
+  return trimmed && !/^none\.?$/i.test(trimmed) ? trimmed : undefined;
 }
 
 /** The raw `path:line(-line)` candidates in text, before validation. Accepts a Windows drive letter and backslashes. */
@@ -421,35 +554,47 @@ export function refTokens(text: string): { path: string; from: string; to: strin
  * (and the scope, when there is one), and has those lines. Absolute paths inside the repo are made relative.
  */
 function refs(text: string, root: string, scope: string[]): ResearchRecord["refs"] {
-  const out: ResearchRecord["refs"] = [];
+  const found: ResearchRecord["refs"] = [];
   for (const { path, from, to } of refTokens(text)) {
-    const abs = isAbsolute(path) ? path : join(root, path);
-    const rel = normalisePath(relative(root, abs));
+    const absolutePath = isAbsolute(path) ? path : join(root, path);
+    const relativePath = normalisePath(relative(root, absolutePath));
     const start = Number(from);
     const end = Number(to ?? from);
-    if (
-      !rel ||
-      rel === ".." ||
-      rel.startsWith("../") ||
-      isAbsolute(rel) ||
-      start < 1 ||
-      end < start
-    )
-      continue;
-    if (scope.length && !scope.some((s) => rel === s || rel.startsWith(`${s}/`))) continue;
-    if (out.some((r) => r.path === rel && r.start === start && r.end === end)) continue;
-    try {
-      if (!statSync(abs).isFile()) continue;
-      const content = readFileSync(abs, "utf8");
-      const lines = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
-      if (end > lines) continue;
-    } catch {
-      continue; // no such file
-    }
-    out.push({ path: rel, start, end });
-    if (out.length === MAX_REFS) break;
+    if (!isInsideRepository(relativePath) || start < 1 || end < start) continue;
+    if (!isInScope(relativePath, scope)) continue;
+    const isDuplicate = found.some(
+      (ref) => ref.path === relativePath && ref.start === start && ref.end === end,
+    );
+    if (isDuplicate) continue;
+    const lines = lineCount(absolutePath);
+    if (lines === undefined || end > lines) continue;
+    found.push({ path: relativePath, start, end });
+    if (found.length === MAX_REFS) break;
   }
-  return out;
+  return found;
+}
+
+/** A repo-relative path that names something inside the repo, not the repo itself. */
+function isInsideRepository(relativePath: string) {
+  const isOutside = relativePath === ".." || relativePath.startsWith("../");
+  return Boolean(relativePath) && !isOutside && !isAbsolute(relativePath);
+}
+
+/** No scope means the whole repo; otherwise the path is a scope entry or under one. */
+function isInScope(relativePath: string, scope: string[]) {
+  const isUnder = (entry: string) => relativePath === entry || relativePath.startsWith(`${entry}/`);
+  return !scope.length || scope.some(isUnder);
+}
+
+/** The number of lines in a file, or undefined when the path is not a readable file. */
+function lineCount(path: string): number | undefined {
+  try {
+    if (!statSync(path).isFile()) return undefined;
+    const content = readFileSync(path, "utf8");
+    return content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+  } catch {
+    return undefined; // no such file
+  }
 }
 
 /** The text cut after `max` words, line breaks kept. */
@@ -458,13 +603,28 @@ function capWords(text: string, max: number) {
   return words.length <= max ? text : `${text.slice(0, words[max].index).trimEnd()} …`;
 }
 
-/** A fresh `r` + 4 base36 id whose folder (beside the job folders, D7 `log:`) does not exist yet. */
+/** A fresh `r` + 4 base36 id whose log folder, beside the job folders, does not exist yet. */
 function newResearch(root: string) {
   for (;;) {
     const id = newId("r");
-    const dir = join(root, ".cheapag", "jobs", id);
-    if (existsSync(dir)) continue;
-    mkdirSync(dir, { recursive: true });
-    return { id, dir };
+    const directory = join(root, ".cheapag", "jobs", id);
+    if (existsSync(directory)) continue;
+    mkdirSync(directory, { recursive: true });
+    return { id, directory };
   }
+}
+
+/** Writes the record and its rendered block to the research log, and returns the block. */
+function writeRecord(directory: string, record: ResearchRecord): string {
+  const block = renderResearch(record);
+  // research.json, not result.json: `jobs list` reads only job records
+  writeLog(directory, "research.json", record);
+  writeLog(directory, "result.txt", block + "\n");
+  return block;
+}
+
+/** Writes one file of the research log with keys redacted; a value that is not a string is written as JSON. */
+function writeLog(directory: string, name: string, value: unknown) {
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n";
+  writeFileSync(join(directory, name), redact(text));
 }
