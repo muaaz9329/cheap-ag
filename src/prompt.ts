@@ -2,6 +2,8 @@ import { emitKeypressEvents } from "node:readline";
 
 type Option = { label: string; hint?: string };
 type RawInput = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
+/** The selected row, and the digits typed so far to jump to a row by its number. */
+type Selection = { index: number; typedNumber: string };
 
 const MAX_VISIBLE_ROWS = 12;
 const DEFAULT_COLUMNS = 100;
@@ -39,6 +41,22 @@ function visibleRows(options: Option[], selectedIndex: number, columns: number) 
   });
 }
 
+/** One row up or down, wrapping around at both ends. An arrow key forgets the digits typed before it. */
+function moveSelection(selection: Selection, direction: "up" | "down", optionCount: number) {
+  const step = direction === "up" ? -1 : 1;
+  return { index: (selection.index + step + optionCount) % optionCount, typedNumber: "" };
+}
+
+/** Adds a digit to the typed number and selects that row. A number that names no row leaves the row as it is. */
+function typeDigit(selection: Selection, digit: string, optionCount: number) {
+  const longer = selection.typedNumber + digit;
+  // a number past the end of the list starts over from the digit just typed
+  const typedNumber = Number(longer) > optionCount ? digit : longer;
+  const row = Number(typedNumber);
+  const isListed = row >= 1 && row <= optionCount;
+  return { index: isListed ? row - 1 : selection.index, typedNumber };
+}
+
 /**
  * An arrow-key list on a terminal: ↑/↓ move, Enter picks, typing a number jumps to that row, Ctrl-C exits 130.
  * Redraws in place and always gives the terminal back (raw mode off, cursor shown) on Enter, Ctrl-C and errors.
@@ -53,11 +71,10 @@ export function select(
   const input = io.input ?? (process.stdin as RawInput);
   const output = io.output ?? process.stdout;
   return new Promise((resolve, reject) => {
-    let index = clamp(initial, 0, options.length - 1);
-    let typedNumber = "";
+    let selection: Selection = { index: clamp(initial, 0, options.length - 1), typedNumber: "" };
     let drawnLineCount = 0;
     const draw = () => {
-      const rows = visibleRows(options, index, output.columns || DEFAULT_COLUMNS);
+      const rows = visibleRows(options, selection.index, output.columns || DEFAULT_COLUMNS);
       if (drawnLineCount) output.write(eraseLinesAbove(drawnLineCount));
       output.write([question, ...rows].join("\n") + "\n");
       drawnLineCount = rows.length + 1;
@@ -78,16 +95,13 @@ export function select(
           process.exit(EXIT_CODE_INTERRUPTED);
         } else if (key.name === "return") {
           releaseTerminal();
-          output.write(`${eraseLinesAbove(drawnLineCount)}${question} ${options[index].label}\n`);
-          return resolve(index);
+          const picked = options[selection.index];
+          output.write(`${eraseLinesAbove(drawnLineCount)}${question} ${picked.label}\n`);
+          return resolve(selection.index);
         } else if (key.name === "up" || key.name === "down") {
-          typedNumber = "";
-          index = (index + (key.name === "up" ? -1 : 1) + options.length) % options.length;
+          selection = moveSelection(selection, key.name, options.length);
         } else if (character && /^\d$/.test(character)) {
-          typedNumber =
-            Number(typedNumber + character) > options.length ? character : typedNumber + character;
-          if (Number(typedNumber) >= 1 && Number(typedNumber) <= options.length)
-            index = Number(typedNumber) - 1;
+          selection = typeDigit(selection, character, options.length);
         }
         draw();
       } catch (error) {
