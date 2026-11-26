@@ -15,9 +15,9 @@ import { modelName, type Limit, type WorkerModel } from "./routing.js";
 export const WORKER_AGENT = "cheapag-worker";
 /** How long an aborted prompt may take to go idle before its run is ended anyway. */
 const ABORT_GRACE_MS = 10_000;
-/** The worker is told not to retry a command the user refused, or a variant of it (ticket 69). */
+/** The worker is told not to retry a command the user refused, or a variant of it. */
 const REFUSED_MESSAGE = "the user refused this command; don't retry it or a variant";
-/** At most this many bash commands are put to the user per job; later asks are rejected as today. */
+/** At most this many bash commands are put to the user per job; later asks get the usual rejection. */
 const MAX_PERMISSION_ASKS = 3;
 
 /**
@@ -118,7 +118,7 @@ export async function openSession(opts: {
   const messages = new Map<string, Usage & { model: string }>(); // assistant message id → its model and latest running totals
   const rejections: Rejection[] = [];
   const toolInputs = new Map<string, Record<string, unknown>>(); // tool call id → its input, to title a bash ask
-  let permissionAsks = 0; // a job asks at most MAX_PERMISSION_ASKS times; later asks are rejected as today
+  let permissionAsks = 0; // a job asks at most MAX_PERMISSION_ASKS times
   const allowedPrefixes = new Set<string>(); // "always allow" prefixes granted this job
   const refusedCommands = new Set<string>(); // the user refused these exact commands; repeats are rejected without asking
 
@@ -155,7 +155,7 @@ export async function openSession(opts: {
 
       const variant = (model ?? opts.model).variant;
       const prompted = await client.session.promptAsync({
-        // OpenCode ignores the agent given at session.create, so every bench before 1.3.3 ran OpenCode's built-in build agent; passing ours on each prompt made the worker slower on bug fixes (ticket 63), so prompts carry no agent
+        // prompts carry no agent: OpenCode ignores the one given at session.create, and passing ours on each prompt made the worker slower on bug fixes
         sessionID,
         directory,
         parts: [{ type: "text", text: prompt }],
@@ -251,7 +251,7 @@ export async function openSession(opts: {
             return true;
           };
           if (props.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
-            // not askable: rejected as today
+            // not askable: the usual rejection
             if (!(await reject(rejectionMessage(what)))) break;
           } else if (refusedCommands.has(command)) {
             // the user already refused this exact command in this job
