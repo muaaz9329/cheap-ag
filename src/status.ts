@@ -224,26 +224,11 @@ export function lastSession(
 ):
   | { prefix: number; at: string; requests: number; hitRate: number; ttl?: "5m" | "1h" | "5m+1h" }
   | undefined {
+  // the whole read is guarded: a garbage line can throw in parsing as well as in reading
   try {
-    const dir = join(
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
-      "projects",
-      root.replace(/[^a-zA-Z0-9]/g, "-"),
-    );
-    if (!existsSync(dir)) return undefined;
-    const newest = readdirSync(dir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => join(dir, f))
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+    const newest = newestTranscript(root);
     if (!newest) return undefined;
-    // one entry per API response: a streamed response is written as several lines sharing its message id
-    const byMessage = new Map<string, Usage>();
-    for (const line of readFileSync(newest, "utf8").split("\n")) {
-      if (!line) continue;
-      const message = (JSON.parse(line) as { message?: { id?: string; usage?: Usage } }).message;
-      if (message?.usage) byMessage.set(message.id ?? String(byMessage.size), message.usage);
-    }
-    const usages = [...byMessage.values()];
+    const usages = readUsages(newest);
     if (!usages.length) return undefined;
     return {
       prefix: inputTokens(usages[0]),
@@ -256,6 +241,32 @@ export function lastSession(
     // an unreadable or half-written transcript: say nothing rather than guess
   }
   return undefined;
+}
+
+/** The most recently written transcript of `root`'s Claude Code sessions, if there is one. */
+function newestTranscript(root: string): string | undefined {
+  const dir = join(
+    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+    "projects",
+    root.replace(/[^a-zA-Z0-9]/g, "-"),
+  );
+  if (!existsSync(dir)) return undefined;
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => join(dir, name))
+    .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0];
+}
+
+/** One usage per API response in the transcript, in the order each response first appears. */
+function readUsages(transcript: string): Usage[] {
+  // a streamed response is written as several lines sharing its message id
+  const byMessage = new Map<string, Usage>();
+  for (const line of readFileSync(transcript, "utf8").split("\n")) {
+    if (!line) continue;
+    const message = (JSON.parse(line) as { message?: { id?: string; usage?: Usage } }).message;
+    if (message?.usage) byMessage.set(message.id ?? String(byMessage.size), message.usage);
+  }
+  return [...byMessage.values()];
 }
 
 /** All input of one response: uncached, read from the prompt cache, and written to it. */
