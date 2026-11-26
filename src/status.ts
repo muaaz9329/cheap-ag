@@ -44,15 +44,7 @@ export function status(args: string[]): number {
     print(`consent: ${consentText(root, provider)}`);
     print(storageLine(root));
     printJobs(root);
-    const last = lastSession(root);
-    if (last) {
-      print(
-        `claude prefix: ${(last.prefix / 1000).toFixed(1)}k tokens on the first turn of the last session here (${last.at.slice(0, 10)}); see "What it costs to keep in context" in the plugin README`,
-      );
-      print(
-        `claude cache: ${last.requests} requests, ${Math.round(last.hitRate * 100)}% of input from cache${last.ttl ? `, ${last.ttl} TTL` : ""}`,
-      );
-    }
+    printLastSession(root);
   }
 
   // a `models` entry naming another provider is ignored when a job routes: say which model actually runs
@@ -118,6 +110,20 @@ function jobHeadline(job: Job, live: boolean): string {
   const waiting = blockedFor(job);
   const gone = isInFlight(job) && !live ? SERVER_GONE : "";
   return `  ${firstLine}${waiting}${gone}`;
+}
+
+/** The `claude prefix:` and `claude cache:` lines of this repo's last Claude Code session, when there is one. */
+function printLastSession(root: string) {
+  const last = lastSession(root);
+  if (!last) return;
+  const thousands = (last.prefix / 1000).toFixed(1);
+  const day = last.at.slice(0, 10);
+  print(
+    `claude prefix: ${thousands}k tokens on the first turn of the last session here (${day}); see "What it costs to keep in context" in the plugin README`,
+  );
+  const percent = Math.round(last.hitRate * 100);
+  const ttl = last.ttl ? `, ${last.ttl} TTL` : "";
+  print(`claude cache: ${last.requests} requests, ${percent}% of input from cache${ttl}`);
 }
 
 /** Writes one line of the report, with any API key in it redacted. */
