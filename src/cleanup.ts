@@ -223,13 +223,10 @@ function readJob(sweep: Sweep, id: string) {
   // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
   const unknown = !record && sweep.now - (modifiedTime(dir) ?? 0) < UNKNOWN_GRACE_MS;
   const live = unknown || isInFlight(record);
-  return {
-    live,
-    status: record?.status ?? (unknown ? "STARTING" : undefined),
-    since: Number.isNaN(at)
-      ? (modifiedTime(dir) ?? modifiedTime(join(sweep.treesDir, id)) ?? sweep.now)
-      : at,
-  };
+  const status = record?.status ?? (unknown ? "STARTING" : undefined);
+  if (!Number.isNaN(at)) return { live, status, since: at };
+  const since = modifiedTime(dir) ?? modifiedTime(join(sweep.treesDir, id)) ?? sweep.now;
+  return { live, status, since };
 }
 
 /** A job folder's record; undefined while it has none or it is unreadable. */
