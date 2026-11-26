@@ -59,31 +59,9 @@ export async function research(
   // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
-  const scope: string[] = [];
-  const resolvedPaths: string[] = [];
-  for (const path of (input.paths ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean)) {
-    const rel = normalisePath(relative(root, join(root, path)));
-    if (isAbsolute(path) || rel === ".." || rel.startsWith("../"))
-      return failBlock(`path ${path} must be inside the repository, relative to its root`);
-    if (existsSync(join(root, path))) {
-      if (rel) scope.push(rel); // "." is the whole repo: no scope
-      continue;
-    }
-    // a miss may just be the wrong directory: find the file by basename among the tracked files
-    const name = basename(path);
-    const matches = git(root, ["ls-files", "-z", "--", `*/${name}`, name])
-      .split("\0")
-      .filter(Boolean);
-    if (!matches.length) return failBlock(`path ${path} not found`);
-    if (matches.length > 1)
-      return failBlock(`path ${path} not found; did you mean: ${matches.join(", ")}`);
-    const found = normalisePath(matches[0]);
-    scope.push(found);
-    resolvedPaths.push(`${path} resolved to ${found}`);
-  }
+  const resolved = resolveScope(root, input.paths ?? "");
+  if ("block" in resolved) return resolved.block;
+  const { scope, resolvedPaths } = resolved;
   let config: Config;
   try {
     config = loadConfig(root);
@@ -287,6 +265,50 @@ export async function research(
   }
   if (answer.status === "ANSWER") gzipEvents(dir);
   return block;
+}
+
+/**
+ * The comma-separated `paths` as repo-relative scope entries. A path that does not exist is looked up by basename, and
+ * `resolvedPaths` notes each one found that way. A path outside the repo, or one not found, gives a FAIL block instead.
+ */
+function resolveScope(
+  root: string,
+  paths: string,
+): { scope: string[]; resolvedPaths: string[] } | { block: string } {
+  const scope: string[] = [];
+  const resolvedPaths: string[] = [];
+  const entries = paths
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (const path of entries) {
+    const relativePath = normalisePath(relative(root, join(root, path)));
+    if (isAbsolute(path) || relativePath === ".." || relativePath.startsWith("../")) {
+      const message = `path ${path} must be inside the repository, relative to its root`;
+      return { block: failBlock(message) };
+    }
+    if (existsSync(join(root, path))) {
+      if (relativePath) scope.push(relativePath); // "." is the whole repo: no scope
+      continue;
+    }
+    const found = findByBasename(root, path);
+    if ("block" in found) return found;
+    scope.push(found.path);
+    resolvedPaths.push(`${path} resolved to ${found.path}`);
+  }
+  return { scope, resolvedPaths };
+}
+
+/** A path that does not exist, found by its basename among the tracked files: a miss may just be the wrong directory. */
+function findByBasename(root: string, path: string): { path: string } | { block: string } {
+  const name = basename(path);
+  const matches = git(root, ["ls-files", "-z", "--", `*/${name}`, name])
+    .split("\0")
+    .filter(Boolean);
+  if (!matches.length) return { block: failBlock(`path ${path} not found`) };
+  if (matches.length > 1)
+    return { block: failBlock(`path ${path} not found; did you mean: ${matches.join(", ")}`) };
+  return { path: normalisePath(matches[0]) };
 }
 
 const PARTIAL_PROMPT =
