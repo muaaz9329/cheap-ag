@@ -101,12 +101,17 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
     discard(root, path, links);
     throw error;
   }
-  const linked = links.map((linkPath) => normalisePath(relative(path, linkPath)));
+  const linked = relativeLinks(path, links);
 
   // the carried-over state as a tree object: the job's baseline, without committing anything
   git(path, ["add", "-A", "--", ".", ...outside(notIgnored(path, linked))]);
   const base = git(path, ["write-tree"]).trim();
   return { path, head, stash, base, links, linked };
+}
+
+/** The dependency links as forward-slash paths relative to the worktree at `path`, the form git pathspecs take. */
+function relativeLinks(path: string, links: string[]) {
+  return links.map((linkPath) => normalisePath(relative(path, linkPath)));
 }
 
 /** Copies the checkout's untracked, non-ignored files into the worktree at `path`. */
@@ -420,7 +425,7 @@ export function jobWorktree(
     stash: null,
     base,
     links,
-    linked: links.map((linkPath) => normalisePath(relative(path, linkPath))),
+    linked: relativeLinks(path, links),
   };
 }
 
