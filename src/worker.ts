@@ -559,28 +559,30 @@ export function finishReport(result: Pick<SessionResult, "finish" | "text">): Fi
   const block = [...result.text.matchAll(/```cheapag-result\s*\n([\s\S]*?)```/g)].at(-1)?.[1];
   if (!block) return NO_REPORT;
   const report: FinishReport = { summary: "", risks: [], review: [], missing: [] };
-  let list: "risks" | "review" | "missing" | undefined;
+  let list: ReportList | undefined;
   for (const line of block.split("\n")) {
-    const kv = line.match(/^(summary|risks|review|missing|repro|disagree):\s*(.*)$/);
-    if (kv) {
-      const [, key, value] = kv;
-      if (key === "summary" || key === "repro" || key === "disagree") {
-        if (value.trim()) report[key] = value.trim();
-        list = undefined;
-      } else {
-        list = key as typeof list;
-        // inline values: "review: a.ts:1-2, b.ts:3-4"
-        if (value.trim())
-          report[list!].push(
-            ...value
-              .split(",")
-              .map((v) => v.trim())
-              .filter(Boolean),
-          );
-      }
-    } else if (list && /^\s*-\s+/.test(line)) {
-      report[list].push(line.replace(/^\s*-\s+/, "").trim());
-    }
+    const field = line.match(/^(summary|risks|review|missing|repro|disagree):\s*(.*)$/);
+    if (field) list = readField(report, field[1] as keyof FinishReport, field[2]);
+    else if (list && /^\s*-\s+/.test(line)) report[list].push(line.replace(/^\s*-\s+/, "").trim());
   }
   return { ...report, summary: report.summary || NO_REPORT.summary };
+}
+
+/** The report fields a result block writes as lists. */
+type ReportList = "risks" | "review" | "missing";
+
+/** Writes one `key: value` line of a result block into `report`; returns the list later `- item` lines add to. */
+function readField(
+  report: FinishReport,
+  key: keyof FinishReport,
+  value: string,
+): ReportList | undefined {
+  if (key === "summary" || key === "repro" || key === "disagree") {
+    if (value.trim()) report[key] = value.trim();
+    return undefined;
+  }
+  // inline values: "review: a.ts:1-2, b.ts:3-4"
+  const items = value.split(",").map((item) => item.trim());
+  if (value.trim()) report[key].push(...items.filter(Boolean));
+  return key;
 }
