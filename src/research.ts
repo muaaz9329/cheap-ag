@@ -56,30 +56,15 @@ export async function research(
     progress: (turns: number, message: string) => void;
   },
 ): Promise<string> {
-  const root = callRoot(input.root);
-  // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
-  const gate = consentGate(root, ctx.provider.provider);
-  if ("block" in gate) return gate.block;
-  const resolved = resolveScope(root, input.paths ?? "");
-  if ("block" in resolved) return resolved.block;
-  const { scope, resolvedPaths } = resolved;
-  let config: Config;
-  try {
-    config = loadConfig(root);
-  } catch (error) {
-    return failBlock((error as Error).message);
-  }
-  if (!hasCommits(root))
-    return failBlock(
-      `this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"`,
-    );
-  const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
+  const checked = checkRequest(input, ctx.provider);
+  if ("block" in checked) return checked.block;
+  const { root, route, scope, resolvedPaths, config, maxWords } = checked;
 
-  const opencode = await ctx.opencode(gate.route);
+  const opencode = await ctx.opencode(route);
   const release = holdOpencode();
   const { id, directory } = newResearch(root);
   // the research model, then its fallbacks, each only if the repo's allowlist kept it (src/consent.ts)
-  const models = chain(gate.route.research ?? gate.route.implement, gate.route.researchFallbacks);
+  const models = chain(route.research ?? route.implement, route.researchFallbacks);
   const startedAt = new Date();
   writeLog(directory, "request.json", {
     ...input,
@@ -142,6 +127,44 @@ export async function research(
   }
   if (answer.status === "ANSWER") gzipEvents(directory);
   return block;
+}
+
+/** A request that passed its checks: its repo, the consented route, its scope, the config and the word cap. */
+type CheckedRequest = {
+  root: string;
+  route: Route;
+  scope: string[];
+  resolvedPaths: string[];
+  config: Config;
+  maxWords: number;
+};
+
+/** Checks a request before anything is created or sent. A failed check gives the block to answer with. */
+function checkRequest(
+  input: ResearchInput,
+  provider: Provider,
+): CheckedRequest | { block: string } {
+  const root = callRoot(input.root);
+  // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
+  const gate = consentGate(root, provider.provider);
+  if ("block" in gate) return { block: gate.block };
+  const resolved = resolveScope(root, input.paths ?? "");
+  if ("block" in resolved) return { block: resolved.block };
+  let config: Config;
+  try {
+    config = loadConfig(root);
+  } catch (error) {
+    return { block: failBlock((error as Error).message) };
+  }
+  if (!hasCommits(root))
+    return {
+      block: failBlock(
+        `this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then research again: git add -A && git commit -m "start"`,
+      ),
+    };
+  const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
+  const { scope, resolvedPaths } = resolved;
+  return { root, route: gate.route, scope, resolvedPaths, config, maxWords };
 }
 
 /** A cap that stopped the worker early, and the status it gives the answer. */
