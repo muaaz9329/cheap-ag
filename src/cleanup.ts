@@ -214,7 +214,7 @@ function isOld(sweep: Sweep, since: number, limitDays: number) {
   return sweep.all || sweep.now - since >= limitDays * DAY_MS;
 }
 
-/** A job folder's record: whether it is in flight, and its age from when it ended (else started), else the folder's mtime. */
+/** What cleanup needs of a job: whether it is in flight, and its age from when it ended (else started), else the folder's mtime. */
 function readJob(sweep: Sweep, id: string) {
   const dir = join(sweep.jobsDir, id);
   const record = readRecord(dir, id);
