@@ -19,9 +19,10 @@ const OUTPUT_LIMIT = 1024 * 1024;
 /** The backticked fragments of each step's `done-when`, in order; else the configured test_cmd; else none. */
 export function verifyCommands(doneWhen: string[], testCmd?: string) {
   const backticked = doneWhen
-    .flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))
+    .flatMap((text) => [...text.matchAll(/`([^`]+)`/g)].map((match) => match[1].trim()))
     .filter(Boolean);
-  return backticked.length ? backticked : testCmd ? [testCmd] : [];
+  if (backticked.length) return backticked;
+  return testCmd ? [testCmd] : [];
 }
 
 /**
