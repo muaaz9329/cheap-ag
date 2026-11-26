@@ -296,6 +296,12 @@ function markerFile(root: string) {
   return join(root, ".cheapag", "hook", "takeover");
 }
 
+const ASK_FIRST =
+  "The worker did not finish this step: ask the user first (continue with Claude, retry the worker on another model, or stop) with one question, then do what they pick.";
+const HAND_TO_SONNET = `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
+const OK_DONE =
+  "An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.";
+
 /**
  * The prompt rules (tickets 29, 30, 51), for the main loop only:
  * - after a FAIL, PARTIAL or TIMEOUT, takeover "ask" (the default) allows only reads, one AskUserQuestion, tool loading
@@ -343,7 +349,7 @@ function budget(input: Input): string | undefined {
       return;
     }
     if (harmless()) return;
-    return "The worker did not finish this step: ask the user first (continue with Claude, retry the worker on another model, or stop) with one question, then do what they pick.";
+    return ASK_FIRST;
   }
   if (state.notDone && config.takeover === "sonnet") {
     if (tool === "Agent" || tool === "Task") {
@@ -352,7 +358,7 @@ function budget(input: Input): string | undefined {
       return;
     }
     if (harmless()) return;
-    return `The worker did not finish this step: hand it to your Agent tool with model: sonnet (the task, the user's words, the block's found:, test=, error: and worktree) instead of doing it yourself, then report its answer. The user can set takeover: "self" in cheapag.json.`;
+    return HAND_TO_SONNET;
   }
   if (state.notDone) {
     const limit = config.limits.takeover_calls;
@@ -363,7 +369,7 @@ function budget(input: Input): string | undefined {
     return;
   }
   if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
-    return "An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.";
+    return OK_DONE;
   }
 }
 
