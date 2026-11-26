@@ -109,14 +109,12 @@ export const OLLAMA_KEY_ENV = "OLLAMA_API_KEY";
 export const OLLAMA_LOCAL_URL = OLLAMA_URLS.local;
 export const OLLAMA_CLOUD_URL = OLLAMA_URLS.cloud;
 
+const HOME_NETWORK_SUFFIX = /\.(lan|home|internal|home\.arpa)$/;
+
 /** Whether a URL's host is this machine or a private network (where plain http is fine): loopback, RFC 1918, CGNAT, link-local, *.local, single-label names and home LAN suffixes. */
 export function privateHost(url: string) {
-  let host: string;
-  try {
-    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  } catch {
-    return false;
-  }
+  if (!URL.canParse(url)) return false;
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (
     host === "localhost" ||
     host.endsWith(".localhost") ||
@@ -126,17 +124,23 @@ export function privateHost(url: string) {
     return true;
   if (host.includes(":")) return /^f[cd]/.test(host) || host.startsWith("fe80:"); // IPv6 unique-local and link-local
   if (!host.includes(".")) return true; // single-label machine names, e.g. gpu-box
-  if (/\.(lan|home|internal|home\.arpa)$/.test(host)) return true;
-  const ip = host.split(".").map(Number);
-  if (ip.length !== 4 || ip.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
-  const [a, b] = ip;
+  if (HOME_NETWORK_SUFFIX.test(host)) return true;
+  return privateIpv4(host);
+}
+
+/** Whether a dotted IPv4 address is loopback, RFC 1918, link-local or CGNAT; false for any other host. */
+function privateIpv4(host: string) {
+  const octets = host.split(".").map(Number);
+  const outOfRange = (octet: number) => !Number.isInteger(octet) || octet < 0 || octet > 255;
+  if (octets.length !== 4 || octets.some(outOfRange)) return false;
+  const [first, second] = octets;
   return (
-    a === 127 ||
-    a === 10 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254) ||
-    (a === 100 && b >= 64 && b <= 127)
+    first === 127 ||
+    first === 10 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254) ||
+    (first === 100 && second >= 64 && second <= 127)
   );
 }
 
