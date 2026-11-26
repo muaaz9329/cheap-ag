@@ -39,9 +39,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "format": "prettier --write src test",
+    "format:check": "prettier --check src test",
+    "lint": "oxlint",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "api:check": "sh scripts/check-api.sh",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
