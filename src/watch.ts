@@ -66,8 +66,8 @@ export function scan(state: WatchState): string[] {
     const resultFile = join(dir, "result.txt");
     if (!job.verdict && hasFinalResult(resultFile)) {
       job.verdict = true;
-      const first = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
-      lines.push(`■ ${id} ${first}`);
+      const firstLine = (readFileSync(resultFile, "utf8").split("\n")[0] ?? "").trimEnd();
+      lines.push(`■ ${id} ${firstLine}`);
     }
   }
   return lines;
