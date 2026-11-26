@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // `cheapag login` (or no arguments in a terminal) sets up a provider and Claude Code, `cheapag allow` records the repo's consent, `cheapag model` picks the worker's main and fallback models, `cheapag provider` switches between providers already set up, `cheapag clean` tidies .cheapag/, `cheapag status` reports jobs and spend, `cheapag watch` tails them live, `cheapag hook` toggles or runs the edit guard, `cheapag codex` runs the server with Codex instructions; anything else (including no arguments) runs the MCP server
-// `npx cheap-agent` typed in a terminal is setup (ticket 31); Claude Code starts the server with no arguments and a piped stdin
+// `npx cheap-agent` typed in a terminal is setup; Claude Code starts the server with no arguments and a piped stdin
 if (process.argv[2] === "login" || (process.argv[2] === undefined && process.stdin.isTTY))
   process.exit(
     await (
