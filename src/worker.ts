@@ -75,6 +75,26 @@ export type PermissionAsk = {
 /** The user's answer: allow once, always allow the prefix this job (and save it), or refuse. */
 export type PermissionAnswer = "once" | "always" | "reject";
 
+/** One prompt in flight: how to stop it, and what its events have shown so far. */
+type PromptState = {
+  /** The model this prompt runs on, when it is not the session's. */
+  model?: WorkerModel;
+  /** Ends the session (a cap or cancel); none for the prompt after a stop. */
+  signal?: AbortSignal;
+  /** Aborts the prompt in OpenCode, and drops the event stream if it never goes idle. */
+  stop: () => void;
+  /** Text part id → its message and latest text. */
+  texts: Map<string, PartText>;
+  /** Reasoning part id → its message and latest text. */
+  reasonings: Map<string, PartText>;
+  finish?: FinishReport;
+  error?: string;
+  httpStatus?: number;
+  limit?: Limit;
+};
+/** The latest text of a text or reasoning part, and the message it belongs to. */
+type PartText = { messageID: string; text: string };
+
 /**
  * Opens one worker session. `run` prompts it (optionally on another model, e.g. escalation) and resolves when the
  * session goes idle; self-fixes and escalation are further `run`s of the same session.
@@ -145,13 +165,14 @@ export async function openSession(opts: {
     const { stream } = await client.event.subscribe({ directory }, { signal: abort.signal });
     await stream.next();
     try {
-      const texts = new Map<string, { messageID: string; text: string }>(); // text part id → latest text
-      const reasonings = new Map<string, { messageID: string; text: string }>(); // reasoning part id → latest text
+      const current: PromptState = {
+        model,
+        signal,
+        stop,
+        texts: new Map(),
+        reasonings: new Map(),
+      };
       let idle = false;
-      let finish: FinishReport | undefined;
-      let error: string | undefined;
-      let httpStatus: number | undefined;
-      let limit: Limit | undefined;
 
       const variant = (model ?? opts.model).variant;
       const prompted = await client.session.promptAsync({
@@ -198,18 +219,18 @@ export async function openSession(opts: {
             calls.add(part.callID);
             rounds.add(part.messageID);
             if (part.tool === "finish" && part.state.status === "completed")
-              finish = asReport(part.state.input);
+              current.finish = asReport(part.state.input);
           }
           if (part.type === "text")
-            texts.set(part.id, { messageID: part.messageID, text: part.text });
+            current.texts.set(part.id, { messageID: part.messageID, text: part.text });
           if (part.type === "reasoning")
-            reasonings.set(part.id, { messageID: part.messageID, text: part.text });
+            current.reasonings.set(part.id, { messageID: part.messageID, text: part.text });
         } else if (event.type === "message.updated" && event.properties.info.role === "assistant") {
           const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
           // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
           if (failed) {
-            error ??= errorMessage(failed);
-            httpStatus ??= httpStatusOf(failed);
+            current.error ??= errorMessage(failed);
+            current.httpStatus ??= httpStatusOf(failed);
           }
           messages.set(id, {
             model: `${providerID}/${modelID}`,
@@ -235,7 +256,7 @@ export async function openSession(opts: {
               .reply({ requestID: props.id, directory, reply: "reject", message })
               .catch((err: Error) => ({ error: err.message }));
             if (replied.error) {
-              error ??= `could not reject a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
+              current.error ??= `could not reject a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
               return false;
             }
             return true;
@@ -245,7 +266,7 @@ export async function openSession(opts: {
               .reply({ requestID: props.id, directory, reply: "once" })
               .catch((err: Error) => ({ error: err.message }));
             if (replied.error) {
-              error ??= `could not answer a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
+              current.error ??= `could not answer a ${props.permission} permission request: ${JSON.stringify(replied.error)}`;
               return false;
             }
             return true;
@@ -279,7 +300,7 @@ export async function openSession(opts: {
                   ? `${prefix} for step ${opts.step.label}: ${stepTitle}`
                   : (command.split(/\s+/)[0] ?? command));
               const messageID = props.tool?.messageID;
-              const whyText = [...texts.values()]
+              const whyText = [...current.texts.values()]
                 .filter((t) => t.messageID === messageID)
                 .map((t) => t.text)
                 .join(" ")
@@ -287,7 +308,7 @@ export async function openSession(opts: {
                 .trim();
               const reasoningText = whyText
                 ? ""
-                : [...reasonings.values()]
+                : [...current.reasonings.values()]
                     .filter((t) => t.messageID === messageID)
                     .map((t) => t.text)
                     .join(" ")
@@ -348,23 +369,23 @@ export async function openSession(opts: {
           ).catch((err: Error) => ({ error: err.message }));
           // an answer that did not go through would leave the session paused forever: end this run as a worker error instead
           if (replied.error) {
-            error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
+            current.error ??= `could not answer the worker's question: ${JSON.stringify(replied.error)}`;
             break;
           }
           continue;
         } else if (event.type === "session.error") {
-          error = errorMessage(event.properties.error);
-          httpStatus = httpStatusOf(event.properties.error);
+          current.error = errorMessage(event.properties.error);
+          current.httpStatus = httpStatusOf(event.properties.error);
         } else if (
           event.type === "session.status" &&
           event.properties.status.type === "retry" &&
-          !limit &&
+          !current.limit &&
           isLimit(event.properties.status, (model ?? opts.model).providerID)
         ) {
           // a provider limit or rate limit: OpenCode would retry, honouring retry-after, possibly for hours. Stop now, so the
           // job can fall back; this aborts the session directly, not through the job's stop signal (which means a cap)
           const { action, message, next } = event.properties.status;
-          limit = {
+          current.limit = {
             model: modelName(model ?? opts.model),
             reason: action?.reason,
             message: action?.message ?? message,
@@ -378,14 +399,15 @@ export async function openSession(opts: {
           break;
         }
       }
-      if (!idle) error ??= "worker event stream ended before the session went idle";
+      if (!idle) current.error ??= "worker event stream ended before the session went idle";
       // the fallback block is read from this prompt's last message only, so a stale one from earlier cannot win
-      const last = [...texts.values()].at(-1)?.messageID;
-      const text = [...texts.values()]
+      const last = [...current.texts.values()].at(-1)?.messageID;
+      const text = [...current.texts.values()]
         .filter((t) => t.messageID === last)
         .map((t) => t.text)
         .join("\n");
       // an interrupted prompt ends on OpenCode's abort error; that is the hand-over, not a worker failure
+      const { finish, error, httpStatus, limit } = current;
       if (interrupt?.aborted && !signal?.aborted) return { finish, text, interrupted: true };
       return { finish, text, error, ...(httpStatus && { httpStatus }), ...(limit && { limit }) };
     } finally {
