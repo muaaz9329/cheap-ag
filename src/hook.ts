@@ -313,8 +313,7 @@ const OK_DONE =
  */
 function budget(input: Input): string | undefined {
   if (!mainLoopCall(input)) return;
-  const { cwd } = input;
-  const root = projectRoot(cwd);
+  const root = projectRoot(input.cwd);
   const file = stateFile(root, input.session_id);
   let state: PromptState;
   try {
@@ -335,20 +334,13 @@ function budget(input: Input): string | undefined {
   if (CHEAPAG_TOOL.test(tool)) return;
   const config = loadConfig(root);
   const command = input.tool_input?.command;
-  /** What a waiting take-over still lets through: asking the user, loading a tool, the desktop app's tools, reads, and edits outside the repo. */
-  const harmless = () =>
-    ASK_TOOLS.has(tool) ||
-    tool.startsWith(DESKTOP_TOOL) ||
-    READ_TOOLS.has(tool) ||
-    (OUTSIDE_EDITS.has(tool) && outside(root, cwd, input.tool_input)) ||
-    (tool === "Bash" && typeof command === "string" && readOnly(command));
   if (state.notDone && config.takeover === "ask") {
     if (tool === "AskUserQuestion") {
       // the user is being asked: whatever they pick is theirs
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
       return;
     }
-    if (harmless()) return;
+    if (harmlessCall(tool, input, root)) return;
     return ASK_FIRST;
   }
   if (state.notDone && config.takeover === "sonnet") {
@@ -357,7 +349,7 @@ function budget(input: Input): string | undefined {
       writeFileSync(file, JSON.stringify({ ...state, notDone: undefined } satisfies PromptState));
       return;
     }
-    if (harmless()) return;
+    if (harmlessCall(tool, input, root)) return;
     return HAND_TO_SONNET;
   }
   if (state.notDone) {
@@ -371,6 +363,18 @@ function budget(input: Input): string | undefined {
   if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
     return OK_DONE;
   }
+}
+
+/** What a waiting take-over still lets through: asking the user, loading a tool, the desktop app's tools, reads, and edits outside the repo. */
+function harmlessCall(tool: string, input: MainLoopInput, root: string): boolean {
+  const command = input.tool_input?.command;
+  return (
+    ASK_TOOLS.has(tool) ||
+    tool.startsWith(DESKTOP_TOOL) ||
+    READ_TOOLS.has(tool) ||
+    (OUTSIDE_EDITS.has(tool) && outside(root, input.cwd, input.tool_input)) ||
+    (tool === "Bash" && typeof command === "string" && readOnly(command))
+  );
 }
 
 /** Reads Claude Code's PostToolUse JSON for a cheapag tool and records what its result means for this prompt. Never blocks. */
