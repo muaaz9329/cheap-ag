@@ -91,15 +91,18 @@ function ollamaRoles(): { implement: string[]; research: string[]; escalation?: 
   return { implement: [ollama.model!], research: [ollama.model!] };
 }
 
-const rolesOf = (provider: ProviderId) =>
-  provider === "local" ? localRoles() : provider === "ollama" ? ollamaRoles() : ROLES[provider];
+function rolesOf(provider: ProviderId) {
+  if (provider === "local") return localRoles();
+  if (provider === "ollama") return ollamaRoles();
+  return ROLES[provider];
+}
 
 /** `cheapag login`'s worker-model presets (ticket 27): a named `models` per provider; roles a preset leaves out keep the defaults above. */
 export const PRESET_NAMES = ["cheapest", "balanced", "strongest"] as const;
 export type Preset = (typeof PRESET_NAMES)[number];
 // balanced is the default route, Flash for every tier: GLM-5.3 cost Claude 1.5x fewer tokens than Flash on the tasks Flash
-// lost (ticket 25) but showed no gain on the hard tier (26), so it is opt-in as strongest. cheapest is balanced until a
-// cheaper worker than Flash exists (a tie reports balanced). Kimi K3 was dropped: $0.36 worker per task, BUDGET on half.
+// lost but showed no gain on the hard tier, so it is opt-in as strongest. cheapest is balanced until a cheaper worker than
+// Flash exists (a tie reports balanced). Kimi K3 is left out: $0.36 worker per task, BUDGET on half.
 // a local server has no presets: login asks for its model instead
 export const PRESETS: Record<Exclude<ProviderId, "local">, Record<Preset, ModelsConfig>> = {
   // Ollama Cloud only: a local endpoint has no presets (its one configured model is the route)
@@ -146,17 +149,16 @@ export function localEndpoint(provider: ProviderId) {
 export function presetOf(provider: ProviderId, models: ModelsConfig = {}): Preset | "custom" {
   if (localEndpoint(provider)) return "custom";
   const presets = PRESETS[provider as Exclude<ProviderId, "local">];
-  const key = (m: ModelsConfig) => JSON.stringify(fullRoute(provider, m));
-  return (
-    (["balanced", "cheapest", "strongest"] as const).find((p) => key(presets[p]) === key(models)) ??
-    "custom"
-  );
+  const routeKey = (candidate: ModelsConfig) => JSON.stringify(fullRoute(provider, candidate));
+  const tieOrder = ["balanced", "cheapest", "strongest"] as const;
+  const match = tieOrder.find((preset) => routeKey(presets[preset]) === routeKey(models));
+  return match ?? "custom";
 }
 
-const model = (provider: ProviderId, id: string): WorkerModel =>
-  provider === "openrouter"
-    ? { providerID: provider, id, options: OPENROUTER_PRIVATE }
-    : { providerID: provider, id };
+function workerModel(provider: ProviderId, id: string): WorkerModel {
+  if (provider === "openrouter") return { providerID: provider, id, options: OPENROUTER_PRIVATE };
+  return { providerID: provider, id };
+}
 
 /**
  * The models one job may run. `fallbacks` continue the session, in order, when the current model hits a provider limit;
@@ -189,8 +191,11 @@ export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
 
 /** The model a job implements on: hard takes the hard model, else the medium one; medium the medium one; easy or no hint `implement`. */
-export const tierModel = (r: Route, d?: Difficulty) =>
-  (d === "hard" ? (r.hard ?? r.medium) : d === "medium" ? r.medium : undefined) ?? r.implement;
+export const tierModel = (r: Route, d?: Difficulty) => {
+  if (d === "hard") return r.hard ?? r.medium ?? r.implement;
+  if (d === "medium") return r.medium ?? r.implement;
+  return r.implement;
+};
 
 /** The models config in force: the chosen preset's models (none for a local endpoint) with an explicit `models` role winning over it. */
 export function effectiveModels(
@@ -211,16 +216,16 @@ export type ForeignModel = {
 };
 
 export function foreignModels(provider: ProviderId, models: ModelsConfig = {}): ForeignModel[] {
-  const own = (name: string) => name.startsWith(`${provider}/`);
+  const isOwn = (name: string) => name.startsWith(`${provider}/`);
   const roles = ["implement", "medium", "hard", "research", "escalation"] as const;
   const foreign = roles.flatMap((role) => {
     const name = models[role];
-    return name && !own(name) ? [{ role, name }] : [];
+    return name && !isOwn(name) ? [{ role, name }] : [];
   });
   return [
     ...foreign,
     ...(models.fallback ?? [])
-      .filter((name) => !own(name))
+      .filter((name) => !isOwn(name))
       .map((name) => ({ role: "fallback" as const, name })),
   ];
 }
@@ -228,25 +233,31 @@ export function foreignModels(provider: ProviderId, models: ModelsConfig = {}): 
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {
   const roles = rolesOf(provider);
-  const own = (name?: string) =>
-    name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined;
-  const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
+  const prefix = `${provider}/`;
+  const ownId = (name?: string) =>
+    name?.startsWith(prefix) ? name.slice(prefix.length) : undefined;
+  const fallbackIds = models.fallback
+    ? models.fallback.map(ownId).filter((id): id is string => !!id)
+    : roles.implement.slice(1);
   const [research, ...researchFallbacks] = [
-    own(models.research) ?? roles.research[0],
+    ownId(models.research) ?? roles.research[0],
     ...roles.research.slice(1),
   ];
   // a full model name's effort (an OpenCode variant), attached wherever a role or fallback is built from a name
-  const withVariant = (m: WorkerModel) => {
-    const variant = models.variants?.[modelName(m)];
-    return variant === undefined ? m : { ...m, variant };
+  const withVariant = (model: WorkerModel) => {
+    const variant = models.variants?.[modelName(model)];
+    return variant === undefined ? model : { ...model, variant };
   };
-  const routed = (id: string) => withVariant(model(provider, id));
-  const tier = (name?: string) => (own(name) ? routed(own(name)!) : undefined);
+  const routed = (id: string) => withVariant(workerModel(provider, id));
+  const tier = (name?: string) => {
+    const id = ownId(name);
+    return id ? routed(id) : undefined;
+  };
   return {
-    implement: routed(own(models.implement) ?? roles.implement[0]),
+    implement: routed(ownId(models.implement) ?? roles.implement[0]),
     medium: tier(models.medium),
     hard: tier(models.hard),
-    fallbacks: (models.fallback ? ownFallbacks! : roles.implement.slice(1)).map(routed),
+    fallbacks: fallbackIds.map(routed),
     escalation:
       tier(models.escalation) ?? (roles.escalation ? routed(roles.escalation) : undefined),
     research: routed(research),
@@ -256,7 +267,7 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
 
 /** Every distinct model a route may send code to, first to last (for the config, the CONSENT block and `cheapag allow`). */
 export const routeModels = (r: Route) =>
-  unique([
+  uniqueModels([
     r.implement,
     r.medium,
     r.hard,
@@ -266,11 +277,12 @@ export const routeModels = (r: Route) =>
     ...r.researchFallbacks,
   ]);
 
-const unique = (ms: (WorkerModel | undefined)[]) =>
-  ms.filter(
-    (m, i): m is WorkerModel =>
-      !!m && ms.findIndex((o) => o && modelName(o) === modelName(m)) === i,
-  );
+/** The models that are set, each name once, at its first place. */
+function uniqueModels(models: (WorkerModel | undefined)[]) {
+  const isFirst = (model: WorkerModel, index: number) =>
+    models.findIndex((other) => other && modelName(other) === modelName(model)) === index;
+  return models.filter((model, index): model is WorkerModel => !!model && isFirst(model, index));
+}
 
 export const modelName = (m: WorkerModel) => `${m.providerID}/${m.id}`;
 
@@ -316,20 +328,13 @@ export async function runRouted(
 ): Promise<RunResult & { budget?: string; provider?: string }> {
   // the first model is the session's own; once moved, every prompt names the fallback explicitly
   const model = () => escalation ?? (c.current === c.first ? undefined : c.current);
-  let text = prompt;
-  let result = await session.run(text, model(), interrupt);
+  let result = await session.run(prompt, model(), interrupt);
   if (escalation && result.limit) c.limits.push(result.limit);
   while (!escalation) {
     if (isTransient(result)) {
       // OpenCode's own retries are already past, and Go pins a session to one backend cell: retry once in a forked session
       if (await session.rotate()) result = await session.run(RETRY, model(), interrupt);
-      if (isTransient(result)) {
-        const others = c.rest.map((m) => m.id).join(", ") || "none";
-        return {
-          ...result,
-          provider: `${c.current.id} is failing (last error: ${(result.error ?? `HTTP ${result.httpStatus}`).slice(0, 120)}); other models: ${others}`,
-        };
-      }
+      if (isTransient(result)) return { ...result, provider: failingReason(c, result) };
     }
     if (!result.limit) break;
     c.limits.push(result.limit);
@@ -337,12 +342,18 @@ export async function runRouted(
     if (!next) return { ...result, budget: exhausted(provider, c.limits) };
     c.current = next;
     c.used.push(modelName(next));
-    text = CONTINUE;
-    result = await session.run(text, model(), interrupt);
+    result = await session.run(CONTINUE, model(), interrupt);
   }
   if (provider === "openrouter" && result.httpStatus === 402)
     return { ...result, budget: "OpenRouter credits exhausted" };
   return result;
+}
+
+/** The PROVIDER reason: the failing model, its last error cut short, and the fallbacks the user could switch to. */
+function failingReason(modelChain: Chain, result: Pick<RunResult, "error" | "httpStatus">) {
+  const others = modelChain.rest.map((model) => model.id).join(", ") || "none";
+  const lastError = (result.error ?? `HTTP ${result.httpStatus}`).slice(0, 120);
+  return `${modelChain.current.id} is failing (last error: ${lastError}); other models: ${others}`;
 }
 
 /** A provider error worth retrying: an overload, a rate limit, a timeout, or a 5xx. Auth/config errors are not. */
@@ -360,34 +371,41 @@ function isTransient(result: Pick<RunResult, "error" | "httpStatus">) {
 
 /** The BUDGET reason once every allowed model is limited, with the earliest reset the provider gave. */
 function exhausted(provider: ProviderId, limits: Limit[]) {
-  const ids = [...new Set(limits.map((l) => l.model.slice(l.model.indexOf("/") + 1)))].join(", ");
+  const bareIds = limits.map((limit) => limit.model.slice(limit.model.indexOf("/") + 1));
+  const ids = [...new Set(bareIds)].join(", ");
+  const when = resetTime(limits);
+  const go = limits.find(
+    (limit) => limit.reason === "account_rate_limit" || limit.reason === "free_tier_limit",
+  );
+  if (go) return `Go ${goWindow(go)} window exhausted for ${ids} (resets ${when})`;
+  return `${providerLabel(provider)} rate limit on every allowed model: ${ids} (retry ${when})`;
+}
+
+/** When the limits lift: `~` and the earliest reset the provider gave, else the last limit's own text. */
+function resetTime(limits: Limit[]) {
   // OpenCode's next retry honours the provider's retry-after, i.e. the reset; a next only seconds away is just its backoff
   // (no retry-after was sent), so then quote the provider's own text instead
-  const next = Math.min(
-    ...limits.map((l) => l.next).filter((n) => Number.isFinite(n) && n > Date.now() + 60_000),
-  );
-  const when = Number.isFinite(next) ? `~${clock(next)}` : limits.at(-1)!.message;
-  const go = limits.find(
-    (l) => l.reason === "account_rate_limit" || l.reason === "free_tier_limit",
-  );
-  if (go) {
-    // OpenCode words it "<limitName> usage limit reached. It will reset in …"
-    const window =
-      go.reason === "free_tier_limit"
-        ? "free tier"
-        : (go.message.match(/^(.+?) usage limit reached/i)?.[1].toLowerCase() ?? "usage");
-    return `Go ${window} window exhausted for ${ids} (resets ${when})`;
-  }
-  return `${providerLabel(provider)} rate limit on every allowed model: ${ids} (retry ${when})`;
+  const resets = limits
+    .map((limit) => limit.next)
+    .filter((next) => Number.isFinite(next) && next > Date.now() + 60_000);
+  const earliest = Math.min(...resets);
+  return Number.isFinite(earliest) ? `~${clock(earliest)}` : limits.at(-1)!.message;
+}
+
+/** The name of the Go window a limit hit. */
+function goWindow(limit: Limit) {
+  if (limit.reason === "free_tier_limit") return "free tier";
+  // OpenCode words it "<limitName> usage limit reached. It will reset in …"
+  return limit.message.match(/^(.+?) usage limit reached/i)?.[1].toLowerCase() ?? "usage";
 }
 
 /** Local time as HH:MM, with the date in front when it is not today. */
 export function clock(ms: number) {
-  const d = new Date(ms);
-  const hhmm = d.toTimeString().slice(0, 5);
-  return d.toDateString() === new Date().toDateString()
+  const date = new Date(ms);
+  const hhmm = date.toTimeString().slice(0, 5);
+  return date.toDateString() === new Date().toDateString()
     ? hhmm
-    : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${hhmm}`;
+    : `${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${hhmm}`;
 }
 
 // ---- spend ledger ----
@@ -422,7 +440,7 @@ export function recordSpend(spend: Record<string, number>) {
   const lines = Object.entries(spend)
     .filter(([, cost]) => cost > 0)
     .map(
-      ([m, costUsd]) => JSON.stringify({ at: new Date().toISOString(), model: m, costUsd }) + "\n",
+      ([model, costUsd]) => JSON.stringify({ at: new Date().toISOString(), model, costUsd }) + "\n",
     );
   if (!lines.length) return;
   mkdirSync(dirname(ledgerFile()), { recursive: true });
@@ -437,43 +455,54 @@ export function capUse(
   const monthly = GO_CAPS[name];
   if (!monthly) return undefined;
   const now = Date.now();
-  const entries = readLedger().filter((e) => e.model === name);
+  const entries = readLedger().filter((entry) => entry.model === name);
   return WINDOWS.map(({ name: window, ms, share }) => {
-    const spent =
-      extra + entries.filter((e) => now - e.at < ms).reduce((sum, e) => sum + e.costUsd, 0);
+    const spent = extra + spentWithin(entries, now, ms);
     return { used: spent / (monthly * share), window, capUsd: monthly * share };
-  }).reduce((a, b) => (b.used > a.used ? b : a));
+  }).reduce((fullest, next) => (next.used > fullest.used ? next : fullest));
 }
 
 /** Tracked spend per model and window, with the window's cap where Go has one (for `cheapag status`); models unspent this month are left out. */
 export function spendWindows(now = Date.now()) {
   const ledger = readLedger();
-  return [...new Set(ledger.map((e) => e.model))].sort().flatMap((model) => {
+  return [...new Set(ledger.map((entry) => entry.model))].sort().flatMap((model) => {
+    const entries = ledger.filter((entry) => entry.model === model);
     const windows = WINDOWS.map(({ name: window, ms, share }) => ({
       window,
-      spent: ledger
-        .filter((e) => e.model === model && now - e.at < ms)
-        .reduce((sum, e) => sum + e.costUsd, 0),
+      spent: spentWithin(entries, now, ms),
       capUsd: GO_CAPS[model] ? GO_CAPS[model] * share : undefined,
     }));
     return windows.at(-1)!.spent > 0 ? [{ model, windows }] : [];
   });
 }
 
-function readLedger(): { at: number; model: string; costUsd: number }[] {
+type LedgerEntry = { at: number; model: string; costUsd: number };
+
+/** The USD the entries spent in the `windowMs` before `now`. */
+function spentWithin(entries: LedgerEntry[], now: number, windowMs: number) {
+  return entries
+    .filter((entry) => now - entry.at < windowMs)
+    .reduce((sum, entry) => sum + entry.costUsd, 0);
+}
+
+function readLedger(): LedgerEntry[] {
   if (!existsSync(ledgerFile())) return [];
-  return readFileSync(ledgerFile(), "utf8")
-    .split("\n")
-    .flatMap((line) => {
-      try {
-        const e = JSON.parse(line);
-        return typeof e.model === "string" && typeof e.costUsd === "number"
-          ? [{ model: e.model, costUsd: e.costUsd, at: Date.parse(e.at) }]
-          : [];
-      } catch {
-        return []; // a torn or damaged line only loses that entry
-      }
-    });
+  return readFileSync(ledgerFile(), "utf8").split("\n").flatMap(parseLedgerLine);
+}
+
+/** One ledger line as its entry, or none when the line is not one. */
+function parseLedgerLine(line: string): LedgerEntry[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return []; // a torn or damaged line only loses that entry
+  }
+  if (typeof value !== "object" || value === null) return [];
+  const { at, model, costUsd } = value as Record<string, unknown>;
+  if (typeof model !== "string" || typeof costUsd !== "number") return [];
+  // `at` is not checked: Date.parse reads any value as a string, and an unreadable time is NaN, inside no window
+  return [{ model, costUsd, at: Date.parse(at as string) }];
 }
 
 /**
@@ -492,11 +521,14 @@ export function escalationSkip(
   if (!escalation)
     return "esc: skipped, the escalation model is not allowed by this repo's consent";
   const name = modelName(escalation);
-  if (c.limits.some((l) => l.model === name))
+  if (c.limits.some((limit) => limit.model === name))
     return `esc: skipped, ${escalation.id} hit its usage limit in this job`;
   const use = capUse(name, spent[name] ?? 0);
-  if (use && use.used >= skipAt)
-    return `esc: skipped, ${escalation.id} at ${Math.round(use.used * 100)}% of its tracked ${use.window} cap ($${use.capUsd.toFixed(2)})`;
+  if (use && use.used >= skipAt) {
+    const percent = Math.round(use.used * 100);
+    const cap = use.capUsd.toFixed(2);
+    return `esc: skipped, ${escalation.id} at ${percent}% of its tracked ${use.window} cap ($${cap})`;
+  }
   return undefined;
 }
 
@@ -505,4 +537,4 @@ export function escalationSkip(
  * a Go model whose tracked spend, this job included, is past a window's cap kept answering, which only balance allows.
  */
 export const usedBalance = (spent: Record<string, number>) =>
-  Object.keys(spent).some((m) => (capUse(m)?.used ?? 0) > 1);
+  Object.keys(spent).some((name) => (capUse(name)?.used ?? 0) > 1);

@@ -1,25 +1,41 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { allowRepo, callText, homeEnv, startServer, tempRepo, type Logins } from "./harness.js";
 import { loadConfig } from "../src/config.js";
-import { PROVIDERS } from "../src/credentials.js";
+import { PROVIDERS, type Provider } from "../src/credentials.js";
 import { parsePlan } from "../src/plan.js";
 import {
+  capUse,
+  chain,
   clock,
+  DIFFICULTIES,
   effectiveModels,
+  escalationSkip,
+  foreignModels,
   fullRoute,
+  ledgerFile,
+  localEndpoint,
   modelName,
+  PRESET_NAMES,
   PRESETS,
   presetOf,
+  recordSpend,
+  ROLES,
   routeModels,
+  runRouted,
+  spendWindows,
   tierModel,
+  usedBalance,
   type Difficulty,
+  type Limit,
   type ModelsConfig,
+  type WorkerModel,
 } from "../src/routing.js";
 import { instructions } from "../src/server.js";
+import type { RunResult } from "../src/worker.js";
 
 /** Model routing through the MCP seam: provider limits, fallbacks, the allowlist, escalation skip, spend and billing. */
 
@@ -632,4 +648,576 @@ test("a damaged ollama entry does not count as a local endpoint: the preset stil
   expect(
     effectiveModels("ollama", { preset: "cheapest", models: { implement: "ollama/x" } }),
   ).toEqual({ implement: "ollama/x" });
+});
+
+// ---- the module's own behavior, called directly ----
+
+test("the role defaults, presets, preset names and difficulties: every entry and its order", () => {
+  expect(JSON.stringify(ROLES)).toBe(
+    JSON.stringify({
+      ollama: {
+        implement: ["deepseek-v4.1-flash:cloud", "glm-5.3-flash:cloud", "qwen3.7-plus:cloud"],
+        research: ["qwen3.8-flash:cloud", "deepseek-v4.1-flash:cloud"],
+        escalation: "glm-5.3:cloud",
+      },
+      "opencode-go": {
+        implement: ["deepseek-v4.1-flash", "qwen3.7-plus", "glm-5.3", "kimi-k3"],
+        research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
+        escalation: "deepseek-v4-pro",
+      },
+      openrouter: {
+        implement: [
+          "deepseek/deepseek-v4.1-flash",
+          "qwen/qwen3.7-plus",
+          "z-ai/glm-5.3",
+          "moonshotai/kimi-k3",
+        ],
+        research: ["qwen/qwen3.8-flash", "deepseek/deepseek-v4.1-flash"],
+        escalation: "z-ai/glm-5.3-flash",
+      },
+      opencode: {
+        implement: ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3"],
+        research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
+        escalation: "deepseek-v4-pro",
+      },
+      deepseek: {
+        implement: ["deepseek-flash"],
+        research: ["deepseek-flash"],
+        escalation: "deepseek-v4-pro",
+      },
+      commandcode: {
+        implement: ["deepseek/deepseek-v4.1-flash"],
+        research: ["deepseek/deepseek-v4.1-flash"],
+        escalation: "deepseek/deepseek-v4-pro",
+      },
+    }),
+  );
+  expect(JSON.stringify(PRESETS)).toBe(
+    JSON.stringify({
+      ollama: {
+        cheapest: { implement: "ollama/deepseek-v4.1-flash:cloud" },
+        balanced: { implement: "ollama/deepseek-v4.1-flash:cloud" },
+        strongest: { implement: "ollama/glm-5.3:cloud" },
+      },
+      "opencode-go": {
+        cheapest: { implement: "opencode-go/deepseek-v4.1-flash" },
+        balanced: { implement: "opencode-go/deepseek-v4.1-flash" },
+        strongest: { implement: "opencode-go/glm-5.3", medium: "opencode-go/glm-5.3" },
+      },
+      opencode: {
+        cheapest: { implement: "opencode/deepseek-v4.1-flash" },
+        balanced: { implement: "opencode/deepseek-v4.1-flash" },
+        strongest: { implement: "opencode/glm-5.3", medium: "opencode/glm-5.3" },
+      },
+      openrouter: {
+        cheapest: { implement: "openrouter/deepseek/deepseek-v4.1-flash" },
+        balanced: { implement: "openrouter/deepseek/deepseek-v4.1-flash" },
+        strongest: { implement: "openrouter/z-ai/glm-5.3", medium: "openrouter/z-ai/glm-5.3" },
+      },
+      deepseek: {
+        cheapest: { implement: "deepseek/deepseek-flash" },
+        balanced: { implement: "deepseek/deepseek-flash" },
+        strongest: { implement: "deepseek/deepseek-v4-pro" },
+      },
+      commandcode: {
+        cheapest: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
+        balanced: { implement: "commandcode/deepseek/deepseek-v4.1-flash" },
+        strongest: { implement: "commandcode/deepseek/deepseek-v4-pro" },
+      },
+    }),
+  );
+  expect(PRESET_NAMES).toEqual(["cheapest", "balanced", "strongest"]);
+  expect(DIFFICULTIES).toEqual(["easy", "medium", "hard"]);
+});
+
+test("a local or Ollama route with nothing configured throws the login hint; only the custom endpoint is local then", () => {
+  const config = mkdtempSync(join(tmpdir(), "cheapag-routing-"));
+  vi.stubEnv("XDG_CONFIG_HOME", config);
+  vi.stubEnv("OLLAMA_API_KEY", "");
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+    rmSync(config, { recursive: true, force: true });
+  });
+  expect(() => fullRoute("local")).toThrow(
+    new Error("no local server configured; run npx cheap-agent login"),
+  );
+  expect(() => fullRoute("ollama")).toThrow(
+    new Error("no Ollama endpoint configured; run npx cheap-agent login"),
+  );
+  expect(localEndpoint("local")).toBe(true);
+  expect(localEndpoint("ollama")).toBe(false);
+  expect(localEndpoint("opencode-go")).toBe(false);
+});
+
+test("fullRoute: the default Go route, and an OpenRouter route with every role, fallback and variant set", () => {
+  const go = (id: string): WorkerModel => ({ providerID: "opencode-go", id });
+  expect(fullRoute("opencode-go")).toStrictEqual({
+    implement: go("deepseek-v4.1-flash"),
+    medium: undefined,
+    hard: undefined,
+    fallbacks: [go("qwen3.7-plus"), go("glm-5.3"), go("kimi-k3")],
+    escalation: go("deepseek-v4-pro"),
+    research: go("qwen3.8-flash"),
+    researchFallbacks: [go("deepseek-v4.1-flash")],
+  });
+
+  const options = { provider: { data_collection: "deny", sort: "throughput" } };
+  const routed = (id: string): WorkerModel => ({ providerID: "openrouter", id, options });
+  const tuned = fullRoute("openrouter", {
+    implement: "openrouter/z-ai/glm-5.3",
+    medium: "openrouter/a/medium",
+    hard: "deepseek/deepseek-v4-pro",
+    research: "openrouter/r/research",
+    escalation: "openrouter/e/escalation",
+    fallback: ["openrouter/f/one", "opencode-go/kimi-k3", "openrouter/f/two"],
+    variants: { "openrouter/f/two": "high", "openrouter/r/research": "low" },
+  });
+  expect(tuned).toStrictEqual({
+    implement: routed("z-ai/glm-5.3"),
+    medium: routed("a/medium"),
+    hard: undefined,
+    fallbacks: [routed("f/one"), { ...routed("f/two"), variant: "high" }],
+    escalation: routed("e/escalation"),
+    research: { ...routed("r/research"), variant: "low" },
+    researchFallbacks: [routed("deepseek/deepseek-v4.1-flash")],
+  });
+  // every OpenRouter model shares the one data-collection preference object
+  expect(tuned.implement.options).toBe(tuned.fallbacks[0].options);
+
+  // an empty fallback list means no fallbacks, not the defaults
+  expect(fullRoute("opencode-go", { fallback: [] }).fallbacks).toEqual([]);
+  expect(fullRoute("opencode-go", { fallback: ["openrouter/a/b"] }).fallbacks).toEqual([]);
+
+  // a name that is only the prefix: implement and research keep the empty id, a tier, escalation or fallback drops it
+  const empty = fullRoute("opencode-go", {
+    implement: "opencode-go/",
+    research: "opencode-go/",
+    medium: "opencode-go/",
+    escalation: "opencode-go/",
+    fallback: ["opencode-go/"],
+  });
+  expect(empty.implement).toEqual(go(""));
+  expect(empty.research).toEqual(go(""));
+  expect(empty.medium).toBeUndefined();
+  expect(empty.escalation).toEqual(go("deepseek-v4-pro"));
+  expect(empty.fallbacks).toEqual([]);
+});
+
+test("routeModels: implement, tiers, research, escalation, then fallbacks; a model seen before is left out", () => {
+  const route = fullRoute("opencode-go");
+  const models = routeModels(route);
+  expect(models.map(modelName)).toEqual([
+    "opencode-go/deepseek-v4.1-flash",
+    "opencode-go/qwen3.8-flash",
+    "opencode-go/deepseek-v4-pro",
+    "opencode-go/qwen3.7-plus",
+    "opencode-go/glm-5.3",
+    "opencode-go/kimi-k3",
+  ]);
+  expect(models[0]).toBe(route.implement);
+  expect(
+    routeModels(fullRoute("opencode-go", { hard: "opencode-go/glm-5.3" })).map(modelName),
+  ).toEqual([
+    "opencode-go/deepseek-v4.1-flash",
+    "opencode-go/glm-5.3",
+    "opencode-go/qwen3.8-flash",
+    "opencode-go/deepseek-v4-pro",
+    "opencode-go/qwen3.7-plus",
+    "opencode-go/kimi-k3",
+  ]);
+});
+
+test("foreignModels: roles in order, then each foreign fallback; the provider prefix includes its slash", () => {
+  expect(foreignModels("opencode-go")).toEqual([]);
+  expect(
+    foreignModels("opencode-go", {
+      fallback: ["openrouter/a/b", "opencode-go/kimi-k3", "opencode/glm-5.3"],
+      escalation: "deepseek/deepseek-v4-pro",
+      research: "opencode-go/qwen3.8-flash",
+      hard: "opencode-gox/x",
+      medium: "",
+      implement: "openrouter/z-ai/glm-5.3",
+    }),
+  ).toEqual([
+    { role: "implement", name: "openrouter/z-ai/glm-5.3" },
+    { role: "hard", name: "opencode-gox/x" },
+    { role: "escalation", name: "deepseek/deepseek-v4-pro" },
+    { role: "fallback", name: "openrouter/a/b" },
+    { role: "fallback", name: "opencode/glm-5.3" },
+  ]);
+});
+
+test("presetOf: no models is the default route, balanced; a tie with cheapest names balanced", () => {
+  expect(presetOf("opencode-go")).toBe("balanced");
+  expect(presetOf("opencode-go", PRESETS["opencode-go"].cheapest)).toBe("balanced");
+  expect(presetOf("deepseek", { implement: "deepseek/deepseek-v4-pro" })).toBe("strongest");
+  expect(presetOf("local")).toBe("custom");
+});
+
+test("chain: starts on the first model with a copy of the fallbacks, nothing hit or used", () => {
+  const first: WorkerModel = { providerID: "opencode-go", id: "a" };
+  const fallbacks: WorkerModel[] = [{ providerID: "opencode-go", id: "b" }];
+  const c = chain(first, fallbacks);
+  expect(c).toStrictEqual({ first, current: first, rest: fallbacks, limits: [], used: [] });
+  expect(c.current).toBe(first);
+  expect(c.rest).not.toBe(fallbacks);
+});
+
+/** A fake worker session: hands out `results` in order and records each prompt, its model and its signal. */
+function fakeSession(results: RunResult[], rotates = true) {
+  const runs: { text: string; model?: WorkerModel; interrupt?: AbortSignal }[] = [];
+  const rotations: boolean[] = [];
+  const session = {
+    run: (text: string, model?: WorkerModel, interrupt?: AbortSignal) => {
+      runs.push({ text, model, interrupt });
+      return Promise.resolve(results.shift()!);
+    },
+    rotate: () => {
+      rotations.push(rotates);
+      return Promise.resolve(rotates);
+    },
+  };
+  return { session, runs, rotations };
+}
+
+const FLASH: WorkerModel = { providerID: "opencode-go", id: "deepseek-v4.1-flash" };
+const QWEN: WorkerModel = { providerID: "opencode-go", id: "qwen3.7-plus" };
+const PRO: WorkerModel = { providerID: "opencode-go", id: "deepseek-v4-pro" };
+const RETRY_TEXT =
+  "The previous attempt hit a provider capacity error. Continue the current step from where it left off.";
+const CONTINUE_TEXT =
+  "The previous model hit a usage limit and was stopped. Continue the current step from where it left off.";
+
+test("runRouted: a limit moves the same session to the next fallback, which every later prompt names", async () => {
+  const limit: Limit = {
+    model: "opencode-go/deepseek-v4.1-flash",
+    reason: "account_rate_limit",
+    message: "5h usage limit reached.",
+    next: Date.now() + 3_600_000,
+  };
+  const { session, runs, rotations } = fakeSession([{ text: "", limit }, { text: "done" }]);
+  const interrupt = new AbortController().signal;
+  const c = chain(FLASH, [QWEN]);
+  expect(await runRouted(session, "do it", c, "opencode-go", undefined, interrupt)).toStrictEqual({
+    text: "done",
+  });
+  expect(runs).toStrictEqual([
+    { text: "do it", model: undefined, interrupt },
+    { text: CONTINUE_TEXT, model: QWEN, interrupt },
+  ]);
+  expect(rotations).toEqual([]);
+  expect(c).toStrictEqual({
+    first: FLASH,
+    current: QWEN,
+    rest: [],
+    limits: [limit],
+    used: ["opencode-go/qwen3.7-plus"],
+  });
+});
+
+test("runRouted: a transient error is retried once after a fork, then ends PROVIDER naming the other models", async () => {
+  const failing = fakeSession([
+    { text: "", httpStatus: 503 },
+    { text: "", httpStatus: 503 },
+  ]);
+  expect(
+    await runRouted(failing.session, "do it", chain(FLASH, [QWEN, PRO]), "opencode-go"),
+  ).toStrictEqual({
+    text: "",
+    httpStatus: 503,
+    provider:
+      "deepseek-v4.1-flash is failing (last error: HTTP 503); other models: qwen3.7-plus, deepseek-v4-pro",
+  });
+  expect(failing.runs.map((r) => r.text)).toEqual(["do it", RETRY_TEXT]);
+  expect(failing.rotations).toEqual([true]);
+
+  // no fork possible: no retry; the error text is cut at 120 characters; no fallbacks left reads "none"
+  const error = `overloaded ${"x".repeat(200)}`;
+  const unforked = fakeSession([{ text: "", error }], false);
+  expect(await runRouted(unforked.session, "do it", chain(FLASH, []), "opencode-go")).toStrictEqual(
+    {
+      text: "",
+      error,
+      provider: `deepseek-v4.1-flash is failing (last error: ${error.slice(0, 120)}); other models: none`,
+    },
+  );
+  expect(unforked.runs).toHaveLength(1);
+  expect(unforked.rotations).toEqual([false]);
+
+  // the retry succeeds: its result is returned
+  const recovered = fakeSession([{ text: "", httpStatus: 429 }, { text: "ok" }]);
+  expect(await runRouted(recovered.session, "do it", chain(FLASH, []), "opencode-go")).toEqual({
+    text: "ok",
+  });
+});
+
+test("runRouted: which errors count as transient", async () => {
+  const retried = async (result: Omit<RunResult, "text">) => {
+    const { session, runs } = fakeSession([{ text: "", ...result }, { text: "ok" }]);
+    await runRouted(session, "do it", chain(FLASH, []), "opencode-go");
+    return runs.length === 2;
+  };
+  expect(await retried({ httpStatus: 408 })).toBe(true);
+  expect(await retried({ httpStatus: 429 })).toBe(true);
+  expect(await retried({ httpStatus: 500 })).toBe(true);
+  expect(await retried({ httpStatus: 599 })).toBe(true);
+  for (const error of [
+    "Overloaded",
+    "model at capacity",
+    "Rate Limit hit",
+    "Too many requests",
+    "timed out",
+    "timeout",
+    "time out",
+    "please try again",
+    "temporarily unavailable",
+    "Upstream request failed",
+    "ECONNRESET",
+    "socket hang up",
+    "fetch failed",
+  ])
+    expect(await retried({ error })).toBe(true);
+  expect(await retried({ httpStatus: 401, error: "invalid api key" })).toBe(false);
+  expect(await retried({ httpStatus: 499 })).toBe(false);
+  expect(await retried({ httpStatus: 402 })).toBe(false);
+  expect(await retried({ error: "" })).toBe(false);
+});
+
+test("runRouted with escalation: one prompt on that model; a limit is recorded, never fallen back from; no retry", async () => {
+  const limit: Limit = { model: "opencode-go/deepseek-v4-pro", message: "limited", next: 0 };
+  const limited = fakeSession([{ text: "", limit }]);
+  const c = chain(FLASH, [QWEN]);
+  expect(await runRouted(limited.session, "fix it", c, "opencode-go", PRO)).toStrictEqual({
+    text: "",
+    limit,
+  });
+  expect(limited.runs).toStrictEqual([{ text: "fix it", model: PRO, interrupt: undefined }]);
+  expect(c).toStrictEqual({
+    first: FLASH,
+    current: FLASH,
+    rest: [QWEN],
+    limits: [limit],
+    used: [],
+  });
+
+  const transient = fakeSession([{ text: "", httpStatus: 503 }]);
+  expect(
+    await runRouted(transient.session, "fix it", chain(FLASH, []), "opencode-go", PRO),
+  ).toStrictEqual({ text: "", httpStatus: 503 });
+  expect(transient.rotations).toEqual([]);
+
+  // OpenRouter out of credits is BUDGET on escalation too
+  const broke = fakeSession([{ text: "", httpStatus: 402 }]);
+  expect(
+    await runRouted(broke.session, "fix it", chain(FLASH, []), "openrouter", PRO),
+  ).toStrictEqual({ text: "", httpStatus: 402, budget: "OpenRouter credits exhausted" });
+});
+
+test("runRouted: a 402 is BUDGET only on OpenRouter", async () => {
+  const other = fakeSession([{ text: "", httpStatus: 402 }]);
+  expect(await runRouted(other.session, "do it", chain(FLASH, []), "opencode-go")).toStrictEqual({
+    text: "",
+    httpStatus: 402,
+  });
+});
+
+/** The BUDGET reason runRouted gives once each model in turn hits one of `limits`. */
+async function budgetFor(provider: Provider["provider"], limits: Limit[]) {
+  const { session } = fakeSession(limits.map((limit) => ({ text: "", limit })));
+  const [first, ...rest] = limits.map((_, i): WorkerModel => ({
+    providerID: provider,
+    id: `m${i}`,
+  }));
+  return (await runRouted(session, "do it", chain(first, rest), provider)).budget;
+}
+
+test("the BUDGET reason: the Go window or the provider's rate limit, the bare ids once each, the earliest real reset", async () => {
+  const hour = Date.now() + 3_600_000;
+  const later = Date.now() + 2 * 3_600_000;
+  const go = (
+    model: string,
+    next: number,
+    message = "5h usage limit reached. It will reset",
+  ): Limit => ({
+    model,
+    reason: "account_rate_limit",
+    message,
+    next,
+  });
+  expect(
+    await budgetFor("opencode-go", [
+      go("opencode-go/deepseek-v4.1-flash", later),
+      go("opencode-go/qwen3.7-plus", hour),
+      go("opencode-go/deepseek-v4.1-flash", later),
+    ]),
+  ).toBe(`Go 5h window exhausted for deepseek-v4.1-flash, qwen3.7-plus (resets ~${clock(hour)})`);
+  expect(
+    await budgetFor("opencode-go", [go("opencode-go/a", later, "Weekly Usage Limit Reached.")]),
+  ).toBe(`Go weekly window exhausted for a (resets ~${clock(later)})`);
+  expect(await budgetFor("opencode-go", [go("opencode-go/a", later, "slow down")])).toBe(
+    `Go usage window exhausted for a (resets ~${clock(later)})`,
+  );
+  expect(
+    await budgetFor("opencode-go", [
+      { model: "opencode-go/a", message: "plain", next: later },
+      { model: "opencode-go/b", reason: "free_tier_limit", message: "free", next: hour },
+    ]),
+  ).toBe(`Go free tier window exhausted for a, b (resets ~${clock(hour)})`);
+  // a next under a minute away, or not finite, is only a backoff: the last limit's own text is quoted
+  expect(
+    await budgetFor("openrouter", [
+      { model: "openrouter/x/a", message: "first", next: Date.now() + 30_000 },
+      { model: "openrouter/x/b", message: "Resets tomorrow", next: Number.NaN },
+    ]),
+  ).toBe("OpenRouter rate limit on every allowed model: x/a, x/b (retry Resets tomorrow)");
+  expect(
+    await budgetFor("deepseek", [
+      { model: "deepseek/a", reason: "other", message: "m", next: hour },
+    ]),
+  ).toBe(`DeepSeek rate limit on every allowed model: a (retry ~${clock(hour)})`);
+});
+
+test("clock: HH:MM today, the short date in front on another day", () => {
+  const today = new Date();
+  today.setHours(9, 7, 0, 0);
+  expect(clock(today.getTime())).toBe("09:07");
+  expect(clock(new Date(2020, 0, 5, 18, 30).getTime())).toBe("Jan 5 18:30");
+});
+
+test("the ledger file: XDG_STATE_HOME, or ~/.local/state when it is empty", () => {
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+  vi.stubEnv("XDG_STATE_HOME", "/state");
+  expect(ledgerFile()).toBe(join("/state", "cheapag", "spend.jsonl"));
+  vi.stubEnv("XDG_STATE_HOME", "");
+  expect(ledgerFile()).toBe(join(homedir(), ".local", "state", "cheapag", "spend.jsonl"));
+});
+
+test("the spend ledger: recorded lines, damaged lines skipped, windows, caps, escalation skips and balance use", () => {
+  const state = mkdtempSync(join(tmpdir(), "cheapag-ledger-"));
+  vi.stubEnv("XDG_STATE_HOME", state);
+  const now = Date.parse("2026-11-20T10:00:00.000Z");
+  vi.useFakeTimers({ toFake: ["Date"], now });
+  onTestFinished(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    rmSync(state, { recursive: true, force: true });
+  });
+  const file = join(state, "cheapag", "spend.jsonl");
+
+  // nothing spent: no folder, no file
+  recordSpend({ "opencode-go/deepseek-v4.1-flash": 0, "opencode-go/qwen3.7-plus": -1 });
+  expect(existsSync(join(state, "cheapag"))).toBe(false);
+  expect(spendWindows()).toEqual([]);
+
+  const hour = 3_600_000;
+  const line = (hoursAgo: number, model: unknown, costUsd: unknown) =>
+    JSON.stringify({ at: new Date(now - hoursAgo * hour).toISOString(), model, costUsd });
+  mkdirSync(join(state, "cheapag"));
+  writeFileSync(
+    file,
+    [
+      line(1, "opencode-go/deepseek-v4.1-flash", 4),
+      "torn{",
+      line(1, "opencode-go/deepseek-v4-pro", 1.5),
+      line(48, "opencode-go/deepseek-v4.1-flash", 6),
+      "null",
+      "5",
+      "[]",
+      line(2, "openrouter/a/b", 1.5),
+      line(1, "m", "1"),
+      line(1, 3, 1),
+      line(29 * 24, "opencode-go/deepseek-v4.1-flash", 70),
+      line(40 * 24, "opencode-go/qwen3.7-plus", 9),
+      line(1, "opencode-go/zero", 0),
+      JSON.stringify({ at: "bogus", model: "opencode-go/qwen3.8-flash", costUsd: 2 }),
+      "",
+    ].join("\n"),
+  );
+
+  expect(spendWindows()).toStrictEqual([
+    {
+      model: "opencode-go/deepseek-v4-pro",
+      windows: [
+        { window: "5h", spent: 1.5, capUsd: 3 },
+        { window: "weekly", spent: 1.5, capUsd: 7.5 },
+        { window: "monthly", spent: 1.5, capUsd: 15 },
+      ],
+    },
+    {
+      model: "opencode-go/deepseek-v4.1-flash",
+      windows: [
+        { window: "5h", spent: 4, capUsd: 16 },
+        { window: "weekly", spent: 10, capUsd: 40 },
+        { window: "monthly", spent: 80, capUsd: 80 },
+      ],
+    },
+    {
+      model: "openrouter/a/b",
+      windows: [
+        { window: "5h", spent: 1.5, capUsd: undefined },
+        { window: "weekly", spent: 1.5, capUsd: undefined },
+        { window: "monthly", spent: 1.5, capUsd: undefined },
+      ],
+    },
+  ]);
+  // a window ends just before `now` minus its length
+  expect(spendWindows(now + 4 * hour).map((s) => s.windows[0].spent)).toEqual([0, 0, 0]);
+
+  expect(capUse("opencode-go/deepseek-v4.1-flash")).toStrictEqual({
+    used: 1,
+    window: "monthly",
+    capUsd: 80,
+  });
+  expect(capUse("opencode-go/deepseek-v4-pro")).toStrictEqual({
+    used: 0.5,
+    window: "5h",
+    capUsd: 3,
+  });
+  expect(capUse("opencode-go/deepseek-v4-pro", 1)).toStrictEqual({
+    used: 2.5 / 3,
+    window: "5h",
+    capUsd: 3,
+  });
+  // nothing in any window: the first window wins the tie
+  expect(capUse("opencode-go/qwen3.8-flash")).toStrictEqual({ used: 0, window: "5h", capUsd: 6 });
+  expect(capUse("openrouter/a/b")).toBeUndefined();
+
+  const fresh = chain(FLASH, []);
+  expect(escalationSkip(PRO, fresh, 0.8, { "opencode-go/deepseek-v4-pro": 1 })).toBe(
+    "esc: skipped, deepseek-v4-pro at 83% of its tracked 5h cap ($3.00)",
+  );
+  expect(escalationSkip(PRO, fresh, 0.9, { "opencode-go/deepseek-v4-pro": 1 })).toBeUndefined();
+  expect(escalationSkip(PRO, fresh, 0.5, { "opencode-go/qwen3.7-plus": 9 })).toBe(
+    "esc: skipped, deepseek-v4-pro at 50% of its tracked 5h cap ($3.00)",
+  );
+  expect(escalationSkip({ providerID: "openrouter", id: "a/b" }, fresh, 0, {})).toBeUndefined();
+  const limited = chain(FLASH, []);
+  limited.limits.push({ model: "opencode-go/deepseek-v4-pro", message: "limited", next: 0 });
+  expect(escalationSkip(PRO, limited, 0.5, {})).toBe(
+    "esc: skipped, deepseek-v4-pro hit its usage limit in this job",
+  );
+  expect(escalationSkip(undefined, fresh, 0.8, {})).toBe(
+    "esc: skipped, the escalation model is not allowed by this repo's consent",
+  );
+  expect(escalationSkip(undefined, chain({ providerID: "local", id: "x" }, []), 0.8, {})).toBe(
+    "esc: skipped, no escalation model for the local server (set models.escalation, or allow it with /cheapag:allow)",
+  );
+
+  // the job's own spend counts once it is recorded: exactly at the cap is not past it
+  expect(usedBalance({ "opencode-go/deepseek-v4.1-flash": 0.02 })).toBe(false);
+  expect(usedBalance({ "openrouter/a/b": 5, "opencode-go/deepseek-v4-pro": 0 })).toBe(false);
+  const before = readFileSync(file, "utf8");
+  recordSpend({
+    "opencode-go/deepseek-v4.1-flash": 0.02,
+    "openrouter/a/b": 0,
+    "opencode-go/qwen3.7-plus": 0.25,
+  });
+  expect(readFileSync(file, "utf8")).toBe(
+    before +
+      '{"at":"2026-11-20T10:00:00.000Z","model":"opencode-go/deepseek-v4.1-flash","costUsd":0.02}\n' +
+      '{"at":"2026-11-20T10:00:00.000Z","model":"opencode-go/qwen3.7-plus","costUsd":0.25}\n',
+  );
+  expect(usedBalance({ "opencode-go/deepseek-v4.1-flash": 0 })).toBe(true);
 });
