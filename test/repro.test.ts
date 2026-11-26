@@ -214,3 +214,38 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     );
   },
 );
+
+test("no reproduction without a reason: the risk gives the default one", async () => {
+  const { record } = await delegate("none");
+  expect(record.repro).toBe("none");
+  expect(record.risks[0]).toBe("no reproduction: the worker could not reproduce the problem");
+});
+
+test("a reproduction claim of n/a: no repro token, no risk", async () => {
+  const { record } = await delegate("n/a");
+  expect(record.repro).toBeUndefined();
+  expect(record.risks).toEqual([]);
+});
+
+test("a reproduction that fails on the fixed code: repro=unverified with a risk", async () => {
+  const { record } = await delegate("node test/hello.test.mjs", {
+    reproTest: "process.exit(1);\n",
+  });
+  expect(record.repro).toBe("unverified");
+  expect(record.risks[0]).toBe(
+    "nothing to do (the checks passed), reproduction not verified: `node test/hello.test.mjs` fails on the fixed code",
+  );
+});
+
+test("a fix that changed only tests has nothing to set aside: repro=unverified with a risk", async () => {
+  const { record } = await delegate("node test/hello.test.mjs", {
+    beforeJob: (repo) => {
+      writeFileSync(join(repo.dir, "src", "hello.ts"), "export const hello = 2;\n");
+      repo.git("commit", "-q", "-am", "already fixed");
+    },
+  });
+  expect(record.repro).toBe("unverified");
+  expect(record.risks[0]).toBe(
+    "nothing to do (the checks passed), reproduction not verified: the change has no code outside tests",
+  );
+});

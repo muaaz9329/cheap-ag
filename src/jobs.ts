@@ -97,11 +97,11 @@ import { toolTarget } from "./watch.js";
  * The worker session's ruleset for this job. The step's own done-when checks are allowed exactly as written, so the
  * worker can check its work before finishing (Cheap Agent runs them anyway); the hard denylist still comes last.
  */
-function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
+function rulesetFor(worktree: Worktree, commands: string[], config: Config) {
   const { scripts, exact } = projectScripts(worktree.path);
   return workerRuleset({
     scripts,
-    exact: [...exact, ...cmds.flatMap(checkAllows)],
+    exact: [...exact, ...commands.flatMap(checkAllows)],
     allowCommands: config.allow_commands,
     linked: worktree.linked,
     onBlockedCommand: config.on_blocked_command,
@@ -111,11 +111,11 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 /** More rejections than this in one job earn a risk line. */
 const MAX_QUIET_REJECTIONS = 5;
 
-/** Ticket 33: a harder step earns proportionally more turns before its cap (defaults 25/50/75 for easy/medium/hard). */
+/** A harder step earns proportionally more turns before its cap (defaults 25/50/75 for easy/medium/hard). */
 const TURN_SCALE: Record<Difficulty, number> = { easy: 1, medium: 2, hard: 3 };
-/** The turn cap for the escalation attempt after a turn-cap stop: its own, smaller budget (ticket 33). */
-const ESC_TURNS = 15;
-/** Fail fast applies only to fixes (ticket 37): a step or source naming any of these is a bug to reproduce first. */
+/** The turn cap for the escalation attempt after a turn-cap stop: its own, smaller budget. */
+const ESCALATION_TURNS = 15;
+/** Fail fast applies only to fixes: a step or source naming any of these is a bug to reproduce first. */
 const FIX_WORDS =
   /\b(bug|fix(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|error|crash(?:es|ed)?|regress(?:ion|ed)?|broken|incorrect|wrong|traceback|exception)\b/i;
 
@@ -204,13 +204,16 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
       .map((l, i) => (i ? "  " + l : l))
       .join("\n");
   const title = task.split(/\r?\n/)[0].slice(0, 70);
+  const doneWhen =
+    req.done_when?.trim() ||
+    "the change described in do: is made and the existing tests still pass";
   const body = [
     `# ${title}`,
     "",
     "## 1 task",
     `files: ${req.files?.trim() || "./"}`,
     `do: ${indent(task)}`,
-    `done-when: ${indent(req.done_when?.trim() || "the change described in do: is made and the existing tests still pass")}`,
+    `done-when: ${indent(doneWhen)}`,
     "",
   ].join("\n");
   const rel = join(
@@ -236,24 +239,9 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
   const { route } = gate;
-  let input: DelegateInput;
-  const brief = resolveBrief(root, req.brief);
-  if ("fail" in brief) return failBlock(brief.fail);
-  const source = resolveSource(root, req.source);
-  const rest = {
-    note: req.note,
-    wait: req.wait,
-    brief: brief.text,
-    source,
-    difficulty: req.difficulty,
-    model: req.model,
-  };
-  if (req.task !== undefined) {
-    const made = inlinePlan(root, req);
-    if ("fail" in made) return failBlock(made.fail);
-    input = { plan: made.plan, steps: "1", ...rest };
-  } else if (req.plan && req.steps) input = { plan: req.plan, steps: req.steps, ...rest };
-  else return failBlock("give task (what to change, files, how to check), or plan and steps");
+  const resolved = delegateInput(root, req);
+  if ("fail" in resolved) return failBlock(resolved.fail);
+  const { input } = resolved;
   // only the caller's path: an inline task's own plan lives under .cheapag/plans/
   if (
     req.task === undefined &&
@@ -268,24 +256,9 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
         .map((m) => m.id)
         .join(", ")}; run /cheapag:allow to add it`,
     );
-  const planFile = join(root, input.plan);
-  if (isAbsolute(input.plan) || !inside(root, planFile))
-    return failBlock(
-      `plan ${input.plan} must be a path inside the repository, relative to its root`,
-    );
-  if (!existsSync(planFile)) return failBlock(`plan ${input.plan} not found`);
-  let plan: Plan;
-  let groups: Group[];
-  try {
-    plan = parsePlan(readFileSync(planFile, "utf8"));
-  } catch (err) {
-    return failBlock(`plan ${input.plan}: ${(err as Error).message}\n${PLAN_FORMAT}`);
-  }
-  try {
-    groups = selectGroups(plan, input.steps);
-  } catch (err) {
-    return failBlock(`plan ${input.plan}: ${(err as Error).message}`);
-  }
+  const read = readPlan(root, input);
+  if ("fail" in read) return failBlock(read.fail);
+  const { plan, groups } = read;
 
   let config: Config;
   try {
@@ -325,6 +298,55 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   return input.wait === false ? run.render() : run.look(false, ctx.progress);
 }
 
+/** The call's input: an inline task as a one-step plan, or the caller's plan and steps; or why neither. */
+function delegateInput(
+  root: string,
+  req: DelegateRequest,
+): { input: DelegateInput } | { fail: string } {
+  const brief = resolveBrief(root, req.brief);
+  if ("fail" in brief) return brief;
+  const source = resolveSource(root, req.source);
+  const rest = {
+    note: req.note,
+    wait: req.wait,
+    brief: brief.text,
+    source,
+    difficulty: req.difficulty,
+    model: req.model,
+  };
+  if (req.task !== undefined) {
+    const made = inlinePlan(root, req);
+    if ("fail" in made) return made;
+    return { input: { plan: made.plan, steps: "1", ...rest } };
+  }
+  if (req.plan && req.steps) return { input: { plan: req.plan, steps: req.steps, ...rest } };
+  return { fail: "give task (what to change, files, how to check), or plan and steps" };
+}
+
+/** Reads and parses the input's plan file and selects the groups of steps to run; or why it cannot. */
+function readPlan(
+  root: string,
+  input: DelegateInput,
+): { plan: Plan; groups: Group[] } | { fail: string } {
+  const planFile = join(root, input.plan);
+  if (isAbsolute(input.plan) || !inside(root, planFile))
+    return {
+      fail: `plan ${input.plan} must be a path inside the repository, relative to its root`,
+    };
+  if (!existsSync(planFile)) return { fail: `plan ${input.plan} not found` };
+  let plan: Plan;
+  try {
+    plan = parsePlan(readFileSync(planFile, "utf8"));
+  } catch (err) {
+    return { fail: `plan ${input.plan}: ${(err as Error).message}\n${PLAN_FORMAT}` };
+  }
+  try {
+    return { plan, groups: selectGroups(plan, input.steps) };
+  } catch (err) {
+    return { fail: `plan ${input.plan}: ${(err as Error).message}` };
+  }
+}
+
 type Shared = {
   root: string;
   input: DelegateInput;
@@ -358,11 +380,11 @@ type GroupRun = Shared & {
  * or final); `done` resolves to the final block; `record()` is the job record as it stands; `settles()` resolves at the
  * job's next settlement (BLOCKED, or final).
  */
-function runGroup(g: GroupRun) {
-  const { root, input, plan, config, route, opencode } = g;
-  const steps = g.group.steps;
-  const cmds = g.fix
-    ? [g.fix.cmd]
+function runGroup(groupRun: GroupRun) {
+  const { root, input, plan, config, route, opencode } = groupRun;
+  const steps = groupRun.group.steps;
+  const commands = groupRun.fix
+    ? [groupRun.fix.cmd]
     : verifyCommands(
         steps.map((s) => s.fields["done-when"]),
         config.test_cmd,
@@ -372,8 +394,8 @@ function runGroup(g: GroupRun) {
     typeof value === "string"
       ? writeWhole(join(dir, name), redact(value))
       : writeJson(join(dir, name), value);
-  const stepIds = g.group.label;
-  // a step's own difficulty: wins over the call's; in a range the hardest step decides (ticket 26)
+  const stepIds = groupRun.group.label;
+  // a step's own difficulty: wins over the call's; in a range the hardest step decides
   const difficulty =
     [...DIFFICULTIES].reverse().find((d) => steps.some((s) => s.fields.difficulty === d)) ??
     input.difficulty;
@@ -384,7 +406,7 @@ function runGroup(g: GroupRun) {
   write("request.json", {
     ...input,
     steps: stepIds,
-    batch: g.batch,
+    batch: groupRun.batch,
     model: modelName(model),
     difficulty,
     startedAt,
@@ -411,7 +433,7 @@ function runGroup(g: GroupRun) {
     }
   };
   // whoever is waiting on this job right now: delegate first, then each reply
-  let progress = g.progress;
+  let progress = groupRun.progress;
   // the same line goes to progress.txt for anything watching the folder; best effort, with or without an MCP progress token
   const tell: Progress = (turns, message) => {
     try {
@@ -434,8 +456,8 @@ function runGroup(g: GroupRun) {
     wake();
   };
   let notStarted: string | undefined;
-  let asked: NonNullable<JobRecord["question"]>[] | null = null;
-  let pending: PermissionBlock | null = null; // the command permission ask this job is paused on (ticket 69)
+  let asked: Asked[] | null = null;
+  let pending: PermissionBlock | null = null; // the command permission ask this job is paused on
   let blockedAt: Date | undefined;
   let expiry: NodeJS.Timeout | undefined; // max_blocked_minutes, while BLOCKED
   let worktree: Worktree | undefined;
@@ -445,26 +467,26 @@ function runGroup(g: GroupRun) {
   let reason: string | undefined;
   const verified: VerifyRun[] = [];
   const tried: string[] = [];
-  let found: string | undefined; // a stopped worker's findings note (ticket 29)
+  let found: string | undefined; // a stopped worker's findings note
   let selfFix = 0;
   let escalated = false;
   let repro: JobRecord["repro"]; // the server's check of the worker's reproduction test (OK jobs only)
-  let reproRisk: string | undefined;
-  let failing: { run: VerifyRun; tail: string[] } | undefined;
+  let reproductionRisk: string | undefined;
+  let failing: Failing | undefined;
   let checked = false; // whether verify has seen the worker's latest changes
   let redone = 0; // 1 once a landing conflict started the redo (spec: Landing and redo)
   let conflict: string[] | undefined; // set when the redo could not land either: the job is CONFLICT
 
   // caps count across the whole job; any stop aborts the session, and all but the turn cap also kill verify
   const { limits } = config;
-  // ticket 33: the turn cap scales with the step's difficulty, and the escalation attempt gets its own smaller one
+  // the turn cap scales with the step's difficulty, and the escalation attempt gets its own smaller one
   const scale = TURN_SCALE[difficulty ?? "easy"];
   let turnCap = limits.max_turns * scale;
   let turnBase = 0; // turns already spent when the current turn budget began (reset for the escalation attempt)
-  const escCap = Math.min(limits.max_turns, ESC_TURNS);
+  const escalationCap = Math.min(limits.max_turns, ESCALATION_TURNS);
   const halt = new AbortController(); // the worker session
   const kill = new AbortController(); // verify processes: a turn cap still runs one last check, so PARTIAL never hides failing tests
-  let escTurn: AbortController | undefined; // the escalation attempt's own run, when it follows a turn-cap stop
+  let escalationTurn: AbortController | undefined; // the escalation attempt's own run, when it follows a turn-cap stop
   let stopped = undefined as Stop | undefined; // set from callbacks: keep TS from narrowing it to undefined
   let landing = false;
   const stop = (why: Stop) => {
@@ -475,7 +497,7 @@ function runGroup(g: GroupRun) {
     blocked.delete(job); // a reply arriving now must not resume a stopped job
     halt.abort();
     if (why.cap !== "turns") kill.abort();
-    else escTurn?.abort(); // a turn cap during the escalation attempt ends that run too (it runs after `halt` aborted)
+    else escalationTurn?.abort(); // a turn cap during the escalation attempt ends that run too (it runs after `halt` aborted)
   };
   const overCost = () => {
     if (session && session.totals().usage.costUsd >= limits.max_cost_usd)
@@ -485,12 +507,12 @@ function runGroup(g: GroupRun) {
     if (session && session.totals().turns - turnBase >= turnCap)
       stop({ cap: "turns", reason: `turn cap (${turnCap}) reached` });
   };
-  // fail fast (ticket 28): a step with checks that has edited nothing by repro_by_turns stops now, so Claude takes over
+  // fail fast: a step with checks that has edited nothing by repro_by_turns stops now, so Claude takes over
   // without a 40-turn failed job in its context; any edit, source or test, lifts the stop and the job runs to its normal cap
-  // ticket 37: only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
+  // only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
   const kind = steps.find((s) => s.fields.kind)?.fields.kind;
   const isFix =
-    g.fix ||
+    groupRun.fix ||
     (kind
       ? kind === "fix"
       : FIX_WORDS.test(
@@ -503,8 +525,8 @@ function runGroup(g: GroupRun) {
       .split("\n")
       .map((l) => l.slice(3).trim())
       .filter(Boolean);
-  const reproDue = () => {
-    if (edited || !isFix || !cmds.length || !worktree || !session) return;
+  const reproductionDue = () => {
+    if (edited || !isFix || !commands.length || !worktree || !session) return;
     const by = limits.repro_by_turns * scale;
     if (session.totals().turns < by) return;
     edited = dirty().some((f) => !carried.has(f));
@@ -543,7 +565,7 @@ function runGroup(g: GroupRun) {
     root,
     stop,
     done,
-    batch: g.batch,
+    batch: groupRun.batch,
     settles: () => settled,
     block: () => renderJob(last),
     parked: () => parked,
@@ -553,9 +575,12 @@ function runGroup(g: GroupRun) {
   const verify = async () => {
     const runs = await runVerify(
       worktree!.path,
-      cmds,
+      commands,
       (cmd) =>
-        tell(session!.totals().turns, `step ${g.group.label} · verify ${cmd} · ${elapsed()}s`),
+        tell(
+          session!.totals().turns,
+          `step ${groupRun.group.label} · verify ${cmd} · ${elapsed()}s`,
+        ),
       kill.signal,
     );
     checked = true;
@@ -578,31 +603,17 @@ function runGroup(g: GroupRun) {
     const waiting = status === "BLOCKED";
     const silent = waiting || notStarted !== undefined; // likewise a group that never started
     const rejections = session?.totals().rejections ?? [];
-    // server risks go first, so the 5-risk cap never cuts them
-    const risks = [
-      ...(reproRisk ? [reproRisk] : []),
-      ...(report.disagree && !/^none\b/i.test(report.disagree)
-        ? [`spec vs source: ${report.disagree}`]
-        : []),
-      ...(rejections.length > MAX_QUIET_REJECTIONS
-        ? [
-            `${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`,
-          ]
-        : []),
-      ...report.risks,
-    ];
-    // a failing check that could not run at all (missing tool, broken Node) reads as an environment failure, not bad code
-    const env = failing ? envFailure(failing.run) : undefined;
+    const risks = jobRisks(reproductionRisk, report, rejections);
     const record = {
       format: "cheapag/1" as const,
       job,
-      batch: g.batch,
-      kind: g.fix ? "fix" : "implement",
+      batch: groupRun.batch,
+      kind: groupRun.fix ? "fix" : "implement",
       status,
       landed,
       plan: input.plan,
       steps: stepIds,
-      provider: g.provider.provider,
+      provider: groupRun.provider.provider,
       // the server process running the job: a restart finds RUNNING/BLOCKED records whose pid is gone
       pid: process.pid,
       models: {
@@ -613,57 +624,31 @@ function runGroup(g: GroupRun) {
       },
       difficulty,
       billing,
-      // tree: what the worktree's diff is measured against, so `land apply` can land it later
-      baseline: {
-        head: worktree?.head ?? null,
-        stash: worktree?.stash ?? null,
-        tree: worktree?.base ?? null,
-      },
-      worktree: !landed && worktree ? normalisePath(relative(root, worktree.path)) : null,
+      baseline: baselineOf(worktree),
+      worktree: unlandedWorktree(root, worktree, landed),
       cleanupError,
       sessionID: session?.sessionID ?? null,
-      // server-measured: "none" when nothing ran (no conditions, or the worker failed before verify)
-      tests: silent
-        ? undefined
-        : ((!verified.length ? "none" : failing ? "fail" : "pass") as JobRecord["tests"]),
-      error: failing ? (env ? [env, ...failing.tail] : failing.tail) : undefined,
-      ...(env && { check: "env" as const }),
+      tests: silent ? undefined : testsResult(verified.length > 0, failing),
+      ...failureFields(failing),
       tried,
       ...(found && { found }),
       summary: silent ? "" : report.summary,
       changed,
       risks: silent ? [] : risks,
-      ...(changed.some((c) => TEST_FILE.test(c.path)) && {
-        test: changed.find((c) => TEST_FILE.test(c.path))!.path,
-      }),
+      ...testFileField(changed),
       // a landed job's files are in the working tree; an unlanded one's only in its worktree
       review: reviewRanges(report.review, landed || !worktree ? root : worktree.path),
-      // a worker stopped by a cap rarely says what it left undone
-      missing:
-        status === "PARTIAL" && !report.missing.length
-          ? [`unknown: stopped (${stopped?.reason ?? "cap"}); compare the diff with the step`]
-          : report.missing,
+      missing: missingLines(status, report.missing, stopped),
       reason,
       conflict,
       verify: verified.map(({ cmd, ok, ms }) => ({ cmd, ok, ms })),
       selfFix,
       redo: redone,
       ...(repro && { repro }),
-      question: asked?.length === 1 ? asked[0] : null,
-      ...(pending && { permission: pending }),
-      ...(asked && asked.length > 1 && { questions: asked }),
+      ...questionFields(asked, pending),
       autoRejected: rejections,
-      usage: {
-        turns: session?.totals().turns ?? 0,
-        calls: session?.totals().calls ?? 0,
-        ...(session?.totals().usage ?? { costUsd: 0 }),
-      },
-      timing: {
-        startedAt,
-        endedAt: status === "RUNNING" || waiting ? null : new Date(),
-        ms: Date.now() - startedAt.getTime(),
-        ...(waiting && { blockedAt }),
-      },
+      usage: usageOf(session),
+      timing: timingOf(startedAt, status, blockedAt),
     };
     last = record;
     return saveRecord(dir, record);
@@ -721,7 +706,7 @@ function runGroup(g: GroupRun) {
     pending = null;
     const choice = options.indexOf(label);
     if (choice === 1) addAllowCommand(root, ask.prefix);
-    return choice === 0 ? "once" : choice === 1 ? "always" : "reject";
+    return permissionAnswer(choice);
   };
 
   /**
@@ -741,10 +726,9 @@ function runGroup(g: GroupRun) {
     // the same path, so the session's directory stays valid
     worktree = createWorktree(root, job, config.link_dirs);
     const marked = reapply(worktree, patch);
-    const named = conflictPaths(clash);
-    const files = marked.length ? marked : named.length ? named : changed.map((c) => c.path);
+    const files = clashFiles(marked, conflictPaths(clash), changed);
     landing = false;
-    await Promise.race([g.beforeRedo?.(), halted]); // max_parallel counts a redo's worker too
+    await Promise.race([groupRun.beforeRedo?.(), halted]); // max_parallel counts a redo's worker too
     startClock();
     finalize("RUNNING");
     const result = await work(redoPrompt(steps, files, marked, patch), "redo ");
@@ -753,256 +737,272 @@ function runGroup(g: GroupRun) {
     changed = diff.changed;
     write("diff.patch", diff.patch);
     if (stopped) return; // the cap or cancel explains it
-    let why = result.error
-      ? "redo worker error"
-      : failing
-        ? "redo failed verification"
-        : leftoverMarkers(worktree).length
-          ? "redo left conflict markers"
-          : !diff.changed.length
-            ? "redo made no changes"
-            : undefined;
+    let why = redoFailure({ result, failing, worktree, changed: diff.changed });
     if (!why) {
       landing = true;
       pauseClock();
-      if (
-        !(await land(
-          root,
-          job,
-          diff.patch,
-          diff.changed.map((c) => c.path),
-        ))
-      ) {
+      const clashAgain = await land(
+        root,
+        job,
+        diff.patch,
+        diff.changed.map((c) => c.path),
+      );
+      if (!clashAgain) {
         await cleanUp(worktree);
         return;
       }
       why = "redo could not reconcile";
     }
-    const others = landedSince(root, job, startedAt);
-    conflict = files.map((f) => {
-      const by = others.filter((r) => r.changed.some((c) => c.path === f)).map((r) => r.job);
-      return `${f} (${by.length ? `also changed by ${by.join(", ")}, landed first` : "changed in the working tree meanwhile"}; ${why})`;
+    conflict = conflictLines(files, landedSince(root, job, startedAt), why);
+  };
+
+  /** Waits for the job's turn (a batch's scheduling), then opens its worktree and the worker session. */
+  const begin = async () => {
+    notStarted = await Promise.race([groupRun.start, halted.then(() => undefined)]);
+    if (notStarted) throw new Error(notStarted);
+    if (stopped as Stop | undefined) throw new Error("stopped before it started"); // cancelled while queued; the stop's reason is recorded
+    startClock(); // queued time is not working time
+    worktree = createWorktree(root, job, config.link_dirs);
+    carried = new Set(dirty());
+    session = await openSession({
+      opencode,
+      directory: worktree.path,
+      model,
+      permission: rulesetFor(worktree, commands, config),
+      step: { label: groupRun.group.label, title: steps.map((s) => s.title).join("; ") },
+      // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
+      onQuestion: groupRun.fix ? undefined : (q) => onQuestion(q),
+      onPermission: groupRun.fix ? undefined : onPermission,
+      signal: halt.signal,
+      onEvent: (event, turns) => {
+        appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+        // one progress notification per worker turn; finer events (deltas, usage) would only be noise in /tasks
+        if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+          const part = event.properties.part;
+          if (part.state.status === "completed" || part.state.status === "error") {
+            const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
+            const tool = target ? `${part.tool} ${target}` : part.tool;
+            tell(turns, `step ${groupRun.group.label} · turn ${turns} · ${tool} · ${elapsed()}s`);
+            if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
+            // finishing on the last allowed turn is fine
+            if (part.tool !== "finish") {
+              overTurns();
+              reproductionDue();
+            }
+          }
+        }
+        if (event.type === "message.updated") overCost();
+      },
     });
+    finalize("RUNNING"); // now with the worktree, so a restart can point at it
+  };
+
+  const provider = groupRun.provider.provider;
+  // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET;
+  // a transient provider error retries, falls back the same way, then stops as PROVIDER
+  const routed = async (text: string, on?: typeof escalation, interrupt?: AbortSignal) => {
+    const r = await runRouted(session!, text, models, provider, on, interrupt);
+    if (r.budget) stopped ??= { cap: "provider", reason: r.budget };
+    if (r.provider) stopped ??= { cap: "down", reason: r.provider };
+    return r;
+  };
+
+  /** Whether another attempt may run on the failing check; when not, says why in tried: where that helps. */
+  const mayAttempt = (attempt: Attempt, tag: string, failure: Failing) => {
+    // the check could not run (missing tool, broken Node): no edit fixes that, so fixes and the escalation would only burn turns
+    const env = envFailure(failure.run);
+    if (env) {
+      tried.push(`${tag}env: the check could not run (${env})`);
+      return false;
+    }
+    overTurns(); // a fix needs at least one more turn
+    if (stopped as Stop | undefined) return false; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
+    const escalating = attempt === "esc";
+    if (escalating && escalated) return false; // already used for the turn-cap hand-over
+    const skip =
+      escalating &&
+      escalationSkip(escalation, models, config.escalation_skip_at, session!.totals().spend);
+    if (skip) {
+      tried.push(tag + skip);
+      return false;
+    }
+    return true;
+  };
+
+  /** One self-fix, or the escalation on the stronger model, against the failing check; `done` when no attempt follows it. */
+  const attemptFix = async (attempt: Attempt, tag: string, failure: Failing) => {
+    const escalating = attempt === "esc";
+    if (escalating) escalated = true;
+    else selfFix++;
+    const before: string[] = failure.tail;
+    const result = await routed(fixThis(before), escalating ? escalation : undefined);
+    checked = false;
+    const fresh = ownReport(result);
+    if (fresh) report = fresh;
+    const label = attemptLabel(`${tag}${attempt}`, fresh);
+    if (result.limit && escalating) {
+      tried.push(`${label} → usage limit: ${result.limit.message.slice(0, 80)}`);
+      escalated = false; // it never ran: the job ends on the implement chain's model and result
+      return { result, done: true };
+    }
+    if (result.error) {
+      tried.push(`${label} → ${stopped ? `stopped: ${stopped.reason}` : "worker error"}`);
+      return { result, done: true };
+    }
+    failing = await verify();
+    tried.push(`${label} → ${verdict(before, failing)}`);
+    return { result, done: false };
+  };
+
+  /** One prompt through the normal path: the run, then verify with up to 2 self-fixes and 1 escalation. `tag` prefixes tried: lines. */
+  const work = async (prompt: string, tag = "") => {
+    // no hand-over at the turn cap: it rescued nothing in the model bake-off and doubled a failed job's length
+    let result = await routed(prompt);
+    report = finishReport(result);
+    failing = undefined;
+    checked = false;
+    if (!result.error && commands.length) {
+      failing = await verify();
+      // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
+      for (const attempt of ATTEMPTS) {
+        if (!failing || !mayAttempt(attempt, tag, failing)) break;
+        const round = await attemptFix(attempt, tag, failing);
+        result = round.result;
+        if (round.done) break;
+      }
+    }
+    // stopped mid-change by the turn cap: check what the worker left, to tell PARTIAL from FAIL
+    if (stopped?.cap === "turns" && commands.length && !checked) failing = await verify();
+    return result;
+  };
+
+  /** The worker's first prompt: the integration fix's, or the plan and its step(s) with any repo path pointed at the worktree. */
+  const firstPrompt = () => {
+    // an absolute repo path typed in a task would point the worker outside its worktree
+    const rootPattern = new RegExp(
+      [...new Set([root, realpathSync(root)])]
+        .map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("|"),
+      "g",
+    ); // one pass: the worktree path contains the root
+    const inWorktree = (text: string) => text.replace(rootPattern, () => worktree!.path);
+    return groupRun.fix
+      ? fixPrompt(plan, steps, groupRun.fix)
+      : inWorktree(contextPack(plan, steps, input.note, input.brief, input.source));
+  };
+
+  /**
+   * A turn cap during verify or the fixes does not lose the escalation: with a diff and a failing check it still runs
+   * once on the escalation model, on its own smaller budget; a cap reached here ends the job as before. Returns the
+   * escalation's result, or `result` when it does not run.
+   */
+  const escalateAfterTurnCap = async (result: RunResult) => {
+    const escalationBlocked =
+      escalated || !failing || envFailure(failing.run) || !commands.length || !worktree || !session
+        ? "not now"
+        : escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
+    if (stopped?.cap !== "turns" || escalationBlocked || !worktreeDiff(worktree!).changed.length)
+      return result;
+    escalated = true;
+    turnBase = session!.totals().turns;
+    turnCap = escalationCap;
+    escalationTurn = new AbortController();
+    stopped = undefined; // the escalation replaces the turn-cap stop
+    const before = failing!.tail;
+    const escalationResult = await session!.run(
+      fixThis(before),
+      escalation,
+      escalationTurn.signal,
+      true,
+    );
+    const fresh = ownReport(escalationResult);
+    if (fresh) report = fresh;
+    write("finish.json", report);
+    const label = attemptLabel("esc", fresh);
+    if (escalationResult.error || escalationResult.interrupted) {
+      tried.push(`${label} → ${escalationEnd(stopped as Stop | undefined, escalationResult)}`);
+    } else {
+      failing = await verify();
+      tried.push(`${label} → ${verdict(before, failing)}`);
+    }
+    return escalationResult;
+  };
+
+  /** Lands a job that finished with passing checks, after checking a fix's reproduction; otherwise records why not. */
+  const conclude = async (result: RunResult, diff: { patch: string; changed: Changed[] }) => {
+    if (stopped) return; // a capped or cancelled job never lands; its worktree is kept
+    if (result.error) {
+      reason = `worker error: ${result.error}`;
+      return;
+    }
+    if (failing) return; // a verify failure is explained by the error: and tried: sections, not a reason
+    // only a fix has a reproduction to check: a feature lands without the without-the-change run
+    if (isFix)
+      ({ repro, risk: reproductionRisk } = await checkReproduction(
+        worktree!,
+        report.repro,
+        [...commands, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands],
+        verified.filter((r) => r.ok).map((r) => r.cmd),
+        diff.changed.map((c) => c.path),
+        kill.signal,
+      ));
+    // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
+    pauseClock();
+    parked = true;
+    await Promise.race([groupRun.beforeLand?.(), halted]);
+    parked = false;
+    if (stopped as Stop | undefined) return;
+    landing = true; // from here on, caps and cancel no longer apply (until a redo works again)
+    pauseClock();
+    const clash = await land(
+      root,
+      job,
+      diff.patch,
+      diff.changed.map((c) => c.path),
+    );
+    if (!clash) await cleanUp(worktree!);
+    else await redo(diff.patch, clash, work);
+  };
+
+  /** Adds the session's spend to the user-wide ledger: Go windows are per account, so it decides later escalations and shows balance use. */
+  const recordSessionSpend = () => {
+    if (!session) return;
+    try {
+      recordSpend(session.totals().spend);
+      if (groupRun.provider.provider === "opencode-go" && usedBalance(session.totals().spend))
+        billing = "zen";
+    } catch {
+      // the ledger only steers later escalations: a write error (full disk, permissions) must not change this job's result
+    }
   };
 
   finalize("RUNNING");
   // the job outlives this call when it blocks: it settles each outcome in turn (BLOCKED, then whatever follows a reply)
   void (async () => {
     try {
-      notStarted = await Promise.race([g.start, halted.then(() => undefined)]);
-      if (notStarted) throw new Error(notStarted);
-      if (stopped as Stop | undefined) throw new Error("stopped before it started"); // cancelled while queued; the stop's reason is recorded
-      startClock(); // queued time is not working time
-      worktree = createWorktree(root, job, config.link_dirs);
-      carried = new Set(dirty());
-      session = await openSession({
-        opencode,
-        directory: worktree.path,
-        model,
-        permission: rulesetFor(worktree, cmds, config),
-        step: { label: g.group.label, title: steps.map((s) => s.title).join("; ") },
-        // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
-        onQuestion: g.fix ? undefined : (q) => onQuestion(q),
-        onPermission: g.fix ? undefined : onPermission,
-        signal: halt.signal,
-        onEvent: (event, turns) => {
-          appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
-          // one progress notification per worker turn; finer events (deltas, usage) would only be noise in /tasks
-          if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
-            const part = event.properties.part;
-            if (part.state.status === "completed" || part.state.status === "error") {
-              const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
-              tell(
-                turns,
-                `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`,
-              );
-              if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
-              // finishing on the last allowed turn is fine
-              if (part.tool !== "finish") {
-                overTurns();
-                reproDue();
-              }
-            }
-          }
-          if (event.type === "message.updated") overCost();
-        },
-      });
-      finalize("RUNNING"); // now with the worktree, so a restart can point at it
-      const provider = g.provider.provider;
-      // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET;
-      // a transient provider error retries, falls back the same way, then stops as PROVIDER
-      const routed = async (text: string, on?: typeof escalation, interrupt?: AbortSignal) => {
-        const r = await runRouted(session!, text, models, provider, on, interrupt);
-        if (r.budget) stopped ??= { cap: "provider", reason: r.budget };
-        if (r.provider) stopped ??= { cap: "down", reason: r.provider };
-        return r;
-      };
-      /** One prompt through the normal path: the run, then verify with up to 2 self-fixes and 1 escalation. `tag` prefixes tried: lines. */
-      const work = async (prompt: string, tag = "") => {
-        // no hand-over at the turn cap (ticket 28): it rescued nothing in the model bake-off and doubled a failed job's length
-        let result = await routed(prompt);
-        report = finishReport(result);
-        failing = undefined;
-        checked = false;
-        if (!result.error && cmds.length) {
-          failing = await verify();
-          // up to 2 self-fixes in the same session, then 1 escalation on the stronger model (spec: Job lifecycle)
-          for (const attempt of ["fix 1", "fix 2", "esc"] as const) {
-            if (!failing) break;
-            // the check could not run (missing tool, broken Node): no edit fixes that, so fixes and the escalation would only burn turns
-            const env = envFailure(failing.run);
-            if (env) {
-              tried.push(`${tag}env: the check could not run (${env})`);
-              break;
-            }
-            overTurns(); // a fix needs at least one more turn
-            if (stopped as Stop | undefined) break; // a cap, cancel or provider budget (cast: set from callbacks, keep TS from narrowing)
-            const esc = attempt === "esc";
-            if (esc && escalated) break; // already used for the turn-cap hand-over
-            const skip =
-              esc &&
-              escalationSkip(
-                escalation,
-                models,
-                config.escalation_skip_at,
-                session!.totals().spend,
-              );
-            if (skip) {
-              tried.push(tag + skip);
-              break;
-            }
-            if (esc) escalated = true;
-            else selfFix++;
-            const before: string[] = failing.tail;
-            result = await routed(fixThis(before), esc ? escalation : undefined);
-            checked = false;
-            const fresh = ownReport(result);
-            if (fresh) report = fresh;
-            const label = `${tag}${esc ? "esc" : attempt}: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
-            if (result.limit && esc) {
-              tried.push(`${label} → usage limit: ${result.limit.message.slice(0, 80)}`);
-              escalated = false; // it never ran: the job ends on the implement chain's model and result
-              break;
-            }
-            if (result.error) {
-              tried.push(`${label} → ${stopped ? `stopped: ${stopped.reason}` : "worker error"}`);
-              break;
-            }
-            failing = await verify();
-            tried.push(`${label} → ${verdict(before, failing)}`);
-          }
-        }
-        // stopped mid-change by the turn cap: check what the worker left, to tell PARTIAL from FAIL
-        if (stopped?.cap === "turns" && cmds.length && !checked) failing = await verify();
-        return result;
-      };
-      // an absolute repo path typed in a task would point the worker outside its worktree
-      const rootRe = new RegExp(
-        [...new Set([root, realpathSync(root)])]
-          .map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-          .join("|"),
-        "g",
-      ); // one pass: the worktree path contains the root
-      const inWorktree = (text: string) => text.replace(rootRe, () => worktree!.path);
-      let result = await work(
-        g.fix
-          ? fixPrompt(plan, steps, g.fix)
-          : inWorktree(contextPack(plan, steps, input.note, input.brief, input.source)),
-      );
+      await begin();
+      let result = await work(firstPrompt());
       write("finish.json", report);
-      // ticket 33: a turn cap during verify/fixes no longer loses the escalation. With a diff and a failing check it
-      // still runs once on the escalation model, on its own smaller budget; a cap reached here ends the job as before.
-      const escSkip =
-        escalated || !failing || envFailure(failing.run) || !cmds.length || !worktree || !session
-          ? "not now"
-          : escalationSkip(escalation, models, config.escalation_skip_at, session.totals().spend);
-      if (stopped?.cap === "turns" && !escSkip && worktreeDiff(worktree!).changed.length) {
-        escalated = true;
-        turnBase = session!.totals().turns;
-        turnCap = escCap;
-        escTurn = new AbortController();
-        stopped = undefined; // the escalation replaces the turn-cap stop
-        const before = failing!.tail;
-        result = await session!.run(fixThis(before), escalation, escTurn.signal, true);
-        const fresh = ownReport(result);
-        if (fresh) report = fresh;
-        write("finish.json", report);
-        const label = `esc: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
-        if (result.error || result.interrupted) {
-          tried.push(
-            `${label} → ${(stopped as Stop | undefined) ? `stopped: ${(stopped as Stop | undefined)!.reason}` : result.limit ? `usage limit: ${result.limit.message.slice(0, 80)}` : "worker error"}`,
-          );
-        } else {
-          failing = await verify();
-          tried.push(`${label} → ${verdict(before, failing)}`);
-        }
-      }
-      const diff = worktreeDiff(worktree);
+      result = await escalateAfterTurnCap(result);
+      const diff = worktreeDiff(worktree!);
       changed = diff.changed;
       write("diff.patch", diff.patch); // the log copy is redacted; landing applies the in-memory patch
-      // ticket 29: a capped worker leaves Claude what it learned, so the take-over does not re-read the same files (after the diff, so the note turn cannot change the result)
+      // a capped worker leaves Claude what it learned, so the take-over does not re-read the same files (after the diff, so the note turn cannot change the result)
       const cap = (stopped as Stop | undefined)?.cap;
       if (cap === "turns" || cap === "minutes" || cap === "cost") found = await findings(session!);
-      if (stopped) {
-        // a capped or cancelled job never lands; its worktree is kept
-      } else if (result.error) {
-        reason = `worker error: ${result.error}`;
-      } else if (!failing) {
-        // a verify failure is explained by the error: and tried: sections, not a reason
-        // only a fix has a reproduction to check: a feature lands without the without-the-change run
-        if (isFix)
-          ({ repro, risk: reproRisk } = await checkRepro(
-            worktree,
-            report.repro,
-            [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands],
-            verified.filter((r) => r.ok).map((r) => r.cmd),
-            diff.changed.map((c) => c.path),
-            kill.signal,
-          ));
-        // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
-        pauseClock();
-        parked = true;
-        await Promise.race([g.beforeLand?.(), halted]);
-        parked = false;
-        if (!stopped) {
-          landing = true; // from here on, caps and cancel no longer apply (until a redo works again)
-          pauseClock();
-          const clash = await land(
-            root,
-            job,
-            diff.patch,
-            diff.changed.map((c) => c.path),
-          );
-          if (!clash) await cleanUp(worktree);
-          else await redo(diff.patch, clash, work);
-        }
-      }
+      await conclude(result, diff);
     } catch (err) {
       reason = (err as Error).message;
     }
     clearTimeout(timer);
     running.delete(job);
     blocked.delete(job);
-    if (session) {
-      // Go windows are per account: the user-wide ledger decides later escalations and shows balance use
-      try {
-        recordSpend(session.totals().spend);
-        if (g.provider.provider === "opencode-go" && usedBalance(session.totals().spend))
-          billing = "zen";
-      } catch {
-        // the ledger only steers later escalations: a write error (full disk, permissions) must not change this job's result
-      }
-    }
+    recordSessionSpend();
     let status: JobRecord["status"] = !stopped && reason === undefined && !failing ? "OK" : "FAIL";
     if (stopped) {
       // the cap or cancel explains the stop, not the aborted prompt's error
       reason = stopped.reason;
-      status =
-        stopped.cap === "turns"
-          ? changed.length && !failing
-            ? "PARTIAL"
-            : "FAIL"
-          : STOPPED[stopped.cap];
+      status = stoppedStatus(stopped, changed.length > 0 && !failing);
       if (status === "PARTIAL") reason = undefined; // spec D5: PARTIAL says it through missing:
     } else if (conflict) status = "CONFLICT";
     const text = finalize(status);
@@ -1024,6 +1024,100 @@ function runGroup(g: GroupRun) {
     announce(text);
   });
   return { job, outcome, done, record: () => last, settles: () => settled };
+}
+
+/** A failing check's run, and the error tail Claude sees. */
+type Failing = { run: VerifyRun; tail: string[] };
+
+/** The job's risks: the server's own first, so the 5-risk cap never cuts them, then the worker's. */
+function jobRisks(
+  reproductionRisk: string | undefined,
+  report: FinishReport,
+  rejections: unknown[],
+) {
+  return [
+    ...(reproductionRisk ? [reproductionRisk] : []),
+    ...(report.disagree && !/^none\b/i.test(report.disagree)
+      ? [`spec vs source: ${report.disagree}`]
+      : []),
+    ...(rejections.length > MAX_QUIET_REJECTIONS
+      ? [
+          `${rejections.length} tool calls or permission requests were rejected; check the worker stayed in scope (see the log)`,
+        ]
+      : []),
+    ...report.risks,
+  ];
+}
+
+/** Where the worktree came from; `tree` is what its diff is measured against, so `land apply` can land it later. */
+function baselineOf(worktree: Worktree | undefined) {
+  return {
+    head: worktree?.head ?? null,
+    stash: worktree?.stash ?? null,
+    tree: worktree?.base ?? null,
+  };
+}
+
+/** An unlanded job's worktree, repo-relative; null once landed or before it has one. */
+function unlandedWorktree(root: string, worktree: Worktree | undefined, landed: boolean) {
+  return !landed && worktree ? normalisePath(relative(root, worktree.path)) : null;
+}
+
+/** Server-measured: "none" when nothing ran (no conditions, or the worker failed before verify). */
+function testsResult(ran: boolean, failing: Failing | undefined): JobRecord["tests"] {
+  if (!ran) return "none";
+  return failing ? "fail" : "pass";
+}
+
+/** A failing check's error: lines; a check that could not run at all (missing tool, broken Node) leads with that and sets check=env, since it is not bad code. */
+function failureFields(failing: Failing | undefined) {
+  if (!failing) return { error: undefined };
+  const env = envFailure(failing.run);
+  return {
+    error: env ? [env, ...failing.tail] : failing.tail,
+    ...(env && { check: "env" as const }),
+  };
+}
+
+/** The record's test= field: the first changed file that is a test, if any. */
+function testFileField(changed: Changed[]) {
+  const testFile = changed.find((c) => TEST_FILE.test(c.path));
+  return testFile ? { test: testFile.path } : {};
+}
+
+/** A PARTIAL job's missing: lines when the worker gave none, since a worker stopped by a cap rarely says what it left undone. */
+function missingLines(status: JobRecord["status"], missing: string[], stop: Stop | undefined) {
+  if (status !== "PARTIAL" || missing.length) return missing;
+  return [`unknown: stopped (${stop?.reason ?? "cap"}); compare the diff with the step`];
+}
+
+/** The record's question fields: one question, the command permission ask it waits on, or several questions. */
+function questionFields(asked: Asked[] | null, pending: PermissionBlock | null) {
+  return {
+    question: asked?.length === 1 ? asked[0] : null,
+    ...(pending && { permission: pending }),
+    ...(asked && asked.length > 1 && { questions: asked }),
+  };
+}
+
+/** The session's usage so far; zero before it opened. */
+function usageOf(session: Session | undefined) {
+  return {
+    turns: session?.totals().turns ?? 0,
+    calls: session?.totals().calls ?? 0,
+    ...(session?.totals().usage ?? { costUsd: 0 }),
+  };
+}
+
+/** The record's timing: a RUNNING or BLOCKED job has not ended, and a BLOCKED one says since when it waits. */
+function timingOf(startedAt: Date, status: JobRecord["status"], blockedAt: Date | undefined) {
+  const waiting = status === "BLOCKED";
+  return {
+    startedAt,
+    endedAt: status === "RUNNING" || waiting ? null : new Date(),
+    ms: Date.now() - startedAt.getTime(),
+    ...(waiting && { blockedAt }),
+  };
 }
 
 /** Compresses a settled job's (or research call's) events.jsonl; any error is ignored, nothing depends on it. */
@@ -1275,6 +1369,15 @@ const batches = new Map<
 const TEST_FILE =
   /(^|\/)(tests?|testing|__tests__)\/|(^|\/)(test_[^/]*|[^/]*_tests?\.[a-z]+|[^/]*\.(test|spec)\.[a-z]+|conftest\.py)$/i;
 
+/** The attempts on a failing check, in order: up to 2 self-fixes, then 1 escalation. */
+const ATTEMPTS = ["fix 1", "fix 2", "esc"] as const;
+type Attempt = (typeof ATTEMPTS)[number];
+
+/** An attempt's tried: label: its name and the start of its own summary. */
+function attemptLabel(name: string, fresh: FinishReport | undefined) {
+  return `${name}: ${(fresh?.summary ?? "(no summary)").slice(0, 100)}`;
+}
+
 /** What a failed check sends back to the worker: fix it, with the error tail. */
 const fixThis = (tail: string[]) =>
   `Verification failed. Fix the cause, then call finish again.\n\n${tail.join("\n")}`;
@@ -1282,12 +1385,24 @@ const fixThis = (tail: string[]) =>
 const ownReport = (result: RunResult) =>
   result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
 /** How a fix attempt's check came out, against the failure before it. */
-const verdict = (before: string[], failing: { tail: string[] } | undefined) =>
-  !failing ? "passed" : sameFailure(before, failing.tail) ? "same failure" : "different failure";
+function verdict(before: string[], failing: { tail: string[] } | undefined) {
+  if (!failing) return "passed";
+  if (sameFailure(before, failing.tail)) return "same failure";
+  return "different failure";
+}
+
+/** The answer a permission block's chosen option (its index; -1 for free text) gives the worker. */
+function permissionAnswer(choice: number): PermissionAnswer {
+  if (choice === 0) return "once";
+  if (choice === 1) return "always";
+  return "reject";
+}
 
 const FINDINGS_PROMPT =
   "You were stopped before finishing. Without calling any tool, answer in at most 600 characters: where the bug is (file:function), your best hypothesis, and what you ruled out.";
 const FINDINGS_MS = 30_000;
+/** The longest findings note kept; a longer one is cut, with an ellipsis as its last character. */
+const MAX_FINDINGS = 600;
 
 /** One last prompt on a stopped session for its findings; any error, timeout or empty answer gives none. */
 async function findings(session: Session): Promise<string | undefined> {
@@ -1296,19 +1411,20 @@ async function findings(session: Session): Promise<string | undefined> {
     const text = (r.error || r.interrupted ? "" : r.text || r.finish?.summary || "")
       .replace(/\s+/g, " ")
       .trim();
-    return text ? (text.length > 600 ? `${text.slice(0, 599)}…` : text) : undefined;
+    if (!text) return undefined;
+    return text.length > MAX_FINDINGS ? `${text.slice(0, MAX_FINDINGS - 1)}…` : text;
   } catch {
     return undefined;
   }
 }
 
 /**
- * Checks the worker's reproduction test (ticket 24.1): its command must pass on the fixed tree and fail once the non-test
+ * Checks the worker's reproduction test: its command must pass on the fixed tree and fail once the non-test
  * changes are set aside, which proves it tests the problem. The command comes from the worker, so it only runs when it
  * starts with a command this job may already run (done-when, test_cmd, allow_commands); anything else stays unverified.
  * `passed` are verify commands that already passed on this tree, so a claim equal to one skips the fixed-code rerun.
  */
-async function checkRepro(
+async function checkReproduction(
   worktree: Worktree,
   claim: string | undefined,
   allowed: string[],
@@ -1318,11 +1434,10 @@ async function checkRepro(
 ): Promise<{ repro?: JobRecord["repro"]; risk?: string }> {
   const cwd = worktree.path;
   if (!claim || /^n\/?a\b/i.test(claim)) return {};
-  if (/^none\b/i.test(claim))
-    return {
-      repro: "none",
-      risk: `no reproduction: ${claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem"}`,
-    };
+  if (/^none\b/i.test(claim)) {
+    const why = claim.replace(/^none:?\s*/i, "") || "the worker could not reproduce the problem";
+    return { repro: "none", risk: `no reproduction: ${why}` };
+  }
   const runs = (cmd: string) =>
     runVerify(cwd, [cmd], () => {}, signal).then((r) => r[0]?.ok ?? false);
   const unverified = (why: string) => ({
@@ -1341,48 +1456,62 @@ async function checkRepro(
   let failsWithout = false;
   let restored = true;
   try {
-    for (const file of fix) {
-      const path = join(cwd, file);
-      saved.set(file, existsSync(path) ? readFileSync(path) : null);
-      const inBase =
-        spawnSync("git", ["cat-file", "-e", `${worktree.base}:${file}`], { cwd, stdio: "pipe" })
-          .status === 0;
-      if (inBase) {
-        const base = spawnSync("git", ["show", `${worktree.base}:${file}`], {
-          cwd,
-          stdio: "pipe",
-          maxBuffer: 256 * 1024 * 1024,
-        });
-        if (base.status !== 0) throw new Error(`git show ${worktree.base}:${file} failed`);
-        writeFileSync(path, base.stdout);
-      } else {
-        rmSync(path, { force: true });
-      }
-    }
+    for (const file of fix) setAside(worktree, file, saved);
     failsWithout = !(await runs(claim));
   } catch {
     failsWithout = false;
     restored = false;
   } finally {
     // a failed restore only affects the worktree: the landing applies the diff taken before this check
-    for (const [file, content] of saved) {
-      try {
-        const path = join(cwd, file);
-        if (content === null) rmSync(path, { force: true });
-        else {
-          mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, content);
-        }
-      } catch {
-        restored = false;
-      }
-    }
+    if (!restoreFiles(cwd, saved)) restored = false;
   }
   if (!restored) return unverified("could not set the fix aside to rerun the reproduction");
   return failsWithout
     ? { repro: "fail→pass" }
     : unverified(`\`${claim}\` also passes without the fix`);
 }
+
+/** Puts one changed file back to its base content, or removes it when the base has none; what it held goes into `saved`. */
+function setAside(worktree: Worktree, file: string, saved: Map<string, Buffer | null>) {
+  const cwd = worktree.path;
+  const path = join(cwd, file);
+  saved.set(file, existsSync(path) ? readFileSync(path) : null);
+  const inBase =
+    spawnSync("git", ["cat-file", "-e", `${worktree.base}:${file}`], { cwd, stdio: "pipe" })
+      .status === 0;
+  if (!inBase) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const base = spawnSync("git", ["show", `${worktree.base}:${file}`], {
+    cwd,
+    stdio: "pipe",
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (base.status !== 0) throw new Error(`git show ${worktree.base}:${file} failed`);
+  writeFileSync(path, base.stdout);
+}
+
+/** Writes every saved file back, removing those that did not exist; false when any of them could not be restored. */
+function restoreFiles(cwd: string, saved: Map<string, Buffer | null>) {
+  let restored = true;
+  for (const [file, content] of saved) {
+    try {
+      const path = join(cwd, file);
+      if (content === null) rmSync(path, { force: true });
+      else {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content);
+      }
+    } catch {
+      restored = false;
+    }
+  }
+  return restored;
+}
+
+/** A question the worker asked, with the user's answer once given. */
+type Asked = NonNullable<JobRecord["question"]>;
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */
 type Stop = { cap: "turns" | "minutes" | "cost" | "cancel" | "provider" | "down"; reason: string };
@@ -1394,23 +1523,34 @@ const STOPPED = {
   down: "PROVIDER",
 } as const;
 
+/** A stopped job's status. Only a turn cap can leave usable work: PARTIAL when it changed files and its checks pass. */
+function stoppedStatus(stop: Stop, usable: boolean): JobRecord["status"] {
+  if (stop.cap !== "turns") return STOPPED[stop.cap];
+  return usable ? "PARTIAL" : "FAIL";
+}
+
+/** How the escalation after a turn cap ended when it did not finish, for its tried: line. */
+function escalationEnd(stop: Stop | undefined, result: RunResult) {
+  if (stop) return `stopped: ${stop.reason}`;
+  if (result.limit) return `usage limit: ${result.limit.message.slice(0, 80)}`;
+  return "worker error";
+}
+
 /**
  * Jobs running in this server process, by id, across every repository it runs jobs in: how `jobs cancel` and `jobs wait`
  * reach them (a call's lookups go through `liveJob` for its root). `done` resolves to the final block, `settles()` at the
  * next settlement (BLOCKED or final); `block()` is the current block.
  */
-const running = new Map<
-  string,
-  {
-    root: string;
-    stop: (why: Stop) => void;
-    done: Promise<string>;
-    batch: string | null;
-    settles: () => Promise<void>;
-    block: () => string;
-    parked: () => boolean;
-  }
->();
+const running = new Map<string, LiveJob>();
+type LiveJob = {
+  root: string;
+  stop: (why: Stop) => void;
+  done: Promise<string>;
+  batch: string | null;
+  settles: () => Promise<void>;
+  block: () => string;
+  parked: () => boolean;
+};
 /** The live job `id` in `root`, if one runs there in this server. */
 const liveJob = (root: string, id: string) => {
   const live = running.get(id);
@@ -1427,46 +1567,63 @@ export type JobsInput = {
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
   const root = callRoot(input.root);
-  if (input.action === "list") {
-    const all = newestFirst(root);
-    if (!all.length) return "no jobs yet";
-    const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0] + blockedFor(r));
-    if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
-    return lines.join("\n");
-  }
+  if (input.action === "list") return listJobs(root);
   if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job))
     return waitBatch(root, input.job, progress, input.seconds);
-  // the id becomes a path: only well-formed ids get that far
-  if (!input.job || !JOB_ID.test(input.job))
-    return failBlock(
-      `jobs ${input.action} needs a job id, e.g. j7f3a${input.action === "wait" ? " or a batch id, e.g. b4k1x" : ""}`,
-    );
-  const live = liveJob(root, input.job);
-  if (input.action === "wait" && live) {
-    // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
-    if (!blocked.has(input.job)) {
-      if (input.seconds === undefined) await live.settles();
-      else {
-        const waited = await waitOrTimeout(live.settles(), input.seconds);
-        // settled just as the timer fired: the final block is more useful than a stale RUNNING line
-        if (waited.timedOut && running.has(input.job))
-          return runningCheckin(root, input.job, input.job, input.seconds);
-      }
-    }
-    return live.block();
+  if (!hasJobId(input)) {
+    const orBatch = input.action === "wait" ? " or a batch id, e.g. b4k1x" : "";
+    return failBlock(`jobs ${input.action} needs a job id, e.g. j7f3a${orBatch}`);
   }
+  const live = liveJob(root, input.job);
+  if (input.action === "wait" && live) return waitLiveJob(root, input, live);
   if (input.action === "cancel" && live) {
     live.stop({ cap: "cancel", reason: "cancelled on request" });
     return live.done;
   }
+  return recordAnswer(root, input);
+}
+
+/** `jobs list`: the newest jobs' headlines, each BLOCKED one with how long it has waited. */
+function listJobs(root: string) {
+  const all = newestFirst(root);
+  if (!all.length) return "no jobs yet";
+  const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0] + blockedFor(r));
+  if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
+  return lines.join("\n");
+}
+
+/** Whether the call names a well-formed job id: the id becomes a path, so only those get that far. */
+function hasJobId(input: JobsInput): input is JobsInput & { job: string } {
+  return !!input.job && JOB_ID.test(input.job);
+}
+
+/** `jobs wait` on a job live in this process: its block at its next settlement, or a check-in once `seconds` run out. */
+async function waitLiveJob(root: string, input: JobsInput & { job: string }, live: LiveJob) {
+  // a BLOCKED job only moves on a reply: its block now, rather than a wait that never ends
+  if (blocked.has(input.job)) return live.block();
+  if (input.seconds === undefined) {
+    await live.settles();
+    return live.block();
+  }
+  const waited = await waitOrTimeout(live.settles(), input.seconds);
+  // settled just as the timer fired: the final block is more useful than a stale RUNNING line
+  if (waited.timedOut && running.has(input.job))
+    return runningCheckin(root, input.job, input.job, input.seconds);
+  return live.block();
+}
+
+/** A job that is not live in this process, from its record: show, and wait on a finished job, give its block; the rest is refused. */
+function recordAnswer(root: string, input: JobsInput & { job: string }) {
   const dir = jobDir(root, input.job);
   const record = readRecord(dir);
   if (!record) return failBlock(`job ${input.job} not found`);
   const block = () => readFileSync(join(dir, "result.txt"), "utf8").trimEnd();
   if (input.action === "show") return block();
   if (record.status === "RUNNING" || record.status === "BLOCKED") {
+    const pid = record.pid ?? "unknown";
+    const verb = input.action === "wait" ? "wait for" : "cancel";
     return failBlock(
-      `job ${input.job} is ${record.status} but not in this session (server pid ${record.pid ?? "unknown"}); ${input.action === "wait" ? "wait for" : "cancel"} it from the session that started it`,
+      `job ${input.job} is ${record.status} but not in this session (server pid ${pid}); ${verb} it from the session that started it`,
     );
   }
   if (input.action === "wait") return block(); // finished: its final block at once
@@ -1731,19 +1888,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
   const dir = jobDir(root, id);
   const record = readRecord(dir);
   if (!record) throw new Error(`job ${id} not found`);
-  if (liveJob(root, id))
-    throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
-  if (record.status === "RUNNING" || record.status === "BLOCKED")
-    throw new Error(
-      `job ${id} is ${record.status} in another session (server pid ${record.pid ?? "unknown"})`,
-    );
-  if (record.landed) throw new Error(`job ${id} already landed`);
-  if (record.discarded) throw new Error(`job ${id} was already discarded`);
-  // landing it now would put it ahead of its batch's later groups, out of step order
-  if (record.batch && batches.has(record.batch))
-    throw new Error(
-      `job ${id} belongs to batch ${record.batch}, still running; land it once the batch settles (jobs wait)`,
-    );
+  assertLandable(root, id, record);
   const worktree = jobWorktree(root, id, record.baseline?.tree ?? "", config.link_dirs);
   if (!worktree)
     throw new Error(`job ${id} has no worktree left (cleaned up); nothing to ${action}`);
@@ -1768,11 +1913,12 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
   );
   if (clash) {
     const files = conflictPaths(clash);
+    const where = files.length ? ` in ${files.join(", ")}` : "";
     throw new Error(
-      `landing conflict${files.length ? ` in ${files.join(", ")}` : ""}, working tree untouched; discard it, or fix the overlap and delegate again`,
+      `landing conflict${where}, working tree untouched; discard it, or fix the overlap and delegate again`,
     );
   }
-  // the change is in the working tree now: a folder Windows won't delete yet must not undo the landing's record (#22)
+  // the change is in the working tree now: a folder Windows won't delete yet must not undo the landing's record
   let cleanupError: string | undefined;
   try {
     await dropWorktree(root, worktree);
@@ -1786,6 +1932,23 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
     ? `\ncleanup error: ${cleanupError} (the change landed; only its worktree folder was left behind)`
     : "";
   return `OK ${id} applied files=${diff.changed.length} +${add}/-${del}${note}`;
+}
+
+/** Throws why a finished job cannot be applied or discarded now: it is live, runs in another session, was settled already, or its batch still runs. */
+function assertLandable(root: string, id: string, record: StoredRecord) {
+  if (liveJob(root, id))
+    throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
+  if (record.status === "RUNNING" || record.status === "BLOCKED")
+    throw new Error(
+      `job ${id} is ${record.status} in another session (server pid ${record.pid ?? "unknown"})`,
+    );
+  if (record.landed) throw new Error(`job ${id} already landed`);
+  if (record.discarded) throw new Error(`job ${id} was already discarded`);
+  // landing it now would put it ahead of its batch's later groups, out of step order
+  if (record.batch && batches.has(record.batch))
+    throw new Error(
+      `job ${id} belongs to batch ${record.batch}, still running; land it once the batch settles (jobs wait)`,
+    );
 }
 
 /** Removes a job's worktree (dependency links unlinked first), after OpenCode has let go of the directory. */
@@ -1825,21 +1988,30 @@ export async function reply(
   if (!input.answer.trim())
     return failBlock("empty answer; reply with an option letter or free text"); // the job stays BLOCKED
   if (entry.permission) {
-    const answers = entry.always === false ? /^\s*[ac]\)?\s*$/i : /^\s*[a-c]\)?\s*$/i;
-    if (!answers.test(input.answer))
-      return failBlock(entry.always === false ? "answer a or c" : "answer a, b or c"); // the job stays BLOCKED
+    const refusal = permissionRefusal(entry, input.answer);
+    if (refusal) return failBlock(refusal); // the job stays BLOCKED
   }
-  // one question also takes the numbered form ("1a", "1: text") that several questions need
-  const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(input.answer);
-  const answers =
-    entry.questions.length === 1 && !numbered
-      ? [pick(input.answer, entry.questions[0])]
-      : answerEach(input.answer, entry.questions);
+  const answers = readAnswers(input.answer, entry.questions);
   if (typeof answers === "string") return failBlock(answers); // the job stays BLOCKED
   // in a batch, the same early return as delegate from here (spec: reply resolves like delegate): the first BLOCKED, or all settled
   const batch = batches.get(running.get(input.job)?.batch ?? "");
   const next = entry.resume(answers, batch ? batch.forward : progress);
   return batch ? batch.look(false, progress) : next;
+}
+
+/** Why an answer cannot answer a command permission block, whose only answers are its letters. */
+function permissionRefusal(entry: BlockedJob, answer: string) {
+  const letters = entry.always === false ? /^\s*[ac]\)?\s*$/i : /^\s*[a-c]\)?\s*$/i;
+  if (letters.test(answer)) return undefined;
+  return entry.always === false ? "answer a or c" : "answer a, b or c";
+}
+
+/** One answer per question, or the error when the reply cannot be read. */
+function readAnswers(answer: string, questions: Question[]) {
+  // one question also takes the numbered form ("1a", "1: text") that several questions need
+  const numbered = /^\s*1\s*(?:[a-d]\)?\s*$|:)/i.test(answer);
+  if (questions.length === 1 && !numbered) return [pick(answer, questions[0])];
+  return answerEach(answer, questions);
 }
 
 /** A letter picks that option's label; anything else is free text. */
@@ -1906,14 +2078,16 @@ function contextPack(
   brief?: string,
   source?: string,
 ) {
+  const ids = steps.map((s) => s.id).join(", ");
+  const texts = steps.map((s) => s.text).join("\n\n");
   return [
     planText(plan),
-    `>>> CURRENT STEP(S): ${steps.map((s) => s.id).join(", ")}\n\n${steps.map((s) => s.text).join("\n\n")}`,
+    `>>> CURRENT STEP(S): ${ids}\n\n${texts}`,
     note && `Note: ${note}`,
     // start from what the scout found instead of re-exploring; an "unverified" repro is a lead, not a fact
     brief &&
       `Scout brief (from research; start here, and check anything marked unverified):\n${brief}`,
-    // the user's own words: the step is Claude's reading of them, and only the worker sees both (ticket 28)
+    // the user's own words: the step is Claude's reading of them, and only the worker sees both
     source &&
       `Source (the user's request or the issue, verbatim; check the step against it and report disagreements in finish's disagree):\n${source}`,
   ]
@@ -1936,19 +2110,57 @@ function fixPrompt(plan: Plan, steps: PlanStep[], fix: { cmd: string; error: str
   ].join("\n\n");
 }
 
+/** The files a redo names as clashing: those with conflict markers, else those git named, else every changed file. */
+function clashFiles(marked: string[], named: string[], changed: Changed[]) {
+  if (marked.length) return marked;
+  if (named.length) return named;
+  return changed.map((c) => c.path);
+}
+
+/** Why a redo cannot land, checked in this order; undefined when it can. */
+function redoFailure(redo: {
+  result: RunResult;
+  failing: unknown;
+  worktree: Worktree;
+  changed: Changed[];
+}) {
+  if (redo.result.error) return "redo worker error";
+  if (redo.failing) return "redo failed verification";
+  if (leftoverMarkers(redo.worktree).length) return "redo left conflict markers";
+  if (!redo.changed.length) return "redo made no changes";
+  return undefined;
+}
+
+/** A CONFLICT job's lines: each clashing file, any jobs that changed it and landed first, and why the redo could not land. */
+function conflictLines(
+  files: string[],
+  others: { job: string; changed: Changed[] }[],
+  why: string,
+) {
+  return files.map((f) => {
+    const by = others.filter((r) => r.changed.some((c) => c.path === f)).map((r) => r.job);
+    const changedBy = by.length
+      ? `also changed by ${by.join(", ")}, landed first`
+      : "changed in the working tree meanwhile";
+    return `${f} (${changedBy}; ${why})`;
+  });
+}
+
 /** A redo diff longer than this is cut in its prompt. */
 const MAX_REDO_PATCH = 50_000;
 
 /** The redo's prompt to the same session: what clashed, where the conflict markers are, the step again and the original diff. */
 function redoPrompt(steps: PlanStep[], files: string[], marked: string[], patch: string) {
+  // shortcut: a huge diff is cut here; the worktree still holds the change wherever it applied
+  const shownPatch =
+    patch.length > MAX_REDO_PATCH ? `${patch.slice(0, MAX_REDO_PATCH)}\n… (cut)` : patch;
   return [
     `>>> REDO STEP(S): ${steps.map((s) => s.id).join(", ")}`,
     `Your change could not land: the working tree changed meanwhile (${files.join(", ")}). This worktree was rebuilt from the current code, ` +
       `with your change applied again where it could be. Files where both changed the same lines hold <<<<<<< ======= >>>>>>> conflict markers: ` +
       `${marked.join(", ") || "none"}. Keep the current code's changes, redo the step's intent on top of them, leave no conflict markers, then call finish again.`,
     steps.map((s) => s.text).join("\n\n"),
-    // shortcut: a huge diff is cut here; the worktree still holds the change wherever it applied
-    `Your original change:\n\`\`\`diff\n${patch.length > MAX_REDO_PATCH ? `${patch.slice(0, MAX_REDO_PATCH)}\n… (cut)` : patch}\`\`\``,
+    `Your original change:\n\`\`\`diff\n${shownPatch}\`\`\``,
   ].join("\n\n");
 }
 

@@ -275,3 +275,28 @@ test("two server processes on one repository wait for the lock and land one at a
   expect(readFileSync(inRepo("b.txt"), "utf8")).toBe("b\n");
   expect(readdirSync(inRepo(".cheapag")).filter((f) => f.startsWith("land.lock"))).toEqual([]);
 });
+
+test("a redo whose worker errors, or that makes no changes, is CONFLICT with that reason", async () => {
+  const { fake, start, inRepo, record } = await setup();
+  const userEdit = (title: string) => () => writeFileSync(inRepo("README.md"), title);
+  fake.script(...writes("README.md", "# worker's title\n", { hook: userEdit("# user's title\n") }));
+  fake.scriptFor(">>> REDO STEP(S): 1\n", {
+    error: { name: "APIError", message: "upstream broke" },
+  });
+  fake.script(
+    ...writes("README.md", "# worker's second title\n", {
+      hook: userEdit("# user's second title\n"),
+    }),
+  );
+  fake.scriptFor(">>> REDO STEP(S): 1\n", ...writes("README.md", "# user's second title\n"));
+  const server = await start();
+  for (const why of ["redo worker error", "redo made no changes"]) {
+    const text = await server.call("delegate", { plan: ".plan/p.md", steps: "1" });
+    const job = jobOf(text);
+    expect(text.split("\n")[0]).toMatch(new RegExp(`^CONFLICT ${job} step=1 `));
+    expect(text).toContain(
+      `\nconflict:\n  README.md (changed in the working tree meanwhile; ${why})\n`,
+    );
+    expect(record(job)).toMatchObject({ status: "CONFLICT", landed: false, redo: 1 });
+  }
+});

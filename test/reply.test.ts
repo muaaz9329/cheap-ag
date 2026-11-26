@@ -573,3 +573,17 @@ test("on_blocked_command deny: the worker's catch-all bash rule is deny, so noth
   }[];
   expect(rules.find((r) => r.permission === "bash" && r.pattern === "*")?.action).toBe("deny");
 });
+
+test("a permission block that offers b refuses any answer but a, b or c", async () => {
+  const rg = {
+    permission: "bash",
+    patterns: ["rg -n TODO src"],
+    command: "rg -n TODO src",
+  } as const;
+  const { fake, delegate, reply } = await scenario([WHY, rg, ...edit(2, "done")]);
+  const job = jobOf(await delegate());
+  expect(await reply(job, "d")).toBe("FAIL reason: answer a, b or c");
+  expect(fake.recorded.permissionReplies).toEqual([]);
+  expect((await reply(job, "a")).split("\n")[0]).toMatch(new RegExp(`^OK ${job} `));
+  expect(replies(fake)).toEqual([["once", undefined]]);
+});
