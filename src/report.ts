@@ -242,17 +242,8 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   if (!compacted && r.summary && !lead)
     lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
   // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
-  if (!compacted && r.changed.length && r.status !== "BLOCKED") {
-    lines.push(
-      "changed:",
-      ...r.changed
-        .slice(0, c.changed)
-        .map(
-          (x) => `  ${x.status} ${x.path}${x.add ? ` +${x.add}` : ""}${x.del ? ` -${x.del}` : ""}`,
-        ),
-    );
-    if (r.changed.length > c.changed) lines.push(`  … +${r.changed.length - c.changed} more`);
-  }
+  if (!compacted && r.changed.length && r.status !== "BLOCKED")
+    lines.push(...changedLines(r.changed, c.changed));
   if ((!compacted || r.status === "OK") && r.risks.length)
     lines.push("risks:", ...r.risks.slice(0, c.risks).map((x) => `  - ${clip(oneLine(x), 120)}`));
   if (!compacted && r.review.length)
@@ -329,6 +320,20 @@ function jobHeadline(record: JobRecord) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/** The `changed:` list, cut to `limit` files with a count of the rest. */
+function changedLines(changed: Changed[], limit: number) {
+  const lines = ["changed:", ...changed.slice(0, limit).map(changedLine)];
+  if (changed.length > limit) lines.push(`  … +${changed.length - limit} more`);
+  return lines;
+}
+
+/** One changed file: its git status and path, then the added and deleted counts that are not zero. */
+function changedLine(file: Changed) {
+  const added = file.add ? ` +${file.add}` : "";
+  const deleted = file.del ? ` -${file.del}` : "";
+  return `  ${file.status} ${file.path}${added}${deleted}`;
 }
 
 /** D7. A research CONSENT renders through `renderConsent`. */
