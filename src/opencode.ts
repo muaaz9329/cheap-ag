@@ -379,6 +379,8 @@ function spawnServer(configDir: string, password: string) {
   });
 }
 
+const STOP_GRACE_MS = 3_000;
+
 /**
  * Stops the OpenCode server's whole process group. Seen on 1.19.0: a SIGTERM shortly after boot, while it is still
  * busy, can be ignored for good, so a SIGKILL follows if it is still there after a grace period. On process exit
@@ -399,5 +401,3 @@ export function stopOpencode(exiting = false) {
   };
   setTimeout(killIfStillRunning, STOP_GRACE_MS).unref();
 }
-
-const STOP_GRACE_MS = 3_000;
