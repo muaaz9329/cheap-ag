@@ -343,15 +343,15 @@ function spawnServer(configDir: string, password: string) {
     child = server;
     let output = "";
     let listening = false;
-    const timer = setTimeout(
-      () => fail(new Error("opencode serve did not start within 15s")),
-      15_000,
-    );
     const fail = (error: Error) => {
       clearTimeout(timer);
       stopOpencode();
       reject(error);
     };
+    const timer = setTimeout(
+      () => fail(new Error("opencode serve did not start within 15s")),
+      15_000,
+    );
     // keep draining both pipes for the server's lifetime (a full pipe blocks it), but only buffer until it listens
     server.stderr!.on("data", (chunk) => {
       if (!listening) output += chunk;
