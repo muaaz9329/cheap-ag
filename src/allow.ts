@@ -13,20 +13,13 @@ type ConsentChoice = Omit<Consent, "provider" | "approvedAt">;
 function parseConsentChoice(args: string[]): ConsentChoice | undefined {
   if (!args.length) return { mode: "all" };
   if (args.length === 1 && args[0] === "--zdr-only") return { mode: "zdr-only" };
-  if (
-    args.length === 2 &&
-    args[0] === "--models" &&
-    args[1].split(",").some((model) => model.trim())
-  ) {
-    return {
-      mode: "models",
-      models: args[1]
-        .split(",")
-        .map((model) => model.trim())
-        .filter(Boolean),
-    };
-  }
-  return undefined;
+  if (args.length !== 2 || args[0] !== "--models") return undefined;
+  const models = args[1]
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  if (!models.length) return undefined;
+  return { mode: "models", models };
 }
 
 /**
