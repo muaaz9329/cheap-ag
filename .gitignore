@@ -15,8 +15,12 @@ build/
 # cheapAg runtime state: job logs, worker worktrees, transcripts
 .cheapag/
 
-# Local planning docs
+# Personal: plans, tickets, agent state and scratch files (never commit)
 /tasks/
+.plan/
+.bench/
+.claude/
+/math.js
 
 # Logs
 *.log
@@ -35,9 +39,6 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 *.swp
-
-# Local Claude Code settings (per-developer)
-.claude/settings.local.json
 
 # Benchmark run dirs and results are local
 bench/.runs/
