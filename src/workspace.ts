@@ -87,26 +87,7 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
   const links: string[] = [];
   try {
     if (stash) git(path, ["stash", "apply", "--quiet", stash]);
-
-    // untracked dependency dirs are linked below, never copied
-    const untracked = git(root, [
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-      "-z",
-      "--",
-      ".",
-      ...outside(linkDirs),
-    ])
-      .split("\0")
-      .filter(Boolean);
-    // an entry ending in "/" is an untracked nested repository: not part of this repo, so not carried over
-    // (git would refuse to index it, or record it as a gitlink that would then land)
-    for (const file of untracked.filter((entry) => !entry.endsWith("/"))) {
-      mkdirSync(dirname(join(path, file)), { recursive: true });
-      cpSync(join(root, file), join(path, file), { verbatimSymlinks: true });
-    }
-
+    copyUntracked(root, path, linkDirs);
     for (const dir of linkDirs) {
       const source = join(root, dir);
       const target = join(path, dir);
@@ -126,6 +107,28 @@ export function createWorktree(root: string, job: string, linkDirs: string[]): W
   git(path, ["add", "-A", "--", ".", ...outside(notIgnored(path, linked))]);
   const base = git(path, ["write-tree"]).trim();
   return { path, head, stash, base, links, linked };
+}
+
+/** Copies the checkout's untracked, non-ignored files into the worktree at `path`. */
+function copyUntracked(root: string, path: string, linkDirs: string[]) {
+  // untracked dependency dirs are linked instead, never copied
+  const untracked = git(root, [
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+    "-z",
+    "--",
+    ".",
+    ...outside(linkDirs),
+  ])
+    .split("\0")
+    .filter(Boolean);
+  // an entry ending in "/" is an untracked nested repository: not part of this repo, so not carried over
+  // (git would refuse to index it, or record it as a gitlink that would then land)
+  for (const file of untracked.filter((entry) => !entry.endsWith("/"))) {
+    mkdirSync(dirname(join(path, file)), { recursive: true });
+    cpSync(join(root, file), join(path, file), { verbatimSymlinks: true });
+  }
 }
 
 function discard(root: string, path: string, links: string[]) {
