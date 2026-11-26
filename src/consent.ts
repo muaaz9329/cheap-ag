@@ -78,16 +78,17 @@ export function acceptRoute(root: string) {
 }
 
 // a local model is named with its server: pointing the same model id at another URL is another recipient
-const routeNames = (r: Route) => {
-  const provider = r.implement.providerID;
-  const url =
-    provider === "local"
-      ? localServer()?.base_url
-      : provider === "ollama" && ollamaIsLocal()
-        ? ollamaEndpoint()?.base_url
-        : undefined;
+function routeNames(r: Route) {
+  const url = recipientUrl(r.implement.providerID);
   return routeModels(r).map((m) => modelName(m) + (url ? `@${url}` : ""));
-};
+}
+
+/** The server URL that is part of the recipient: the custom endpoint's or a local Ollama's; none for a hosted provider. */
+function recipientUrl(provider: string) {
+  if (provider === "local") return localServer()?.base_url;
+  if (provider === "ollama" && ollamaIsLocal()) return ollamaEndpoint()?.base_url;
+  return undefined;
+}
 
 /**
  * The models config now routes to other models than the consent was shown (not judged on a damaged config, which the job's own load reports; a record from before routes were kept has none).
