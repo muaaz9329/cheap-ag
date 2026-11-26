@@ -524,8 +524,11 @@ export function escalationSkip(
   if (c.limits.some((limit) => limit.model === name))
     return `esc: skipped, ${escalation.id} hit its usage limit in this job`;
   const use = capUse(name, spent[name] ?? 0);
-  if (use && use.used >= skipAt)
-    return `esc: skipped, ${escalation.id} at ${Math.round(use.used * 100)}% of its tracked ${use.window} cap ($${use.capUsd.toFixed(2)})`;
+  if (use && use.used >= skipAt) {
+    const percent = Math.round(use.used * 100);
+    const cap = use.capUsd.toFixed(2);
+    return `esc: skipped, ${escalation.id} at ${percent}% of its tracked ${use.window} cap ($${cap})`;
+  }
   return undefined;
 }
 
