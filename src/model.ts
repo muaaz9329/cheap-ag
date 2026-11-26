@@ -214,13 +214,13 @@ function apply(provider: Provider, chosen: Pick) {
       acceptRoute(projectRoot(process.cwd()));
     } catch {} // not inside a repo: no consent to update
   }
-  const name = (id: string) => `${provider.provider}/${id}`;
-  const second = chosen.fallback
-    ? `${name(chosen.fallback)} (${effortText(chosen.fallbackEffort)})`
+  const fullName = (id: string) => `${provider.provider}/${id}`;
+  const mainText = `${fullName(chosen.main)} (${effortText(chosen.mainEffort)})`;
+  const fallbackText = chosen.fallback
+    ? `${fullName(chosen.fallback)} (${effortText(chosen.fallbackEffort)})`
     : "none";
-  print(
-    `✓ main ${name(chosen.main)} (${effortText(chosen.mainEffort)}), fallback ${second} — saved in ${userConfigFile()}; the next job uses it`,
-  );
+  const file = userConfigFile();
+  print(`✓ main ${mainText}, fallback ${fallbackText} — saved in ${file}; the next job uses it`);
   return 0;
 }
 
