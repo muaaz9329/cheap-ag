@@ -387,12 +387,11 @@ function applyOutput(root: string, args: string[], env: Record<string, string>, 
 
 /** The paths a failed landing names as conflicting, from git apply's messages. */
 export function conflictPaths(text: string) {
-  const named = [
-    ...text.matchAll(
-      /^Applied patch to '(.+)' with conflicts\.$|^error: (.+?): (?:does not exist in index|does not match index|already exists in (?:index|working directory)|patch does not apply)$/gm,
-    ),
-  ];
-  return [...new Set(named.map((match) => match[1] ?? match[2]))];
+  // a 3-way merge left markers in the path, or git could not patch it at all
+  const conflictLine =
+    /^Applied patch to '(.+)' with conflicts\.$|^error: (.+?): (?:does not exist in index|does not match index|already exists in (?:index|working directory)|patch does not apply)$/gm;
+  const paths = [...text.matchAll(conflictLine)].map((match) => match[1] ?? match[2]);
+  return [...new Set(paths)];
 }
 
 /**
@@ -413,13 +412,9 @@ export function leftoverMarkers(worktree: Worktree) {
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
   });
-  return [
-    ...new Set(
-      [...result.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm)].map(
-        (match) => match[1],
-      ),
-    ),
-  ];
+  const markerLines = result.stdout.matchAll(/^(.+?):\d+: leftover conflict marker$/gm);
+  const paths = [...markerLines].map((match) => match[1]);
+  return [...new Set(paths)];
 }
 
 /**
