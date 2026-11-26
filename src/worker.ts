@@ -261,12 +261,8 @@ export async function openSession(opts: {
     event: EventPermissionAsked,
     current: PromptState,
   ): Promise<AfterEvent> {
-    const request = event.properties;
-    const what = request.patterns.join(" ") || request.permission;
-    const metadata = request.metadata as Record<string, unknown> | undefined;
-    const command = nonBlank(metadata?.command)?.trim() ?? what;
-    const prefix = commandPrefix(command);
-    const asked: AskedPermission = { request, command, prefix, what };
+    const asked = askedPermission(event.properties);
+    const { request, command, prefix } = asked;
     if (request.permission !== "bash" || !opts.onPermission || isHardDenied(command)) {
       return (await rejectUnaskable(asked, current)) ? "log" : "stop";
     }
@@ -561,6 +557,14 @@ export async function runSession(
   const session = await openSession(opts);
   const result = await session.run(opts.prompt);
   return { ...session.totals(), ...result };
+}
+
+/** A permission request with the command it is for (its patterns, when it names none), the prefix, and record text. */
+function askedPermission(request: PermissionRequest): AskedPermission {
+  const what = request.patterns.join(" ") || request.permission;
+  const metadata = request.metadata as Record<string, unknown> | undefined;
+  const command = nonBlank(metadata?.command)?.trim() ?? what;
+  return { request, command, prefix: commandPrefix(command), what };
 }
 
 /** Why the worker asks: the asking message's text, else its reasoning, cut to 200 characters; else a placeholder. */
