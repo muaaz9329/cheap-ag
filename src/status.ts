@@ -18,13 +18,12 @@ const RECENT = 5;
  * against Go's windows. Read-only and non-interactive, so the plugin's `/cheapag:status` can wrap it.
  */
 export function status(args: string[]): number {
-  const out = (line: string) => process.stdout.write(redact(line) + "\n");
   if (args.length) {
-    out("✗ usage: cheapag status");
+    print("✗ usage: cheapag status");
     return 1;
   }
   const provider = detectProvider()?.provider;
-  out(
+  print(
     `cheapag ${version} provider=${provider ? `${provider} preset=${presetHere(provider)}` : `none (run ${LOGIN_COMMAND})`}`,
   );
 
@@ -32,11 +31,11 @@ export function status(args: string[]): number {
   try {
     root = projectRoot(process.cwd());
   } catch {
-    out("repo: not a git repository (no jobs or consent here)");
+    print("repo: not a git repository (no jobs or consent here)");
   }
   if (root) {
     const consent = readConsent(root);
-    out(
+    print(
       `consent: ${
         !consent
           ? "not given; run /cheapag:allow"
@@ -47,44 +46,49 @@ export function status(args: string[]): number {
               : `${describe(consent)} (since ${consent.approvedAt.slice(0, 10)})`
       }`,
     );
-    out(storageLine(root));
+    print(storageLine(root));
     const all = newestFirst(root);
     const inFlight = (r: (typeof all)[number]) => r.status === "RUNNING" || r.status === "BLOCKED";
     const live = all.filter((r) => inFlight(r) && !!r.pid && isAlive(r.pid));
     const rest = all.filter((r) => !live.includes(r));
     const headline = (r: (typeof all)[number]) =>
       `  ${renderJob(r).split("\n")[0]}${blockedFor(r)}${inFlight(r) && !live.includes(r) ? " (its server is gone; cancelled at next start)" : ""}`;
-    out(live.length ? "running:" : "running: none");
-    live.forEach((r) => out(headline(r)));
-    out(rest.length ? "recent:" : "recent: none");
-    rest.slice(0, RECENT).forEach((r) => out(headline(r)));
-    if (rest.length > RECENT) out(`  … +${rest.length - RECENT} older (jobs list)`);
+    print(live.length ? "running:" : "running: none");
+    live.forEach((r) => print(headline(r)));
+    print(rest.length ? "recent:" : "recent: none");
+    rest.slice(0, RECENT).forEach((r) => print(headline(r)));
+    if (rest.length > RECENT) print(`  … +${rest.length - RECENT} older (jobs list)`);
     const last = lastSession(root);
     if (last) {
-      out(
+      print(
         `claude prefix: ${(last.prefix / 1000).toFixed(1)}k tokens on the first turn of the last session here (${last.at.slice(0, 10)}); see "What it costs to keep in context" in the plugin README`,
       );
-      out(
+      print(
         `claude cache: ${last.requests} requests, ${Math.round(last.hitRate * 100)}% of input from cache${last.ttl ? `, ${last.ttl} TTL` : ""}`,
       );
     }
   }
 
   // a `models` entry naming another provider is ignored when a job routes: say which model actually runs
-  if (provider) for (const warning of modelWarnings(provider, root)) out(`! ${warning}`);
+  if (provider) for (const warning of modelWarnings(provider, root)) print(`! ${warning}`);
 
   const spend = spendWindows();
-  out(
+  print(
     spend.length
       ? "spend (tracked on this machine, all repos; Go windows where capped):"
       : "spend: none tracked in the last 30 days",
   );
   for (const { model, windows } of spend) {
-    out(
+    print(
       `  ${model}  ${windows.map((w) => `${w.window} $${w.spent.toFixed(2)}${w.capUsd ? `/$${w.capUsd.toFixed(2)} (${Math.round((w.spent / w.capUsd) * 100)}%)` : ""}`).join("  ")}`,
     );
   }
   return 0;
+}
+
+/** Writes one line of the report, with any API key in it redacted. */
+function print(line: string) {
+  process.stdout.write(redact(line) + "\n");
 }
 
 const KB = 1024;
