@@ -233,31 +233,15 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   const status = r.status as Exclude<JobStatus, "RUNNING">;
   const compacted = compact && COMPACTED.has(status);
   const has = (s: Section) => STATUS_SECTIONS[status].includes(s);
-  // a compacted batch block drops summary/changed/review/log (OK's risks: survive)
-  const lines = [jobHeadline(r)];
   // a worker with no summary has nothing to put there: `found:` leads instead
-  const lead = !compacted && r.summary === NO_SUMMARY && has("found") && r.found;
-  if (lead) lines.push(...wrap(`found: ${oneLine(r.found!)}`));
-  if (!compacted && r.summary && !lead)
-    lines.push(`summary: ${clip(oneLine(r.summary), c.summary)}`);
-  // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
-  if (!compacted && r.changed.length && r.status !== "BLOCKED")
-    lines.push(...changedLines(r.changed, c.changed));
-  if ((!compacted || r.status === "OK") && r.risks.length)
-    lines.push("risks:", ...r.risks.slice(0, c.risks).map((x) => `  - ${clip(oneLine(x), 120)}`));
-  if (!compacted && r.review.length)
-    lines.push(
-      `review: ${r.review
-        .slice(0, c.review)
-        .map((v) => `${v.path}:${v.start}-${v.end}`)
-        .join(", ")}`,
-    );
+  const lead = !compacted && r.summary === NO_SUMMARY && has("found") && Boolean(r.found);
+  const lines = [jobHeadline(r), ...workLines(r, c, { compacted, foundLeads: lead })];
   const questions = has("question") ? questionLines(r) : [];
   lines.push(...questions);
   if (has("conflict") && r.conflict?.length)
     lines.push("conflict:", ...r.conflict.map((x) => `  ${oneLine(x)}`));
   if (has("error") && r.error?.length) lines.push(...errorLines(r.error, c.error, r.check));
-  if (has("found") && r.found && !lead) lines.push(...wrap(`found: ${oneLine(r.found)}`));
+  if (has("found") && r.found && !lead) lines.push(...foundLines(r.found));
   if (has("tried") && r.tried?.length)
     lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
   if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
@@ -334,6 +318,39 @@ function jobHeadline(record: JobRecord) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/** How a job block is shown: compacted in a batch, and whether `found:` took the summary's place. */
+type BlockView = { compacted: boolean; foundLeads: boolean };
+
+/** What the worker did: its summary (or `found:` in its place), changed files, risks, review ranges. */
+function workLines(record: JobRecord, cuts: Cuts, view: BlockView) {
+  // a compacted batch block drops summary/changed/review/log (OK's risks: survive)
+  if (view.compacted) return record.status === "OK" ? riskLines(record.risks, cuts.risks) : [];
+  const lines: string[] = [];
+  if (view.foundLeads) lines.push(...foundLines(record.found!));
+  else if (record.summary) lines.push(`summary: ${clip(oneLine(record.summary), cuts.summary)}`);
+  // D5: a BLOCKED block counts its files in the headline but lists them only once the job settles
+  if (record.changed.length && record.status !== "BLOCKED")
+    lines.push(...changedLines(record.changed, cuts.changed));
+  lines.push(...riskLines(record.risks, cuts.risks));
+  if (record.review.length) {
+    const shown = record.review.slice(0, cuts.review);
+    const ranges = shown.map((range) => `${range.path}:${range.start}-${range.end}`);
+    lines.push(`review: ${ranges.join(", ")}`);
+  }
+  return lines;
+}
+
+/** A stopped worker's note: wrapped at spaces, never cut. */
+function foundLines(found: string) {
+  return wrap(`found: ${oneLine(found)}`);
+}
+
+/** The `risks:` list, cut to `limit` risks of at most 120 chars each. */
+function riskLines(risks: string[], limit: number) {
+  if (!risks.length) return [];
+  return ["risks:", ...risks.slice(0, limit).map((risk) => `  - ${clip(oneLine(risk), 120)}`)];
 }
 
 /** The `changed:` list, cut to `limit` files with a count of the rest. */
