@@ -267,7 +267,7 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
 
 /** Every distinct model a route may send code to, first to last (for the config, the CONSENT block and `cheapag allow`). */
 export const routeModels = (r: Route) =>
-  unique([
+  uniqueModels([
     r.implement,
     r.medium,
     r.hard,
@@ -277,11 +277,12 @@ export const routeModels = (r: Route) =>
     ...r.researchFallbacks,
   ]);
 
-const unique = (ms: (WorkerModel | undefined)[]) =>
-  ms.filter(
-    (m, i): m is WorkerModel =>
-      !!m && ms.findIndex((o) => o && modelName(o) === modelName(m)) === i,
-  );
+/** The models that are set, each name once, at its first place. */
+function uniqueModels(models: (WorkerModel | undefined)[]) {
+  const isFirst = (model: WorkerModel, index: number) =>
+    models.findIndex((other) => other && modelName(other) === modelName(model)) === index;
+  return models.filter((model, index): model is WorkerModel => !!model && isFirst(model, index));
+}
 
 export const modelName = (m: WorkerModel) => `${m.providerID}/${m.id}`;
 
