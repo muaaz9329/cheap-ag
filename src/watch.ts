@@ -197,12 +197,10 @@ export async function follow(
         continue;
       }
       const progressFile = join(dir, "progress.txt");
-      if (existsSync(progressFile)) {
-        const line = readTrimmed(progressFile);
-        if (line && line !== printed.get(id)) {
-          printed.set(id, line);
-          out.write(`  ${id}  ${line}\n`);
-        }
+      const line = existsSync(progressFile) ? readTrimmed(progressFile) : "";
+      if (line && line !== printed.get(id)) {
+        printed.set(id, line);
+        out.write(`  ${id}  ${line}\n`);
       }
       const resultFile = join(dir, "result.txt");
       const word = firstWord(resultFile);
