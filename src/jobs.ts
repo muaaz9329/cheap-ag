@@ -721,7 +721,7 @@ function runGroup(g: GroupRun) {
     pending = null;
     const choice = options.indexOf(label);
     if (choice === 1) addAllowCommand(root, ask.prefix);
-    return choice === 0 ? "once" : choice === 1 ? "always" : "reject";
+    return permissionAnswer(choice);
   };
 
   /**
@@ -1282,12 +1282,24 @@ const fixThis = (tail: string[]) =>
 const ownReport = (result: RunResult) =>
   result.finish || /```cheapag-result/.test(result.text) ? finishReport(result) : undefined;
 /** How a fix attempt's check came out, against the failure before it. */
-const verdict = (before: string[], failing: { tail: string[] } | undefined) =>
-  !failing ? "passed" : sameFailure(before, failing.tail) ? "same failure" : "different failure";
+function verdict(before: string[], failing: { tail: string[] } | undefined) {
+  if (!failing) return "passed";
+  if (sameFailure(before, failing.tail)) return "same failure";
+  return "different failure";
+}
+
+/** The answer a permission block's chosen option (its index; -1 for free text) gives the worker. */
+function permissionAnswer(choice: number): PermissionAnswer {
+  if (choice === 0) return "once";
+  if (choice === 1) return "always";
+  return "reject";
+}
 
 const FINDINGS_PROMPT =
   "You were stopped before finishing. Without calling any tool, answer in at most 600 characters: where the bug is (file:function), your best hypothesis, and what you ruled out.";
 const FINDINGS_MS = 30_000;
+/** The longest findings note kept; a longer one is cut, with an ellipsis as its last character. */
+const MAX_FINDINGS = 600;
 
 /** One last prompt on a stopped session for its findings; any error, timeout or empty answer gives none. */
 async function findings(session: Session): Promise<string | undefined> {
@@ -1296,7 +1308,8 @@ async function findings(session: Session): Promise<string | undefined> {
     const text = (r.error || r.interrupted ? "" : r.text || r.finish?.summary || "")
       .replace(/\s+/g, " ")
       .trim();
-    return text ? (text.length > 600 ? `${text.slice(0, 599)}…` : text) : undefined;
+    if (!text) return undefined;
+    return text.length > MAX_FINDINGS ? `${text.slice(0, MAX_FINDINGS - 1)}…` : text;
   } catch {
     return undefined;
   }
