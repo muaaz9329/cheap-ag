@@ -126,8 +126,11 @@ export const firstLine = (run: SpawnSyncReturns<string> | undefined) =>
   ((run?.stderr || run?.stdout) ?? "").trim().split("\n")[0];
 
 /** Double-quotes an argument Node will re-split under `shell: true` on Windows. */
-const quoteWindowsArgument = (argument: string) =>
-  /[\s"]/.test(argument) ? `"${argument.replace(/"/g, '\\"')}"` : argument;
+function quoteWindowsArgument(argument: string) {
+  if (!/[\s"]/.test(argument)) return argument;
+  const escaped = argument.replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
 
 /**
  * Runs a CLI found on the PATH. `.cmd`/`.bat` shims (claude.cmd, npx.cmd) cannot be spawned without a shell, so
