@@ -142,24 +142,26 @@ function discard(root: string, path: string, links: string[]) {
 }
 
 /** Pathspecs that keep Cheap Agent's state and the given dependency dirs out of a git operation. */
-const outside = (dirs: string[]) =>
-  [".cheapag", ...dirs].map((dir) => `:(exclude,top,literal)${dir}`);
+function outside(dirs: string[]) {
+  return [".cheapag", ...dirs].map((dir) => `:(exclude,top,literal)${dir}`);
+}
 
 // git 2.55 rejects a pathspec naming an ignored path, even as an exclusion; an already-ignored dir needs no exclusion
-const notIgnored = (dir: string, paths: string[]) =>
-  paths.filter(
+function notIgnored(dir: string, paths: string[]) {
+  return paths.filter(
     (path) =>
       spawnSync("git", [...GIT_ARGS, "check-ignore", "-q", "--", path], { cwd: dir, stdio: "pipe" })
         .status !== 0,
   );
+}
 
-const isDirectory = (path: string) => {
+function isDirectory(path: string) {
   try {
     return statSync(path).isDirectory();
   } catch {
     return false;
   }
-};
+}
 
 /** Everything the job changed relative to its baseline tree, as a binary patch plus per-file stats. */
 export function worktreeDiff(worktree: Worktree) {
@@ -212,7 +214,9 @@ export function removeWorktree(root: string, worktree: Worktree) {
 }
 
 /** How long landing waits for another holder. `CHEAPAG_LOCK_TIMEOUT_MS` is a test hook (like CHEAPAG_OPENCODE_URL), not a setting. */
-const lockTimeoutMs = () => Number(process.env.CHEAPAG_LOCK_TIMEOUT_MS) || 10 * 60_000;
+function lockTimeoutMs() {
+  return Number(process.env.CHEAPAG_LOCK_TIMEOUT_MS) || 10 * 60_000;
+}
 
 /** What `.cheapag/land.lock` holds. `token` tells one holder's lock from the next one's (absent in older locks). */
 type Holder = { pid: number; at: string; token?: string };
@@ -297,7 +301,9 @@ function readHolder(file: string): Holder | undefined {
   }
 }
 
-const literal = (path: string) => `:(literal)${path}`;
+function literal(path: string) {
+  return `:(literal)${path}`;
+}
 
 /**
  * 3-way applies `patch` to the user's working tree, uncommitted and leaving their index alone.
@@ -414,10 +420,10 @@ export function jobWorktree(
   };
 }
 
-const lstatOf = (path: string) => {
+function lstatOf(path: string) {
   try {
     return lstatSync(path);
   } catch {
     return undefined;
   }
-};
+}
