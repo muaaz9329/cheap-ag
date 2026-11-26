@@ -139,7 +139,7 @@ const STATUS_SECTIONS: Record<Exclude<JobStatus, "RUNNING">, Section[]> = {
   BUDGET: ["found", "reason", "worktree"],
   PROVIDER: ["found", "reason", "worktree"],
 };
-// ticket 34: a batch block shows these settled jobs' status sections only (OK keeps risks:); every other status renders as today
+// a batch block shows only the status sections of these settled jobs (OK keeps risks:); every other status renders in full
 const COMPACTED = new Set<JobStatus>(["OK", "PARTIAL", "FAIL"]);
 // D6 urgency; CANCELLED is not ranked by the spec and sits with BUDGET/TIMEOUT
 const URGENCY: JobStatus[] = [
@@ -192,7 +192,7 @@ export const permissionOptions = (prefix: string) => [
   "refuse",
 ];
 
-/** D5-adjacent: a BLOCKED job paused on a command permission (ticket 69), rendered outside the ordinary job layout. */
+/** D5-adjacent: a BLOCKED job paused on a command permission, rendered outside the ordinary job layout. */
 function renderPermission(r: JobRecord) {
   const p = r.permission!;
   const [once, always, refuse] = permissionOptions(p.prefix);
@@ -233,7 +233,7 @@ function layout(r: JobRecord, c: Cuts, compact = false) {
   const status = r.status as Exclude<JobStatus, "RUNNING">;
   const compacted = compact && COMPACTED.has(status);
   const has = (s: Section) => STATUS_SECTIONS[status].includes(s);
-  // ticket 34: a compacted batch block drops summary/changed/review/log (OK's risks: survive)
+  // a compacted batch block drops summary/changed/review/log (OK's risks: survive)
   const add = r.changed.reduce((n, x) => n + x.add, 0);
   const del = r.changed.reduce((n, x) => n + x.del, 0);
   const lines = [
@@ -342,7 +342,7 @@ export function renderResearch(r: ResearchRecord) {
       .filter(Boolean)
       .join(" "),
   ];
-  // a scout brief (ticket 23.4): ranked files, the reproduction, dead ends, then the prose
+  // a scout brief: ranked files, the reproduction, dead ends, then the prose
   if (r.refs.length)
     lines.push(
       `files: ${r.refs.map((v) => `${v.path}:${v.start}${v.end !== v.start ? `-${v.end}` : ""}`).join(", ")}`,
