@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { arch } from "node:os";
 import { dirname, join } from "node:path";
-import { localServer, ollamaEndpoint } from "./config.js";
+import { localServer, ollamaEndpoint, type LocalServer, type OllamaConfig } from "./config.js";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { gitBash, killProcessGroup, opencodePlatform } from "./platform.js";
-import { fullRoute, modelName, routeModels, type Route } from "./routing.js";
+import { fullRoute, modelName, routeModels, type Route, type WorkerModel } from "./routing.js";
 
 const require = createRequire(import.meta.url);
 export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: string }).version;
@@ -21,11 +21,12 @@ export const OPENCODE_PIN = (require("opencode-ai/package.json") as { version: s
 export function opencodeBinary() {
   const { os, binary } = opencodePlatform();
   const base = `opencode-${os}-${arch()}`;
-  const fromPkg = createRequire(require.resolve("opencode-ai/package.json"));
+  const requireFromOpencode = createRequire(require.resolve("opencode-ai/package.json"));
   for (const name of [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]) {
     try {
-      const bin = join(dirname(fromPkg.resolve(`${name}/package.json`)), "bin", binary);
-      if (existsSync(bin)) return bin;
+      const packageDir = dirname(requireFromOpencode.resolve(`${name}/package.json`));
+      const path = join(packageDir, "bin", binary);
+      if (existsSync(path)) return path;
     } catch {
       // variant not installed for this platform
     }
@@ -150,78 +151,31 @@ function opencodeConfig(provider: Provider, route: Route) {
   // the key itself stays in OpenCode's own credential store; the config never names one
   const models = Object.fromEntries(
     routeModels(route)
-      .filter((m) => m.options)
-      .map((m) => [m.id, { options: m.options }]),
+      .filter((model) => model.options)
+      .map((model) => [model.id, { options: model.options }]),
   );
   const providerConfig: Record<string, unknown> = Object.keys(models).length ? { models } : {};
-  /** An OpenAI-compatible endpoint as OpenCode declares one: its URL, a key reference, and every route model with the endpoint's token limits and prices. */
-  const endpoint = (
-    name: string,
-    at: {
-      base_url: string;
-      context?: number;
-      output?: number;
-      price?: { input: number; output: number };
-    },
-    apiKey: string | undefined,
-  ) => {
-    const limit = at.context
-      ? {
-          limit: {
-            context: at.context,
-            output: at.output ?? Math.min(32_768, Math.floor(at.context / 4)),
-          },
-        }
-      : {};
-    // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
-    const cost = at.price ? { cost: { input: at.price.input, output: at.price.output } } : {};
-    return {
-      npm: "@ai-sdk/openai-compatible",
-      name,
-      options: { baseURL: at.base_url, ...(apiKey && { apiKey }) },
-      models: Object.fromEntries(
-        routeModels(route).map((m) => [m.id, { name: m.id, ...limit, ...cost, ...models[m.id] }]),
-      ),
-    };
-  };
   // Command Code is not in OpenCode's catalog: declare it as an OpenAI-compatible provider (the key still comes from the auth store)
   if (provider.provider === "commandcode") {
-    Object.assign(providerConfig, COMMAND_CODE, {
-      models: Object.fromEntries(
-        routeModels(route).map((m) => [m.id, { name: m.id, ...models[m.id] }]),
-      ),
-    });
+    Object.assign(providerConfig, COMMAND_CODE, { models: routeModelEntries(route, models) });
   }
   // Ollama is declared as an OpenAI-compatible provider at the endpoint the user picked (this machine or ollama.com).
   // The cloud key is an {env:OLLAMA_API_KEY} reference OpenCode resolves itself; the local endpoint needs none
   if (provider.provider === "ollama") {
     const ollama = ollamaEndpoint();
     if (!ollama) throw new Error("no Ollama endpoint configured; run cheapag login");
-    Object.assign(
-      providerConfig,
-      endpoint(
-        "Ollama",
-        ollama,
-        ollama.endpoint === "cloud" ? `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}` : undefined,
-      ),
-    );
+    const declaration = endpointProvider("Ollama", ollama.base_url, ollamaKeyReference(ollama));
+    const entries = routeModelEntries(route, models, endpointModelFields(ollama));
+    Object.assign(providerConfig, declaration, { models: entries });
   }
   // a custom endpoint is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} or {env:} reference
   // OpenCode resolves itself, so the key is never in this config or in Cheap Agent's memory
   if (provider.provider === "local") {
     const local = localServer()!;
-    Object.assign(
-      providerConfig,
-      endpoint(
-        "Custom endpoint",
-        local,
-        local.api_key_file
-          ? `{file:${local.api_key_file}}`
-          : local.api_key_env
-            ? `{env:${local.api_key_env}}`
-            : undefined,
-      ),
-    );
+    const apiKey = localKeyReference(local);
+    const declaration = endpointProvider("Custom endpoint", local.base_url, apiKey);
+    const entries = routeModelEntries(route, models, endpointModelFields(local));
+    Object.assign(providerConfig, declaration, { models: entries });
   }
   const config = {
     $schema: "https://opencode.ai/config.json",
@@ -233,6 +187,43 @@ function opencodeConfig(provider: Provider, route: Route) {
   return JSON.stringify(config, null, 2) + "\n";
 }
 
+/** An OpenAI-compatible endpoint as OpenCode declares one: its URL and, when it needs one, a key reference. */
+function endpointProvider(name: string, baseUrl: string, apiKey: string | undefined) {
+  const options = { baseURL: baseUrl, ...(apiKey && { apiKey }) };
+  return { npm: "@ai-sdk/openai-compatible", name, options };
+}
+
+/** The token limits and prices a local or Ollama endpoint may set for the models it serves. */
+type EndpointLimits = Pick<LocalServer, "context" | "output" | "price">;
+
+/** An endpoint's token limits and prices, as the fields every one of its models carries. */
+function endpointModelFields({ context, output, price }: EndpointLimits) {
+  // OpenCode prices a model per million tokens; that cost feeds the spend ledger and the job cost cap
+  const cost = price ? { cost: { input: price.input, output: price.output } } : {};
+  if (!context) return cost;
+  const limit = { context, output: output ?? Math.min(32_768, Math.floor(context / 4)) };
+  return { limit, ...cost };
+}
+
+/** Every route model as OpenCode declares it: named by its id, then `fields`, then the model's options. */
+function routeModelEntries(route: Route, models: Record<string, object>, fields: object = {}) {
+  const entry = (model: WorkerModel) => ({ name: model.id, ...fields, ...models[model.id] });
+  return Object.fromEntries(routeModels(route).map((model) => [model.id, entry(model)]));
+}
+
+/** Ollama Cloud's key as an {env:} reference; this machine's endpoint needs no key. */
+function ollamaKeyReference(ollama: OllamaConfig) {
+  if (ollama.endpoint !== "cloud") return undefined;
+  return `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}`;
+}
+
+/** A custom endpoint's key as a {file:} or {env:} reference, or none when it needs no key. */
+function localKeyReference(local: LocalServer) {
+  if (local.api_key_file) return `{file:${local.api_key_file}}`;
+  if (local.api_key_env) return `{env:${local.api_key_env}}`;
+  return undefined;
+}
+
 /** The bundled OpenCode's session database file, in OpenCode's data dir. */
 export const OPENCODE_DB = "cheapag-opencode.db";
 
@@ -242,13 +233,7 @@ let started: Promise<Opencode> | undefined;
 let child: ChildProcess | undefined;
 /** The config the running server was booted with. */
 let booted: string | undefined;
-
-/**
- * Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
- * Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
- * `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
- * Without one (ping, login) any running server will do.
- */
+/** How many jobs and research calls hold the server; see holdOpencode. */
 let holds = 0;
 
 /** Marks the server in use for a job's or research call's lifetime, so a config change never reboots it under them. Returns the release. */
@@ -275,6 +260,14 @@ export async function runningOpencode(): Promise<Opencode | undefined> {
   }
 }
 
+const CONFIG_CHANGED_WHILE_HELD =
+  "the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish";
+
+// Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
+// Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
+// `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
+// Without one (ping, login) any running server will do.
+// A line comment, not JSDoc: JSDoc here would change the published declarations.
 export function ensureOpencode(
   provider: Provider,
   projectDir = process.cwd(),
@@ -284,19 +277,14 @@ export function ensureOpencode(
   if (started && route && booted !== config) {
     // a reboot would kill every live session: refuse it while any job or research call holds the server
     // shortcut: one server per config would let both run; worth it only if config changes mid-session become common
-    if (holds > 0)
-      return Promise.reject(
-        new Error(
-          "the model configuration changed (consent or cheapag.json models) while jobs are running; retry once they finish",
-        ),
-      );
+    if (holds > 0) return Promise.reject(new Error(CONFIG_CHANGED_WHILE_HELD));
     stopOpencode();
   }
   if (!started) booted = config;
-  started ??= boot(projectDir, config).catch((err) => {
+  started ??= boot(projectDir, config).catch((error) => {
     stopOpencode();
     started = undefined;
-    throw err;
+    throw error;
   });
   return started;
 }
@@ -309,58 +297,66 @@ async function boot(projectDir: string, config: string): Promise<Opencode> {
     (external && process.env.CHEAPAG_OPENCODE_PASSWORD) || randomBytes(24).toString("base64url");
   const url = external || (await spawnServer(configDir, password));
 
-  const res = await fetch(new URL("/global/health", url), {
+  const response = await fetch(new URL("/global/health", url), {
     headers: authHeaders(password),
     signal: AbortSignal.timeout(5_000),
   });
-  if (!res.ok) throw new Error(`opencode health check at ${url} answered ${res.status}`);
-  const { version } = (await res.json()) as { version: string };
+  if (!response.ok) throw new Error(`opencode health check at ${url} answered ${response.status}`);
+  const { version } = (await response.json()) as { version: string };
   if (version !== OPENCODE_PIN) {
     throw new Error(`opencode version ${version}, expected ${OPENCODE_PIN}; reinstall cheap-agent`);
   }
   return { url, password, version };
 }
 
-function spawnServer(configDir: string, password: string) {
+/** The env `opencode serve` runs with: this process's, plus what keeps the server Cheap Agent's own. */
+function serverEnv(configDir: string, password: string) {
   // on Windows point the worker at Git Bash, so it runs and parses its commands as bash, like the rest of cheapag
   const bash = process.platform === "win32" ? gitBash() : undefined;
+  return {
+    ...process.env,
+    OPENCODE_SERVER_PASSWORD: password,
+    OPENCODE_CONFIG_DIR: configDir,
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    // its own session database beside the user's (relative to OpenCode's data dir, where the shared auth.json stays): a newer
+    // OpenCode installed by the user migrates opencode.db to a schema 1.19 refuses to start on ("has no session table")
+    OPENCODE_DB,
+    // OpenCode watches each session dir's .git; cheapag uses none of its events, and on Windows the open handle blocks removing the worktree
+    OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
+    ...(bash ? { SHELL: bash } : {}),
+    // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
+    OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
+  };
+}
+
+function spawnServer(configDir: string, password: string) {
+  const env = serverEnv(configDir, password);
   return new Promise<string>((resolve, reject) => {
     // detached: its own process group, so stopOpencode() also takes down anything it spawned
-    const proc = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
+    const server = spawn(opencodeBinary(), ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
       detached: true,
       // a detached console child would open a window on Windows
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        OPENCODE_SERVER_PASSWORD: password,
-        OPENCODE_CONFIG_DIR: configDir,
-        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-        // its own session database beside the user's (relative to OpenCode's data dir, where the shared auth.json stays): a newer
-        // OpenCode installed by the user migrates opencode.db to a schema 1.19 refuses to start on ("has no session table")
-        OPENCODE_DB,
-        // OpenCode watches each session dir's .git; cheapag uses none of its events, and on Windows the open handle blocks removing the worktree
-        OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
-        ...(bash ? { SHELL: bash } : {}),
-        // the server-wide baseline; each worker session also carries the full ruleset, which wins (src/permissions.ts)
-        OPENCODE_PERMISSION: JSON.stringify(baselinePermission()),
-      },
+      env,
     });
-    child = proc;
+    child = server;
     let output = "";
     let listening = false;
+    const fail = (error: Error) => {
+      clearTimeout(timer);
+      stopOpencode();
+      reject(error);
+    };
     const timer = setTimeout(
       () => fail(new Error("opencode serve did not start within 15s")),
       15_000,
     );
-    const fail = (err: Error) => {
-      clearTimeout(timer);
-      stopOpencode();
-      reject(err);
-    };
     // keep draining both pipes for the server's lifetime (a full pipe blocks it), but only buffer until it listens
-    proc.stderr!.on("data", (chunk) => listening || (output += chunk));
-    proc.stdout!.on("data", (chunk) => {
+    server.stderr!.on("data", (chunk) => {
+      if (!listening) output += chunk;
+    });
+    server.stdout!.on("data", (chunk) => {
       if (listening) return;
       output += chunk;
       const match = output.match(/opencode server listening on (http:\/\/\S+)/);
@@ -370,16 +366,18 @@ function spawnServer(configDir: string, password: string) {
         resolve(match[1]);
       }
     });
-    proc.on("error", fail);
-    proc.on("exit", (code) => {
+    server.on("error", fail);
+    server.on("exit", (code) => {
       if (listening) {
         // a crash after startup: forget the dead server so the next call boots a fresh one. An old server exiting
         // after a reboot is not this boot's failure: it must never stop the server that replaced it.
-        if (child === proc) started = child = undefined;
+        if (child === server) started = child = undefined;
       } else fail(new Error(`opencode serve exited (${code}): ${output.trim().slice(-500)}`));
     });
   });
 }
+
+const STOP_GRACE_MS = 3_000;
 
 /**
  * Stops the OpenCode server's whole process group. Seen on 1.19.0: a SIGTERM shortly after boot, while it is still
@@ -388,15 +386,16 @@ function spawnServer(configDir: string, password: string) {
  */
 export function stopOpencode(exiting = false) {
   started = undefined; // the next ensureOpencode boots afresh
-  const proc = child;
+  const server = child;
   child = undefined;
-  if (proc?.exitCode !== null || !proc.pid) return;
-  if (exiting) return killProcessGroup(proc.pid, "SIGKILL");
-  killProcessGroup(proc.pid);
-  setTimeout(
-    () => proc.exitCode === null && killProcessGroup(proc.pid, "SIGKILL"),
-    STOP_GRACE_MS,
-  ).unref();
+  if (!server || server.exitCode !== null || !server.pid) return;
+  if (exiting) {
+    killProcessGroup(server.pid, "SIGKILL");
+    return;
+  }
+  killProcessGroup(server.pid);
+  const killIfStillRunning = () => {
+    if (server.exitCode === null) killProcessGroup(server.pid, "SIGKILL");
+  };
+  setTimeout(killIfStillRunning, STOP_GRACE_MS).unref();
 }
-
-const STOP_GRACE_MS = 3_000;
