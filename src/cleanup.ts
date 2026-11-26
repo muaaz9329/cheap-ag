@@ -172,9 +172,9 @@ export function cleanProject(cwd: string, all = false) {
 
 /** `cheapag clean [--all]`: non-interactive, so the plugin's `/cheapag:clean` can wrap it; prints what went and what stayed. */
 export function clean(args: string[]): number {
-  const out = (line: string) => process.stdout.write(redact(line) + "\n");
+  const print = (line: string) => process.stdout.write(redact(line) + "\n");
   if (args.length > 1 || (args.length && args[0] !== "--all")) {
-    out("✗ usage: cheapag clean [--all]   (--all: remove everything not in flight)");
+    print("✗ usage: cheapag clean [--all]   (--all: remove everything not in flight)");
     return 1;
   }
   let result: Cleaned;
@@ -182,12 +182,12 @@ export function clean(args: string[]): number {
     recoverJobs(process.cwd()); // a crashed server's RUNNING/BLOCKED jobs become CANCELLED, then age normally
     result = cleanProject(process.cwd(), args[0] === "--all");
   } catch (error) {
-    out(`✗ ${(error as Error).message}`);
+    print(`✗ ${(error as Error).message}`);
     return 1;
   }
-  out(`✓ removed ${result.removed.length}, kept ${result.kept.length}`);
-  for (const line of result.removed) out(`  removed ${line}`);
-  for (const line of result.kept) out(`  kept ${line}`);
+  print(`✓ removed ${result.removed.length}, kept ${result.kept.length}`);
+  for (const line of result.removed) print(`  removed ${line}`);
+  for (const line of result.kept) print(`  kept ${line}`);
   return 0;
 }
 
