@@ -280,6 +280,13 @@ type PromptState = {
   okPassed?: boolean;
   permission?: string;
 };
+/** A main-loop call the prompt rules apply to: it names its session, prompt and cwd, and carries no agent_id. */
+type MainLoopInput = Input & { session_id: string; prompt_id: string; cwd: string };
+
+function mainLoopCall(input: Input): input is MainLoopInput {
+  const named = input.session_id && input.prompt_id;
+  return Boolean(named && !input.agent_id && typeof input.cwd === "string");
+}
 
 /** Per-session state; the repo-wide marker lets the plugin's shell test skip node until a cheapag result was ever seen. */
 function stateFile(root: string, session: string) {
@@ -299,8 +306,8 @@ function markerFile(root: string) {
  * A new user prompt clears both. cheapag's own tools and a subagent's calls are never counted or denied.
  */
 function budget(input: Input): string | undefined {
+  if (!mainLoopCall(input)) return;
   const { cwd } = input;
-  if (!input.session_id || !input.prompt_id || input.agent_id || typeof cwd !== "string") return;
   const root = projectRoot(cwd);
   const file = stateFile(root, input.session_id);
   let state: PromptState;
@@ -364,8 +371,7 @@ function budget(input: Input): string | undefined {
 function result(): number {
   try {
     const input: Input = JSON.parse(readFileSync(0, "utf8"));
-    if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string")
-      return 0;
+    if (!mainLoopCall(input)) return 0;
     const out = text(input.tool_response);
     const notDone = didNotFinish(out),
       okPassed = OK_PASSED.test(out);
