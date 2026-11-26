@@ -528,35 +528,47 @@ export function refTokens(text: string): { path: string; from: string; to: strin
  * (and the scope, when there is one), and has those lines. Absolute paths inside the repo are made relative.
  */
 function refs(text: string, root: string, scope: string[]): ResearchRecord["refs"] {
-  const out: ResearchRecord["refs"] = [];
+  const found: ResearchRecord["refs"] = [];
   for (const { path, from, to } of refTokens(text)) {
-    const abs = isAbsolute(path) ? path : join(root, path);
-    const rel = normalisePath(relative(root, abs));
+    const absolutePath = isAbsolute(path) ? path : join(root, path);
+    const relativePath = normalisePath(relative(root, absolutePath));
     const start = Number(from);
     const end = Number(to ?? from);
-    if (
-      !rel ||
-      rel === ".." ||
-      rel.startsWith("../") ||
-      isAbsolute(rel) ||
-      start < 1 ||
-      end < start
-    )
-      continue;
-    if (scope.length && !scope.some((s) => rel === s || rel.startsWith(`${s}/`))) continue;
-    if (out.some((r) => r.path === rel && r.start === start && r.end === end)) continue;
-    try {
-      if (!statSync(abs).isFile()) continue;
-      const content = readFileSync(abs, "utf8");
-      const lines = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
-      if (end > lines) continue;
-    } catch {
-      continue; // no such file
-    }
-    out.push({ path: rel, start, end });
-    if (out.length === MAX_REFS) break;
+    if (!isInsideRepository(relativePath) || start < 1 || end < start) continue;
+    if (!isInScope(relativePath, scope)) continue;
+    const isDuplicate = found.some(
+      (ref) => ref.path === relativePath && ref.start === start && ref.end === end,
+    );
+    if (isDuplicate) continue;
+    const lines = lineCount(absolutePath);
+    if (lines === undefined || end > lines) continue;
+    found.push({ path: relativePath, start, end });
+    if (found.length === MAX_REFS) break;
   }
-  return out;
+  return found;
+}
+
+/** A repo-relative path that names something inside the repo, not the repo itself. */
+function isInsideRepository(relativePath: string) {
+  const isOutside = relativePath === ".." || relativePath.startsWith("../");
+  return Boolean(relativePath) && !isOutside && !isAbsolute(relativePath);
+}
+
+/** No scope means the whole repo; otherwise the path is a scope entry or under one. */
+function isInScope(relativePath: string, scope: string[]) {
+  const isUnder = (entry: string) => relativePath === entry || relativePath.startsWith(`${entry}/`);
+  return !scope.length || scope.some(isUnder);
+}
+
+/** The number of lines in a file, or undefined when the path is not a readable file. */
+function lineCount(path: string): number | undefined {
+  try {
+    if (!statSync(path).isFile()) return undefined;
+    const content = readFileSync(path, "utf8");
+    return content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+  } catch {
+    return undefined; // no such file
+  }
 }
 
 /** The text cut after `max` words, line breaks kept. */
