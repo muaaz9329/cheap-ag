@@ -4,21 +4,40 @@ const command = process.argv[2];
 const args = process.argv.slice(3);
 
 // `npx cheap-agent` typed in a terminal is setup; Claude Code starts the server with no arguments and a piped stdin
-if (command === "login" || (command === undefined && process.stdin.isTTY))
-  process.exit(await (await import("./login.js")).login(args, { setup: command === undefined }));
-else if (command === "allow") process.exit((await import("./allow.js")).allow(args));
-else if (command === "model") process.exit(await (await import("./model.js")).model(args));
-else if (command === "provider") process.exit(await (await import("./provider.js")).provider(args));
-else if (command === "clean") process.exit((await import("./cleanup.js")).clean(args));
-else if (command === "status") process.exit((await import("./status.js")).status(args));
-else if (command === "watch") {
+if (command === "login" || (command === undefined && process.stdin.isTTY)) {
+  const { login } = await import("./login.js");
+  process.exit(await login(args, { setup: command === undefined }));
+} else if (command === "allow") {
+  const { allow } = await import("./allow.js");
+  process.exit(allow(args));
+} else if (command === "model") {
+  const { model } = await import("./model.js");
+  process.exit(await model(args));
+} else if (command === "provider") {
+  const { provider } = await import("./provider.js");
+  process.exit(await provider(args));
+} else if (command === "clean") {
+  const { clean } = await import("./cleanup.js");
+  process.exit(clean(args));
+} else if (command === "status") {
+  const { status } = await import("./status.js");
+  process.exit(status(args));
+} else if (command === "watch") {
   const ids = args.filter((arg) => !arg.startsWith("-"));
-  const live = await import("./watch.js");
-  process.exit(
-    ids.length
-      ? await live.follow((await import("./workspace.js")).projectRoot(process.cwd()), ids)
-      : await live.watch(),
-  );
-} else if (command === "hook") process.exit(await (await import("./hook.js")).hook(args));
-else if (command === "codex") await (await import("./server.js")).serve("codex");
-else await (await import("./server.js")).serve();
+  const { follow, watch } = await import("./watch.js");
+  if (ids.length) {
+    const { projectRoot } = await import("./workspace.js");
+    process.exit(await follow(projectRoot(process.cwd()), ids));
+  } else {
+    process.exit(await watch());
+  }
+} else if (command === "hook") {
+  const { hook } = await import("./hook.js");
+  process.exit(await hook(args));
+} else if (command === "codex") {
+  const { serve } = await import("./server.js");
+  await serve("codex");
+} else {
+  const { serve } = await import("./server.js");
+  await serve();
+}
