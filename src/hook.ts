@@ -332,10 +332,11 @@ function budget(input: Input): string | undefined {
   if (CHEAPAG_TOOL.test(tool)) return;
   const config = loadConfig(root);
   if (state.notDone) return takeoverReason(state, file, { input, root, config });
-  const command = input.tool_input?.command;
-  if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
-    return OK_DONE;
-  }
+  if (state.okPassed && runsTests(tool, input.tool_input?.command)) return OK_DONE;
+}
+
+function runsTests(tool: string, command: unknown): boolean {
+  return tool === "Bash" && typeof command === "string" && TEST_CMD.test(command);
 }
 
 /** A reply to the job whose command permission the user has not been asked about yet; a reply naming no job counts. */
