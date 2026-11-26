@@ -24,6 +24,14 @@ const UNKNOWN_GRACE_MS = 60 * 60_000;
 
 export type Cleaned = { removed: string[]; kept: string[] };
 
+/** One cleanup run: its clock, whether it is --all, and the state folders it cleans. */
+type Sweep = {
+  all: boolean | undefined;
+  now: number;
+  jobsDir: string;
+  treesDir: string;
+};
+
 /** What cleanup reads from a job folder's record. */
 type JobRecord = {
   status?: string;
@@ -44,33 +52,17 @@ export function cleanup(
   if (!realDir(state)) return out;
   const jobsDir = join(state, "jobs");
   const treesDir = join(state, "worktrees");
-  const days = (since: number) => Math.floor((now - since) / DAY_MS);
-  const old = (since: number, limit: number) => opts.all || now - since >= limit * DAY_MS;
-
-  /** A job folder's record: whether it is in flight, and its age from when it ended (else started), else the folder's mtime. */
-  const job = (id: string) => {
-    const dir = join(jobsDir, id);
-    const record = readRecord(dir, id);
-    const at = recordTime(record);
-    // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
-    const unknown = !record && now - (mtime(dir) ?? 0) < UNKNOWN_GRACE_MS;
-    const live = unknown || isInFlight(record);
-    return {
-      live,
-      status: record?.status ?? (unknown ? "STARTING" : undefined),
-      since: Number.isNaN(at) ? (mtime(dir) ?? mtime(join(treesDir, id)) ?? now) : at,
-    };
-  };
+  const sweep: Sweep = { all: opts.all, now, jobsDir, treesDir };
 
   let removedTree = false;
   for (const id of entries(treesDir, LOG_ID)) {
     // r…: a research worktree left by a crash
     const path = join(treesDir, id);
-    const j = job(id);
+    const j = readJob(sweep, id);
     if (j.live) out.kept.push(`worktree ${id}: ${j.status} job in flight`);
-    else if (!old(j.since, retention.unlanded_worktree_days))
+    else if (!isOld(sweep, j.since, retention.unlanded_worktree_days))
       out.kept.push(
-        `worktree ${id}: ${days(j.since)}d old, kept ${retention.unlanded_worktree_days}d`,
+        `worktree ${id}: ${ageInDays(sweep, j.since)}d old, kept ${retention.unlanded_worktree_days}d`,
       );
     else {
       // unlink first, so nothing can reach through into the real dependency dirs
@@ -81,21 +73,25 @@ export function cleanup(
         rmSync(path, { recursive: true, force: true }); // git no longer knows it; rm never follows symlinks
       }
       removedTree = true;
-      out.removed.push(`worktree ${id}: ${opts.all ? "--all" : `unlanded, ${days(j.since)}d old`}`);
+      out.removed.push(
+        `worktree ${id}: ${opts.all ? "--all" : `unlanded, ${ageInDays(sweep, j.since)}d old`}`,
+      );
     }
   }
   if (removedTree) git(root, ["worktree", "prune"]);
 
   for (const id of entries(jobsDir, LOG_ID)) {
-    const j = job(id);
+    const j = readJob(sweep, id);
     if (j.live) out.kept.push(`job ${id}: ${j.status} job in flight`);
     // the record explains its worktree: it stays while the worktree does
     else if (realDir(join(treesDir, id))) out.kept.push(`job ${id}: its worktree is kept`);
-    else if (!old(j.since, retention.job_log_days))
-      out.kept.push(`job ${id}: ${days(j.since)}d old, kept ${retention.job_log_days}d`);
+    else if (!isOld(sweep, j.since, retention.job_log_days))
+      out.kept.push(
+        `job ${id}: ${ageInDays(sweep, j.since)}d old, kept ${retention.job_log_days}d`,
+      );
     else {
       rmSync(join(jobsDir, id), { recursive: true, force: true });
-      out.removed.push(`job ${id}: ${opts.all ? "--all" : `${days(j.since)}d old`}`);
+      out.removed.push(`job ${id}: ${opts.all ? "--all" : `${ageInDays(sweep, j.since)}d old`}`);
     }
   }
   // a batch record goes with its last job folder; one that never got a job (a crashed start) goes by age
@@ -107,10 +103,10 @@ export function cleanup(
       const id = name.slice(0, -".json".length);
       if (jobs.some((j) => JOB_ID.test(j) && existsSync(join(jobsDir, j)))) continue; // its jobs say what it was: kept silently
       const since = mtime(file) ?? now;
-      if (jobs.length === 0 && !old(since, retention.job_log_days)) continue;
+      if (jobs.length === 0 && !isOld(sweep, since, retention.job_log_days)) continue;
       rmSync(file, { force: true });
       out.removed.push(
-        `batch ${id}: ${jobs.length ? "its jobs are gone" : opts.all ? "--all" : `${days(since)}d old`}`,
+        `batch ${id}: ${jobs.length ? "its jobs are gone" : opts.all ? "--all" : `${ageInDays(sweep, since)}d old`}`,
       );
     }
   }
@@ -174,6 +170,31 @@ export function gitignoreHint(cwd: string) {
       ? "hint: .cheapag/ (Cheap Agent's runtime state) is not gitignored; add a `.cheapag/` line to .gitignore so it is never committed"
       : undefined;
   }
+}
+
+/** Whole days from `since` to the run's clock. */
+function ageInDays(sweep: Sweep, since: number) {
+  return Math.floor((sweep.now - since) / DAY_MS);
+}
+
+/** Whether something dated `since` is past a rule of `limitDays` (always, under --all). */
+function isOld(sweep: Sweep, since: number, limitDays: number) {
+  return sweep.all || sweep.now - since >= limitDays * DAY_MS;
+}
+
+/** A job folder's record: whether it is in flight, and its age from when it ended (else started), else the folder's mtime. */
+function readJob(sweep: Sweep, id: string) {
+  const dir = join(sweep.jobsDir, id);
+  const record = readRecord(dir, id);
+  const at = recordTime(record);
+  // no readable record: a job being created (or its record being rewritten) right now, unless the folder is long untouched
+  const unknown = !record && sweep.now - (mtime(dir) ?? 0) < UNKNOWN_GRACE_MS;
+  const live = unknown || isInFlight(record);
+  return {
+    live,
+    status: record?.status ?? (unknown ? "STARTING" : undefined),
+    since: Number.isNaN(at) ? (mtime(dir) ?? mtime(join(sweep.treesDir, id)) ?? sweep.now) : at,
+  };
 }
 
 /** A job folder's record; undefined while it has none or it is unreadable. */
