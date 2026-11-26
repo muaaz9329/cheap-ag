@@ -6,16 +6,18 @@ import { projectRoot } from "./workspace.js";
 
 /** What a tool call touched, for a one-line display. Never throws on a missing or odd input. */
 export function toolTarget(tool: string, input: unknown, base?: string): string {
-  const field = (key: string): string | undefined => {
-    const value = (input as Record<string, unknown> | null | undefined)?.[key];
-    return typeof value === "string" ? value : undefined;
-  };
   if (tool === "edit" || tool === "write" || tool === "read") {
-    const filePath = field("filePath") ?? "";
+    const filePath = stringField(input, "filePath") ?? "";
     return base && filePath.startsWith(base + sep) ? filePath.slice(base.length + 1) : filePath;
   }
-  if (tool === "bash") return (field("command") ?? "").split(/\r?\n/)[0].slice(0, 40);
+  if (tool === "bash") return (stringField(input, "command") ?? "").split(/\r?\n/)[0].slice(0, 40);
   return "";
+}
+
+/** A tool input's field when it is a string, else undefined. */
+function stringField(input: unknown, key: string): string | undefined {
+  const value = (input as Record<string, unknown> | null | undefined)?.[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 /** Per job dir: the byte offset already read in events.jsonl, and whether each line was printed. `skipped` marks a job that finished before watch started. */
