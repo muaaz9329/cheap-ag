@@ -51,7 +51,6 @@ function saveRollBack(root: string | undefined): () => void {
   };
 }
 
-/** Moves this repo's consent to `target` with the same mode and prints what it now covers. */
 function moveConsent(root: string, target: ProviderId): void {
   const consent = readConsent(root);
   if (!consent || consent.provider === target) return;
