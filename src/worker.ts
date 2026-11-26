@@ -208,8 +208,8 @@ export async function openSession(opts: {
           const { id, cost, tokens, error: failed, providerID, modelID } = event.properties.info;
           // seen live on 1.19.0: some failures (e.g. abort) arrive only on the assistant message, with no session.error
           if (failed) {
-            error ??= describe(failed);
-            httpStatus ??= statusOf(failed);
+            error ??= errorMessage(failed);
+            httpStatus ??= httpStatusOf(failed);
           }
           messages.set(id, {
             model: `${providerID}/${modelID}`,
@@ -353,8 +353,8 @@ export async function openSession(opts: {
           }
           continue;
         } else if (event.type === "session.error") {
-          error = describe(event.properties.error);
-          httpStatus = statusOf(event.properties.error);
+          error = errorMessage(event.properties.error);
+          httpStatus = httpStatusOf(event.properties.error);
         } else if (
           event.type === "session.status" &&
           event.properties.status.type === "retry" &&
@@ -535,14 +535,16 @@ function describeCall(input: Record<string, unknown>) {
   ).slice(0, 200);
 }
 
-function describe(err: unknown) {
-  const e = err as { name?: string; data?: { message?: string } } | undefined;
-  return e?.data?.message ?? e?.name ?? "unknown worker error";
+/** The message of an OpenCode error, else its name. */
+function errorMessage(error: unknown) {
+  const failure = error as { name?: string; data?: { message?: string } } | undefined;
+  return failure?.data?.message ?? failure?.name ?? "unknown worker error";
 }
 
 /** The HTTP status of a provider error (APIError), e.g. OpenRouter's 402 for insufficient credits. */
-const statusOf = (err: unknown) =>
-  (err as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
+function httpStatusOf(error: unknown) {
+  return (error as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
+}
 
 const NO_REPORT: FinishReport = {
   summary: NO_SUMMARY,
