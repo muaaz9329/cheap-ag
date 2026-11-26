@@ -70,34 +70,45 @@ export function hook(args: string[]): number | Promise<number> {
   if (args.length === 1 && args[0] === "context") return context();
   if (args.length === 2 && args[0] === "context" && args[1] === "codex") return context("codex");
   if (args.length === 1 && args[0] === "result") return result();
-  const out = (line: string) => process.stdout.write(line + "\n");
+  return toggle(args);
+}
+
+function print(line: string) {
+  process.stdout.write(line + "\n");
+}
+
+/** `cheapag hook [on|off]`: turns the edit guard on or off for the current repo, then prints its state. */
+function toggle(args: string[]): number {
   if (args.length > 1 || (args.length && args[0] !== "on" && args[0] !== "off")) {
-    out(`✗ ${USAGE}`);
+    print(`✗ ${USAGE}`);
     return 1;
   }
   let root: string;
   try {
     root = projectRoot(process.cwd());
   } catch (err) {
-    out(`✗ ${(err as Error).message}`);
+    print(`✗ ${(err as Error).message}`);
     return 1;
   }
   if (args[0] === "on") {
     mkdirSync(join(root, ".cheapag"), { recursive: true });
     writeFileSync(flag(root), JSON.stringify({ on: true }) + "\n");
   } else if (args[0] === "off") rmSync(flag(root), { force: true });
+  print(guardState(root));
+  return 0;
+}
+
+/** The guard's state line for the repo; a damaged cheapag.json shows in place of the line limit. */
+function guardState(root: string): string {
   let lines: number | string;
   try {
     lines = loadConfig(root).guard_lines;
   } catch (err) {
     lines = `? (${(err as Error).message})`;
   }
-  out(
-    existsSync(flag(root))
-      ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`
-      : `✓ edit guard off for ${root}: Claude's edits are not limited.`,
-  );
-  return 0;
+  if (!existsSync(flag(root)))
+    return `✓ edit guard off for ${root}: Claude's edits are not limited.`;
+  return `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`;
 }
 
 /**
