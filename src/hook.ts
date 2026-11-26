@@ -210,8 +210,8 @@ async function latestVersion(): Promise<string | undefined> {
     return cache.latest || undefined;
   let latest = cache.latest || undefined;
   try {
-    const res = await fetch(UPDATE_URL, { signal: AbortSignal.timeout(1500) });
-    const body = (await res.json()) as { version?: unknown };
+    const response = await fetch(UPDATE_URL, { signal: AbortSignal.timeout(1500) });
+    const body = (await response.json()) as { version?: unknown };
     if (typeof body.version === "string") latest = body.version;
   } catch {
     // offline, slow or malformed: keep the old latest (or none)
@@ -227,15 +227,19 @@ async function latestVersion(): Promise<string | undefined> {
 
 /** True when `release` is a newer major or minor than `installed`; a patch-only bump is ignored, as is any non x.y.z. */
 function majorOrMinorNewer(release: string, installed: string): boolean {
-  const [a, b] = [nums(release), nums(installed)];
-  if (!a || !b) return false;
-  return a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+  const releaseParts = versionParts(release);
+  const installedParts = versionParts(installed);
+  if (!releaseParts || !installedParts) return false;
+  const [releaseMajor, releaseMinor] = releaseParts;
+  const [installedMajor, installedMinor] = installedParts;
+  if (releaseMajor > installedMajor) return true;
+  return releaseMajor === installedMajor && releaseMinor > installedMinor;
 }
 
 /** A version as numbers, only when it is exactly x.y.z; anything else (a tag, a range) is ignored. */
-function nums(v: string): readonly [number, number, number] | undefined {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+function versionParts(version: string): readonly [number, number, number] | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
 }
 
 /**
@@ -245,7 +249,7 @@ function nums(v: string): readonly [number, number, number] | undefined {
 function guard(): number {
   try {
     const input = JSON.parse(readFileSync(0, "utf8"));
-    const reason = budget(input) ?? editCheck(input);
+    const reason = promptRules(input) ?? editCheck(input);
     if (reason)
       process.stdout.write(
         JSON.stringify({
@@ -311,7 +315,7 @@ const OK_DONE =
  * - after an OK whose checks passed, re-running tests is denied: unverified OKs were as correct as verified ones.
  * A new user prompt clears both. cheapag's own tools and a subagent's calls are never counted or denied.
  */
-function budget(input: Input): string | undefined {
+function promptRules(input: Input): string | undefined {
   if (!mainLoopCall(input)) return;
   const root = projectRoot(input.cwd);
   const file = stateFile(root, input.session_id);
@@ -398,13 +402,13 @@ function result(): number {
   try {
     const input: Input = JSON.parse(readFileSync(0, "utf8"));
     if (!mainLoopCall(input)) return 0;
-    const out = text(input.tool_response);
-    const notDone = didNotFinish(out),
-      okPassed = OK_PASSED.test(out);
+    const response = responseText(input.tool_response);
+    const notDone = didNotFinish(response);
+    const okPassed = OK_PASSED.test(response);
     // the worker's own `land applied` finished the block: drop the take-over even when the check never ran
-    const cleared = /^OK j\w+ (applied|discarded)\b/m.test(out);
+    const cleared = /^OK j\w+ (applied|discarded)\b/m.test(response);
     // a command permission block: Claude must ask the user before it may reply (ticket 69)
-    const permission = PERMISSION_BLOCK.exec(out)?.[1];
+    const permission = PERMISSION_BLOCK.exec(response)?.[1];
     if (!notDone && !okPassed && !cleared && !permission) return 0;
     const root = projectRoot(input.cwd);
     const file = stateFile(root, input.session_id);
@@ -435,12 +439,12 @@ function result(): number {
 }
 
 /** The text of a tool response: a string, MCP content blocks, or an object holding them. */
-function text(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return v.map(text).join("\n");
-  if (v && typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    return typeof o.text === "string" ? o.text : text(o.content ?? "");
+function responseText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(responseText).join("\n");
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return typeof record.text === "string" ? record.text : responseText(record.content ?? "");
   }
   return "";
 }
@@ -470,7 +474,7 @@ function fileCheck(
   const file = resolve(cwd, toolInput.file_path);
   if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
-  const lines = changed(input.tool_name!, toolInput, file);
+  const lines = changedLines(input.tool_name!, toolInput, file);
   const state = turnState(input, root);
   const reason = editRules(state?.turn.edits, toolInput.file_path, file, lines, limit);
   if (reason) return reason;
@@ -519,14 +523,16 @@ function editRules(
 /** A Codex patch file section: `*** Update File:`, `*** Add File:` or `*** Delete File:`; other `***` lines end it. */
 const PATCH_FILE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/;
 
+type FileEdit = { path: string; lines: number };
+
 /** Codex's apply_patch text as one entry per file with the lines its hunks add and remove. Unknown text yields none. */
-function patchEdits(patch: string): { path: string; lines: number }[] {
-  const edits: { path: string; lines: number }[] = [];
-  let current: { path: string; lines: number } | undefined;
+function patchEdits(patch: string): FileEdit[] {
+  const edits: FileEdit[] = [];
+  let current: FileEdit | undefined;
   for (const line of patch.split("\n")) {
-    const file = PATCH_FILE.exec(line);
-    if (file) {
-      current = { path: file[1].trim(), lines: 0 };
+    const section = PATCH_FILE.exec(line);
+    if (section) {
+      current = { path: section[1].trim(), lines: 0 };
       edits.push(current);
     } else if (line.startsWith("*** ") && !line.startsWith("*** Move to:")) {
       current = undefined;
@@ -569,10 +575,10 @@ function readOnly(command: string): boolean {
   if (command.includes(">")) return false;
   if (TEST_CMD.test(command) || BASH_INPLACE.test(command) || BASH_CODE_WRITES.test(command))
     return false;
-  if (BASH_WRITES.some((re) => command.match(re))) return false;
+  if (BASH_WRITES.some((pattern) => command.match(pattern))) return false;
   const parts = command
     .split(/&&|\|\||;|\|/)
-    .map((p) => p.trim())
+    .map((part) => part.trim())
     .filter(Boolean);
   return parts.length > 0 && parts.every(readPart);
 }
@@ -582,9 +588,9 @@ function readOnly(command: string): boolean {
  * `X=1 git log` and `cd /repo` change no file, and `git -C <dir> diff` reads like `git diff`.
  */
 function readPart(part: string): boolean {
-  const p = stripGitOptions(part.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")).trim();
-  if (p === "cd" || p.startsWith("cd ") || p.startsWith("export ")) return true;
-  return READ_PARTS.some((r) => p === r || p.startsWith(r + " "));
+  const command = stripGitOptions(part.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")).trim();
+  if (command === "cd" || command.startsWith("cd ") || command.startsWith("export ")) return true;
+  return READ_PARTS.some((reader) => command === reader || command.startsWith(reader + " "));
 }
 
 /** Drops git's directory/pager options (`-C <dir>`, `--no-pager`, `-c k=v`) so the verb starts the part. */
@@ -593,8 +599,8 @@ function stripGitOptions(part: string) {
 }
 
 /** The first line says the worker did not finish, unless an env-kind FAIL could not run its check at all: nothing to take over. */
-function didNotFinish(out: string): boolean {
-  return out
+function didNotFinish(response: string): boolean {
+  return response
     .split("\n")
     .some(
       (line) => NOT_DONE.test(line) && !(line.startsWith("FAIL ") && /\bcheck=env\b/.test(line)),
@@ -602,11 +608,15 @@ function didNotFinish(out: string): boolean {
 }
 
 /** An edit path resolves outside the repo, so it cannot touch the worker's worktree. */
-function outside(root: string, cwd: string, tool: Record<string, unknown> | undefined): boolean {
-  const p = tool?.file_path ?? tool?.notebook_path;
-  if (typeof p !== "string") return false;
-  const abs = resolve(cwd, p);
-  return abs !== root && !abs.startsWith(root + sep);
+function outside(
+  root: string,
+  cwd: string,
+  toolInput: Record<string, unknown> | undefined,
+): boolean {
+  const path = toolInput?.file_path ?? toolInput?.notebook_path;
+  if (typeof path !== "string") return false;
+  const absolute = resolve(cwd, path);
+  return absolute !== root && !absolute.startsWith(root + sep);
 }
 
 /** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
@@ -614,42 +624,52 @@ function bashCheck(cwd: string, command: string): string | undefined {
   const root = projectRoot(cwd);
   if (!existsSync(flagFile(root))) return;
   const targets: string[] = [];
-  for (const re of BASH_WRITES)
-    for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);
-  const inRepo = (p: string) => {
-    const abs = resolve(cwd, p);
-    return abs.startsWith(root + sep) && !isPlan(root, abs);
+  for (const pattern of BASH_WRITES)
+    for (const match of command.matchAll(pattern))
+      if (match.groups?.path) targets.push(match.groups.path);
+  const inRepo = (path: string) => {
+    const absolute = resolve(cwd, path);
+    return absolute.startsWith(root + sep) && !isPlan(root, absolute);
   };
-  const written = targets.filter((p) => p !== "/dev/null" && inRepo(p));
+  const written = targets.filter((path) => path !== "/dev/null" && inRepo(path));
   if (written.length) return `Bash writing ${written[0]}: ${REDIRECT}`;
   if (BASH_INPLACE.test(command)) return `Bash in-place edit (sed/perl -i): ${REDIRECT}`;
   if (BASH_CODE_WRITES.test(command)) return `Bash running code that writes files: ${REDIRECT}`;
 }
 
-/** Changed lines of an edit: the larger side once the lines both sides share at the start and end are dropped. */
-function changed(name: string, tool: Record<string, unknown>, file: string) {
-  const text = (v: unknown) => (typeof v === "string" ? v : "");
+/** Changed lines of an Edit, a MultiEdit (all its edits together) or a Write (against the file on disk). */
+function changedLines(toolName: string, toolInput: Record<string, unknown>, file: string) {
+  const asString = (value: unknown) => (typeof value === "string" ? value : "");
   // shortcut: replace_all counts one occurrence; count matches in the file if guarded edits slip through that way
-  if (name === "Edit") return diff(text(tool.old_string), text(tool.new_string));
-  if (name === "MultiEdit")
-    return (Array.isArray(tool.edits) ? tool.edits : []).reduce(
-      (n: number, e) => n + diff(text(e?.old_string), text(e?.new_string)),
+  if (toolName === "Edit")
+    return differingLines(asString(toolInput.old_string), asString(toolInput.new_string));
+  if (toolName === "MultiEdit")
+    return (Array.isArray(toolInput.edits) ? toolInput.edits : []).reduce(
+      (total: number, edit) =>
+        total + differingLines(asString(edit?.old_string), asString(edit?.new_string)),
       0,
     );
-  return diff(existsSync(file) ? readFileSync(file, "utf8") : "", text(tool.content));
+  const before = existsSync(file) ? readFileSync(file, "utf8") : "";
+  return differingLines(before, asString(toolInput.content));
 }
 
-function diff(before: string, after: string) {
-  const a = before.split("\n"),
-    b = after.split("\n");
+/** The larger side's line count once the lines both sides share at the start and end are dropped. */
+function differingLines(before: string, after: string) {
+  const beforeLines = before.split("\n");
+  const afterLines = after.split("\n");
   let start = 0;
-  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  while (
+    start < beforeLines.length &&
+    start < afterLines.length &&
+    beforeLines[start] === afterLines[start]
+  )
+    start++;
   let end = 0;
   while (
-    end < a.length - start &&
-    end < b.length - start &&
-    a[a.length - 1 - end] === b[b.length - 1 - end]
+    end < beforeLines.length - start &&
+    end < afterLines.length - start &&
+    beforeLines[beforeLines.length - 1 - end] === afterLines[afterLines.length - 1 - end]
   )
     end++;
-  return Math.max(a.length - start - end, b.length - start - end);
+  return Math.max(beforeLines.length - start - end, afterLines.length - start - end);
 }
