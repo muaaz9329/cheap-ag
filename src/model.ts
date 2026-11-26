@@ -21,8 +21,13 @@ const USAGE =
 export const MORE_MODELS = "For more models, exit Claude/Codex and run: npx cheap-agent model";
 const SHOWN = 4;
 
-const effort = (e?: string) => `effort ${e ?? "default"}`;
-const list = (xs: string[]) => (xs.length ? xs.join(", ") : "none");
+function effortText(effort?: string) {
+  return `effort ${effort ?? "default"}`;
+}
+
+function listText(items: string[]) {
+  return items.length ? items.join(", ") : "none";
+}
 
 // every line goes through redact, so a key quoted in an error never reaches the terminal
 function print(line: string) {
@@ -106,15 +111,34 @@ function currentRoute(provider: Provider) {
   return { main: route.implement, fallback: route.fallbacks[0] as WorkerModel | undefined };
 }
 
-const bare = (provider: Provider, id: string) =>
-  id.startsWith(`${provider.provider}/`) ? id.slice(provider.provider.length + 1) : id;
+/** The id without this provider's prefix, the way the catalog lists it. */
+function bareId(provider: Provider, id: string) {
+  const prefix = `${provider.provider}/`;
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+}
+
+function hasPrice(entry: CatalogModel) {
+  return entry.input > 0 || entry.output > 0;
+}
+
 // Ollama reports no price and may not report a context window; neither is a zero
-const money = (m: CatalogModel) =>
-  m.input > 0 || m.output > 0 ? `$${m.input}/$${m.output} per M` : "no price";
-const ctx = (context: number) =>
-  context > 0 ? `${Math.round(context / 1000)}K ctx` : "ctx unknown";
-const line = (m: CatalogModel) =>
-  `${m.id} · ${money(m)} · ${ctx(m.context)} · efforts: ${list(m.efforts)}`;
+function priceText(entry: CatalogModel) {
+  return hasPrice(entry) ? `$${entry.input}/$${entry.output} per M` : "no price";
+}
+
+function contextText(context: number) {
+  return context > 0 ? `${Math.round(context / 1000)}K ctx` : "ctx unknown";
+}
+
+/** Price, context window and efforts: the picker's hint, and a suggestion after its id. */
+function details(entry: CatalogModel) {
+  const efforts = listText(entry.efforts);
+  return `${priceText(entry)} · ${contextText(entry.context)} · efforts: ${efforts}`;
+}
+
+function suggestionLine(entry: CatalogModel) {
+  return `${entry.id} · ${details(entry)}`;
+}
 
 /** The 4 models worth showing first: the current main, the preset's balanced pick, then the cheapest (the catalog is cheapest first). */
 function suggestions(provider: Provider, models: CatalogModel[], main: WorkerModel) {
@@ -122,12 +146,12 @@ function suggestions(provider: Provider, models: CatalogModel[], main: WorkerMod
   // catalog entries are often short-lived promos, so they stay in the full picker only
   const presets = Object.values(
     (PRESETS as Record<string, (typeof PRESETS)["opencode-go"]>)[provider.provider] ?? {},
-  ).map((p) => p.implement && bare(provider, p.implement));
+  ).map((p) => p.implement && bareId(provider, p.implement));
   const roles = (ROLES as Record<string, (typeof ROLES)["opencode-go"]>)[provider.provider];
   const ours = [main.id, ...presets, ...(roles ? [...roles.implement, roles.escalation] : [])].map(
     (id) => models.find((m) => m.id === id),
   );
-  const paid = models.filter((m) => m.input > 0 || m.output > 0);
+  const paid = models.filter(hasPrice);
   return [...new Set([...ours, ...paid].filter((m): m is CatalogModel => !!m))].slice(0, SHOWN);
 }
 
@@ -139,10 +163,10 @@ function describe(
   const { main, fallback } = current;
   return [
     `Provider: ${providerLabel(provider.provider)}`,
-    `Main: ${main.id} (${effort(main.variant)})`,
-    `Fallback: ${fallback?.id ?? "none"} (${effort(fallback?.variant)})`,
+    `Main: ${main.id} (${effortText(main.variant)})`,
+    `Fallback: ${fallback?.id ?? "none"} (${effortText(fallback?.variant)})`,
     "Suggestions:",
-    ...suggestions(provider, models, main).map(line),
+    ...suggestions(provider, models, main).map(suggestionLine),
     MORE_MODELS,
   ].join("\n");
 }
@@ -150,13 +174,13 @@ function describe(
 function save(provider: Provider, models: CatalogModel[], flags: Required<Flags>) {
   const label = providerLabel(provider.provider);
   const check = (id: string, wanted?: string) => {
-    const found = models.find((m) => m.id === bare(provider, id));
+    const found = models.find((m) => m.id === bareId(provider, id));
     if (!found) {
       print(`✗ ${id} is not a tool-calling model on ${label}; run npx cheap-agent model --list`);
       return undefined;
     }
     if (wanted !== undefined && !found.efforts.includes(wanted)) {
-      print(`✗ ${id} has no effort ${wanted}; it has: ${list(found.efforts)}`);
+      print(`✗ ${id} has no effort ${wanted}; it has: ${listText(found.efforts)}`);
       return undefined;
     }
     return found;
@@ -187,10 +211,10 @@ function apply(provider: Provider, chosen: Pick) {
   }
   const name = (id: string) => `${provider.provider}/${id}`;
   const second = chosen.fallback
-    ? `${name(chosen.fallback)} (${effort(chosen.fallbackEffort)})`
+    ? `${name(chosen.fallback)} (${effortText(chosen.fallbackEffort)})`
     : "none";
   print(
-    `✓ main ${name(chosen.main)} (${effort(chosen.mainEffort)}), fallback ${second} — saved in ${userConfigFile()}; the next job uses it`,
+    `✓ main ${name(chosen.main)} (${effortText(chosen.mainEffort)}), fallback ${second} — saved in ${userConfigFile()}; the next job uses it`,
   );
   return 0;
 }
@@ -213,7 +237,7 @@ async function pick(
 ) {
   const row = (m: CatalogModel) => ({
     label: m.id,
-    hint: `${money(m)} · ${ctx(m.context)} · efforts: ${list(m.efforts)}`,
+    hint: details(m),
   });
   const main =
     models[
