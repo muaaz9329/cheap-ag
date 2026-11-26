@@ -66,8 +66,8 @@ export async function research(
   let config: Config;
   try {
     config = loadConfig(root);
-  } catch (err) {
-    return failBlock((err as Error).message);
+  } catch (error) {
+    return failBlock((error as Error).message);
   }
   if (!hasCommits(root))
     return failBlock(
@@ -133,9 +133,9 @@ export async function research(
     try {
       await releaseDirectory(run.worktree.path); // release before the worktree is removed
       removeWorktree(root, run.worktree);
-    } catch (err) {
+    } catch (error) {
       // Cleanup failure must not replace the worker's answer or its original error.
-      record.cleanupError = (err as Error).message;
+      record.cleanupError = (error as Error).message;
       record.worktree = normalisePath(relative(root, run.worktree.path));
       save();
     }
@@ -388,8 +388,9 @@ const PARTIAL_PROMPT =
 /** One last no-tool prompt on a turn-capped session; any error, timeout or interruption gives no text. */
 async function partialAnswer(session: Session): Promise<string> {
   try {
-    const r = await session.run(PARTIAL_PROMPT, undefined, AbortSignal.timeout(30_000), true);
-    return r.error || r.interrupted ? "" : r.text;
+    const timeout = AbortSignal.timeout(30_000);
+    const result = await session.run(PARTIAL_PROMPT, undefined, timeout, true);
+    return result.error || result.interrupted ? "" : result.text;
   } catch {
     return "";
   }
@@ -409,13 +410,20 @@ export function verifyRepro(answer: Answer | undefined, ran: string[]): Answer |
   const repro = answer?.repro?.trim();
   if (!answer || !repro || /^not attempted|^none$/i.test(repro))
     return answer && { ...answer, repro: repro || undefined };
-  const norm = (c: string) => c.replace(/\s+/g, " ").trim();
-  const claimed = norm(repro.match(/`([^`]+)`/)?.[1] ?? "");
-  const verified =
-    !!claimed && ran.some((c) => norm(c).includes(claimed) || claimed.includes(norm(c)));
+  const claimed = collapseSpaces(repro.match(/`([^`]+)`/)?.[1] ?? "");
+  const matchesClaim = (command: string) => {
+    const normalised = collapseSpaces(command);
+    return normalised.includes(claimed) || claimed.includes(normalised);
+  };
+  const verified = !!claimed && ran.some(matchesClaim);
   return verified
     ? { ...answer, repro }
     : { ...answer, repro: `unverified (not run): ${repro}`, confidence: "low" };
+}
+
+/** The text with each run of whitespace made one space, trimmed. */
+function collapseSpaces(text: string) {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -427,16 +435,18 @@ export function verifyRepro(answer: Answer | undefined, ran: string[]): Answer |
 export function unlandedJobs(root: string): string[] {
   return records(root)
     .filter(
-      (r) =>
-        !r.landed &&
-        (r.status === "RUNNING" ||
-          r.status === "BLOCKED" ||
-          (!!r.worktree && !!r.changed?.length && existsSync(join(root, r.worktree)))),
+      (record) =>
+        !record.landed &&
+        (record.status === "RUNNING" ||
+          record.status === "BLOCKED" ||
+          (!!record.worktree &&
+            !!record.changed?.length &&
+            existsSync(join(root, record.worktree)))),
     )
-    .sort((a, b) =>
-      String(a.timing?.startedAt ?? "").localeCompare(String(b.timing?.startedAt ?? "")),
+    .sort((left, right) =>
+      String(left.timing?.startedAt ?? "").localeCompare(String(right.timing?.startedAt ?? "")),
     )
-    .map((r) => r.job);
+    .map((record) => record.job);
 }
 
 /**
