@@ -20,6 +20,13 @@ function clamp(value: number, low: number, high: number) {
   return Math.min(Math.max(value, low), high);
 }
 
+/** One list row: a marker on the selected row, the row number counted from 1, the label and its hint. */
+function formatRow(option: Option, rowIndex: number, selectedIndex: number) {
+  const marker = rowIndex === selectedIndex ? "❯" : " ";
+  const hint = option.hint ? `  ${option.hint}` : "";
+  return `${marker} ${rowIndex + 1}) ${option.label}${hint}`;
+}
+
 /**
  * An arrow-key list on a terminal: ↑/↓ move, Enter picks, typing a number jumps to that row, Ctrl-C exits 130.
  * Redraws in place and always gives the terminal back (raw mode off, cursor shown) on Enter, Ctrl-C and errors.
@@ -44,11 +51,7 @@ export function select(
       const first = clamp(centred, 0, options.length - visibleRowCount);
       const rows = options
         .slice(first, first + visibleRowCount)
-        .map((option, offset) =>
-          fitToWidth(
-            `${first + offset === index ? "❯" : " "} ${first + offset + 1}) ${option.label}${option.hint ? `  ${option.hint}` : ""}`,
-          ),
-        );
+        .map((option, offset) => fitToWidth(formatRow(option, first + offset, index)));
       if (drawnLineCount) output.write(eraseLinesAbove(drawnLineCount));
       output.write([question, ...rows].join("\n") + "\n");
       drawnLineCount = rows.length + 1;
