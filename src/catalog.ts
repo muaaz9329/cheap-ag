@@ -75,14 +75,8 @@ async function localModels(base: string): Promise<CatalogModel[]> {
     );
   }
   if (!res.ok) throw new Error(`Ollama at ${root} answered ${res.status}; is it running?`);
-  const { models } = (await res.json()) as { models?: { name?: unknown; model?: unknown }[] };
-  const ids = [
-    ...new Set(
-      (models ?? []).flatMap((m) =>
-        typeof m.name === "string" ? [m.name] : typeof m.model === "string" ? [m.model] : [],
-      ),
-    ),
-  ].sort();
+  const { models } = (await res.json()) as { models?: PulledModel[] };
+  const ids = [...new Set((models ?? []).flatMap(pulledModelId))].sort();
   if (!ids.length)
     throw new Error(
       `Ollama at ${root} has no models pulled; run ollama pull <model>, then try again`,
@@ -96,6 +90,16 @@ async function localModels(base: string): Promise<CatalogModel[]> {
     context: contexts[i] ?? 0,
     efforts: [],
   }));
+}
+
+/** One entry of GET /api/tags, unchecked. */
+type PulledModel = { name?: unknown; model?: unknown };
+
+/** The entry's name, else its model; an empty list when it has neither, so flatMap skips it. */
+function pulledModelId(entry: PulledModel): string[] {
+  if (typeof entry.name === "string") return [entry.name];
+  if (typeof entry.model === "string") return [entry.model];
+  return [];
 }
 
 /** A local model's context window from POST /api/show, when Ollama reports one. */
