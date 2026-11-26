@@ -23,6 +23,15 @@ function out(line = ""): void {
   process.stdout.write(redact(line) + "\n");
 }
 
+function repoRoot(): string | undefined {
+  try {
+    return projectRoot(process.cwd());
+  } catch {
+    // outside a repo there is no consent to move
+    return undefined;
+  }
+}
+
 function listProviders(usable: ProviderId[], current: ProviderId | undefined): number {
   if (!usable.length) {
     out(`✗ no provider set up; run ${LOGIN_COMMAND}`);
@@ -72,10 +81,7 @@ export async function provider(args: string[]): Promise<number> {
   // what to put back if the new provider fails its live check
   const userFile = userConfigFile();
   const userBefore = existsSync(userFile) ? readFileSync(userFile, "utf8") : undefined;
-  let root: string | undefined;
-  try {
-    root = projectRoot(process.cwd());
-  } catch {} // outside a repo there is no consent to move
+  const root = repoRoot();
   const consentFile = root && join(root, ".cheapag", "consent.json");
   const consentBefore =
     consentFile && existsSync(consentFile) ? readFileSync(consentFile, "utf8") : undefined;
