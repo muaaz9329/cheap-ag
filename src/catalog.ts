@@ -72,6 +72,20 @@ export async function ollamaModels(
 
 async function localModels(base: string): Promise<CatalogModel[]> {
   const root = base.replace(/\/v1$/, "");
+  const ids = await pulledModelIds(root);
+  const contexts = await Promise.all(ids.map((id) => localContext(root, id)));
+  return ids.map((id, index) => ({
+    id,
+    name: id,
+    input: 0,
+    output: 0,
+    context: contexts[index] ?? 0,
+    efforts: [],
+  }));
+}
+
+/** The ids of the models pulled on this machine, from GET /api/tags, without duplicates and sorted. */
+async function pulledModelIds(root: string): Promise<string[]> {
   let response: Response;
   try {
     response = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(5_000) });
@@ -88,15 +102,7 @@ async function localModels(base: string): Promise<CatalogModel[]> {
     throw new Error(
       `Ollama at ${root} has no models pulled; run ollama pull <model>, then try again`,
     );
-  const contexts = await Promise.all(ids.map((id) => localContext(root, id)));
-  return ids.map((id, index) => ({
-    id,
-    name: id,
-    input: 0,
-    output: 0,
-    context: contexts[index] ?? 0,
-    efforts: [],
-  }));
+  return ids;
 }
 
 /** One entry of GET /api/tags, unchecked. */
