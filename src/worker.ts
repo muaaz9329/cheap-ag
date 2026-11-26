@@ -489,18 +489,30 @@ function untilAborted(signal: AbortSignal | undefined): Promise<undefined> {
 
 /** OpenCode validates the tool's args, but the record must not trust a malformed one either. */
 function asReport(input: Record<string, unknown>): FinishReport {
-  const list = (v: unknown) =>
-    Array.isArray(v) ? v.map(String) : typeof v === "string" && v ? [v] : [];
+  const repro = nonBlank(input.repro)?.trim();
+  const disagree = nonBlank(input.disagree)?.trim();
   return {
     // oxlint-disable-next-line typescript/no-base-to-string -- a safer cast changes the report text
     summary: String(input.summary ?? ""),
-    risks: list(input.risks),
-    review: list(input.review),
-    missing: list(input.missing),
-    ...(typeof input.repro === "string" && input.repro.trim() && { repro: input.repro.trim() }),
-    ...(typeof input.disagree === "string" &&
-      input.disagree.trim() && { disagree: input.disagree.trim() }),
+    risks: asList(input.risks),
+    review: asList(input.review),
+    missing: asList(input.missing),
+    ...(repro && { repro }),
+    ...(disagree && { disagree }),
   };
+}
+
+/** A report list from a tool argument: each item of an array as text, a lone non-empty string, else nothing. */
+function asList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value) return [value];
+  return [];
+}
+
+/** `value` as it is when it is a string with some non-space text; else undefined. */
+function nonBlank(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  return undefined;
 }
 
 /**
