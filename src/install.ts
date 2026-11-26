@@ -36,9 +36,8 @@ export const installPaths = () => {
  * runs on every platform: it gates the guard hook (exit 0 unless the repo opted in), then runs this install when it is
  * still there, else the pinned npx.
  */
-const launcherScript = (
-  entry: string,
-) => `// cheapag: gates the guard hook, runs this install, else the fallback npx -y cheap-agent@${version}
+function launcherScript(entry: string) {
+  return `// cheapag: gates the guard hook, runs this install, else the fallback npx -y cheap-agent@${version}
 "use strict";
 const { execFileSync, spawnSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
@@ -62,6 +61,7 @@ if (existsSync(entry)) {
   process.exit(r.status ?? 1);
 }
 `;
+}
 
 /** Writes the launcher and the plugin's marketplace; returns the marketplace directory. */
 export function writePlugin(
