@@ -87,7 +87,8 @@ export function usableProviders(): Provider["provider"][] {
  * purpose, or OLLAMA_API_KEY set), else a configured custom endpoint, else the first saved login.
  */
 export function detectProvider(): Provider | undefined {
-  const chosen = PROVIDERS.find((provider) => provider.id === chosenProvider())?.id;
+  const chosenId = chosenProvider();
+  const chosen = PROVIDER_IDS.find((id) => id === chosenId);
   if (chosen && usableProviders().includes(chosen))
     return { provider: chosen, via: isConfigBased(chosen) ? "config" : "login" };
   if (ollamaConfigured()) return { provider: "ollama", via: "config" };
