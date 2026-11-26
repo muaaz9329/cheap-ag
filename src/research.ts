@@ -375,7 +375,7 @@ function researchPrompt(question: string, scope: string[], maxWords: number) {
     scope.length && `Scope: look only under ${scope.join(", ")}; cite only files there.`,
     REPRO_RULE,
     `Answer in at most ${maxWords} words.`,
-    // repeated here because real models skipped the agent prompt's format (seen live): without it a right answer is UNSURE
+    // repeated here because real models skip the agent prompt's format: without it a right answer is UNSURE
     BRIEF_FORMAT,
   ]
     .filter(Boolean)
@@ -587,7 +587,7 @@ function capWords(text: string, max: number) {
   return words.length <= max ? text : `${text.slice(0, words[max].index).trimEnd()} …`;
 }
 
-/** A fresh `r` + 4 base36 id whose folder (beside the job folders, D7 `log:`) does not exist yet. */
+/** A fresh `r` + 4 base36 id whose log folder, beside the job folders, does not exist yet. */
 function newResearch(root: string) {
   for (;;) {
     const id = newId("r");
