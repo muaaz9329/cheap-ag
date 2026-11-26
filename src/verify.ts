@@ -172,6 +172,8 @@ const NOISE =
 const MAX_FAILURES = 3;
 const MAX_LINES = 25;
 
+type Failure = { key: string; lines: string[]; count: number };
+
 /**
  * Spec D9: the failing command, then up to 3 distinct failures (similar ones counted ×N), each with its message,
  * expected/received lines and first in-repo frame; at most 25 lines of 200 chars, with `root` made repo-relative.
@@ -179,41 +181,7 @@ const MAX_LINES = 25;
  */
 export function errorTail(run: VerifyRun, root: string): string[] {
   const lines = tailLines(run.output, root);
-  const failures: { key: string; lines: string[]; count: number }[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (!MARKER.test(lines[i])) continue;
-    const block = [lines[i].trim()];
-    let frame = false;
-    let j = i + 1;
-    // a runner's headline ("FAIL a > b") and its error ("AssertionError: …") on adjacent lines are one failure
-    if (
-      j < lines.length &&
-      MARKER.test(lines[j]) &&
-      block[0].length + lines[j].length < 400 &&
-      /^\s*(FAIL|✗|×)/.test(lines[i]) &&
-      /Error/.test(lines[j])
-    ) {
-      block.push(`  ${lines[j].trim()}`);
-      j++;
-    }
-    for (; j < lines.length && j <= i + 12 && !MARKER.test(lines[j]); j++) {
-      if (DETAIL.test(lines[j]) && block.length < 5) block.push(`  ${lines[j].trim()}`);
-      else if (
-        !frame &&
-        FRAME.test(lines[j]) &&
-        !/node_modules|node:internal|site-packages/.test(lines[j])
-      ) {
-        block.push(`  ${lines[j].trim()}`);
-        frame = true;
-      }
-    }
-    i = Math.max(i, j - 1);
-    const key = block[0].replace(/\d+/g, "#");
-    const same = failures.find((f) => f.key === key);
-    if (same) same.count++;
-    else failures.push({ key, lines: block, count: 1 });
-  }
-
+  const failures = findFailures(lines);
   const body = failures.length
     ? failures
         .slice(0, MAX_FAILURES)
@@ -223,6 +191,59 @@ export function errorTail(run: VerifyRun, root: string): string[] {
         ])
     : lines.slice(-(MAX_LINES - 1));
   return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
+}
+
+/** Each distinct failure in `lines`, in order; failures whose headlines differ only in numbers count as one. */
+function findFailures(lines: string[]): Failure[] {
+  const failures: Failure[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (!MARKER.test(lines[index])) continue;
+    const { block, next } = readFailure(lines, index);
+    index = Math.max(index, next - 1);
+    const key = block[0].replace(/\d+/g, "#");
+    const same = failures.find((failure) => failure.key === key);
+    if (same) same.count++;
+    else failures.push({ key, lines: block, count: 1 });
+  }
+  return failures;
+}
+
+/**
+ * The failure whose marker is at `start`: its headline, the error on the next line when the two are one failure, its
+ * detail lines while the block has fewer than 5 lines, and its first in-repo frame, read until the next marker or 12
+ * lines on. `next` is the first line not read.
+ */
+function readFailure(lines: string[], start: number) {
+  const block = [lines[start].trim()];
+  let frame = false;
+  let next = start + 1;
+  if (next < lines.length && isHeadlineError(lines[start], lines[next])) {
+    block.push(`  ${lines[next].trim()}`);
+    next++;
+  }
+  for (; next < lines.length && next <= start + 12 && !MARKER.test(lines[next]); next++) {
+    if (DETAIL.test(lines[next]) && block.length < 5) block.push(`  ${lines[next].trim()}`);
+    else if (!frame && isRepoFrame(lines[next])) {
+      block.push(`  ${lines[next].trim()}`);
+      frame = true;
+    }
+  }
+  return { block, next };
+}
+
+/** A runner's headline ("FAIL a > b") and its error ("AssertionError: …") on adjacent lines are one failure. */
+function isHeadlineError(line: string, nextLine: string) {
+  return (
+    MARKER.test(nextLine) &&
+    line.trim().length + nextLine.length < 400 &&
+    /^\s*(FAIL|✗|×)/.test(line) &&
+    /Error/.test(nextLine)
+  );
+}
+
+/** Whether `line` is a stack frame in the repo, not in a dependency or the runtime. */
+function isRepoFrame(line: string) {
+  return FRAME.test(line) && !/node_modules|node:internal|site-packages/.test(line);
 }
 
 /**
