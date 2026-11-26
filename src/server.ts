@@ -420,8 +420,8 @@ export async function serve(host: "claude" | "codex" = "claude") {
     if (!provider) return safeText(NO_PROVIDER);
     try {
       return safeText(await run(repoFor(root), provider));
-    } catch (err) {
-      return safeText(failBlock((err as Error).message));
+    } catch (error) {
+      return safeText(failBlock((error as Error).message));
     }
   };
 
@@ -430,9 +430,9 @@ export async function serve(host: "claude" | "codex" = "claude") {
 
   server.registerTool("delegate", DELEGATE_TOOL, (input, extra) =>
     inRepo(input.root, async (root, provider) => {
-      const req = { ...input, root, ...(host === "codex" && { wait: false }) };
+      const request = { ...input, root, ...(host === "codex" && { wait: false }) };
       return withWarnings(
-        withHint(await delegate(req, workerContext(provider, root, extra)), root),
+        withHint(await delegate(request, workerContext(provider, root, extra)), root),
         provider,
         root,
       );
