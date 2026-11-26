@@ -134,24 +134,23 @@ async function switchProvider(
   const rollBack = saveRollBack(root);
 
   if (!setUserKey("provider", target, out)) return 1;
-  out(
-    `Switching the worker from ${current ? providerLabel(current) : "nothing"} to ${providerLabel(target)}`,
-  );
+  const targetLabel = providerLabel(target);
+  const fromLabel = current ? providerLabel(current) : "nothing";
+  out(`Switching the worker from ${fromLabel} to ${targetLabel}`);
   if (root) moveConsent(root, target);
 
-  const check = await liveCheck({
-    provider: target,
-    via: target === "local" || target === "ollama" ? "config" : "login",
-  } as Provider);
+  const via = target === "local" || target === "ollama" ? "config" : "login";
+  const check = await liveCheck({ provider: target, via });
   if (!check.ok) {
     rollBack();
     out(`✗ ${check.line}`);
     const hint = regionHint(check.line);
     if (hint) out(hint);
-    out(`Still using ${current ? providerLabel(current) : "no provider"}; nothing changed`);
+    const keptLabel = current ? providerLabel(current) : "no provider";
+    out(`Still using ${keptLabel}; nothing changed`);
     return 1;
   }
   out(`✓ ${check.line}`);
-  out(`✓ Now using ${providerLabel(target)}; the next job runs on it`);
+  out(`✓ Now using ${targetLabel}; the next job runs on it`);
   return 0;
 }
