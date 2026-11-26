@@ -1,4 +1,9 @@
-import { spawn } from "node:child_process";
+import {
+  spawn,
+  type SpawnOptionsWithStdioTuple,
+  type StdioNull,
+  type StdioPipe,
+} from "node:child_process";
 import { gitBash, killProcessGroup, normalisePath } from "./platform.js";
 
 /** Verify: runs a job's executable done conditions in its worktree and condenses failures into an error tail. */
@@ -69,29 +74,26 @@ export async function runVerify(
   return runs;
 }
 
+/** Starts `cmd` in `cwd` in its own process group, so everything it spawned can be stopped with it. */
+function spawnCheck(cwd: string, cmd: string) {
+  // checks are written in bash syntax; on Windows run them through Git Bash when we have it, else let Node pick the shell
+  const bash = process.platform === "win32" ? gitBash() : undefined;
+  const env = { ...process.env, CI: "1", FORCE_COLOR: "0" };
+  const options: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe> = {
+    cwd,
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
+  };
+  if (bash) return spawn(bash, ["-c", cmd], options);
+  return spawn(cmd, { shell: true, ...options });
+}
+
 function runOne(cwd: string, cmd: string, signal?: AbortSignal): Promise<VerifyRun> {
   const started = Date.now();
   return new Promise((resolve) => {
-    // checks are written in bash syntax; on Windows run them through Git Bash when we have it, else let Node pick the shell
-    const bash = process.platform === "win32" ? gitBash() : undefined;
-    const env = { ...process.env, CI: "1", FORCE_COLOR: "0" };
-    // its own process group, so everything it spawned can be stopped with it
-    const child = bash
-      ? spawn(bash, ["-c", cmd], {
-          cwd,
-          detached: true,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          env,
-        })
-      : spawn(cmd, {
-          shell: true,
-          cwd,
-          detached: true,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          env,
-        });
+    const child = spawnCheck(cwd, cmd);
     const killGroup = () => killProcessGroup(child.pid, "SIGKILL");
     let output = "";
     let code: number | null = null;
