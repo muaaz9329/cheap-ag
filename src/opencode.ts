@@ -233,13 +233,7 @@ let started: Promise<Opencode> | undefined;
 let child: ChildProcess | undefined;
 /** The config the running server was booted with. */
 let booted: string | undefined;
-
-/**
- * Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
- * Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
- * `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
- * Without one (ping, login) any running server will do.
- */
+/** How many jobs and research calls hold the server; see holdOpencode. */
 let holds = 0;
 
 /** Marks the server in use for a job's or research call's lifetime, so a config change never reboots it under them. Returns the release. */
@@ -266,6 +260,11 @@ export async function runningOpencode(): Promise<Opencode | undefined> {
   }
 }
 
+// Starts (once per process, until stopOpencode) or attaches to the OpenCode server and checks it runs the pinned version.
+// Its generated config lives in `<projectDir>/.cheapag/opencode/`; projectDir only matters on the call that boots.
+// `route` is a job's allowlisted models; OpenCode reads their options only at boot, so a job whose config differs reboots it.
+// Without one (ping, login) any running server will do.
+// A line comment, not JSDoc: JSDoc here would change the published declarations.
 export function ensureOpencode(
   provider: Provider,
   projectDir = process.cwd(),
