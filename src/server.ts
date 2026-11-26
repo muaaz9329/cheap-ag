@@ -356,6 +356,30 @@ function prepareRepository(dir: string) {
   }
 }
 
+/** CHEAPAG_DEBUG_SHUTDOWN=1 traces each shutdown point to stderr (CI logs); silent otherwise. */
+function shutdownLog(line: string) {
+  if (process.env.CHEAPAG_DEBUG_SHUTDOWN === "1")
+    process.stderr.write(`cheapag-shutdown: ${line}\n`);
+}
+
+/** Every way the process ends goes through exit, which stops OpenCode so it never outlives the server. */
+function installShutdownHandlers() {
+  process.on("exit", () => {
+    shutdownLog("exit handler, stopping opencode");
+    stopOpencode(true);
+  });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+    process.on(signal, () => {
+      shutdownLog(`signal ${signal}`);
+      process.exit();
+    });
+  // Claude Code closing our stdin is the normal shutdown
+  process.stdin.on("end", () => {
+    shutdownLog("stdin end");
+    process.exit();
+  });
+}
+
 /** The MCP server over stdio: what Claude Code runs; Codex starts it with `cheap-agent codex`. */
 export async function serve(host: "claude" | "codex" = "claude") {
   const server = new McpServer(
@@ -449,25 +473,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
   } catch {
     // not a repository: nothing to recover or clean
   }
-  // CHEAPAG_DEBUG_SHUTDOWN=1 traces each shutdown point to stderr (CI logs); silent otherwise
-  const shutdownLog = (line: string) => {
-    if (process.env.CHEAPAG_DEBUG_SHUTDOWN === "1")
-      process.stderr.write(`cheapag-shutdown: ${line}\n`);
-  };
-  process.on("exit", () => {
-    shutdownLog("exit handler, stopping opencode");
-    stopOpencode(true);
-  });
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
-    process.on(signal, () => {
-      shutdownLog(`signal ${signal}`);
-      process.exit();
-    });
-  // Claude Code closing our stdin is the normal shutdown
-  process.stdin.on("end", () => {
-    shutdownLog("stdin end");
-    process.exit();
-  });
+  installShutdownHandlers();
 
   await server.connect(new StdioServerTransport());
 }
