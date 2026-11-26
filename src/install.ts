@@ -186,12 +186,15 @@ export function installPlugin(
 /** A `node` on PATH resolving to this same binary (e.g. Homebrew's bin symlink) survives upgrades; the versioned execPath doesn't. */
 export function stableNode() {
   const self = realpathSync(process.execPath);
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    const candidate = which("node", process.platform, { PATH: dir, PATHEXT: process.env.PATHEXT });
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const directoryEnv = { PATH: directory, PATHEXT: process.env.PATHEXT };
+    const candidate = which("node", process.platform, directoryEnv);
     try {
       if (candidate && realpathSync(candidate) === self) return candidate;
-    } catch {} // vanished between lookup and realpath
+    } catch {
+      // vanished between lookup and realpath
+    }
   }
   return process.execPath;
 }
