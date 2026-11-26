@@ -3,15 +3,16 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { Writable } from "node:stream";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { follow, scan, toolTarget, watchState } from "../src/watch.js";
+import { follow, scan, toolTarget, watch, watchState } from "../src/watch.js";
 import { serverEntry, slow, tempRepo } from "./harness.js";
 
 test("toolTarget: the file a tool touched, a bash command's first line, nothing for other tools", () => {
@@ -274,3 +275,237 @@ test(
   },
   slow(30_000),
 );
+
+/** A temporary project root, removed when the test ends. */
+function tempRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "cheapag-watch-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+/** A stream that collects everything written to it. */
+function textSink(): { sink: Writable; text: () => string } {
+  let text = "";
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      text += chunk.toString();
+      callback();
+    },
+  });
+  return { sink, text: () => text };
+}
+
+/** One events.jsonl line for a tool part, with optional fields beside the part and on the event. */
+function toolEventLine(
+  part: Record<string, unknown>,
+  properties: Record<string, unknown> = {},
+  event: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({
+    type: "message.part.updated",
+    properties: { part: { type: "tool", ...part }, ...properties },
+    ...event,
+  });
+}
+
+test("toolTarget: an empty or missing base, a path that only shares the base's prefix, non-string fields, a CRLF command", () => {
+  const base = join(tmpdir(), "cheapag-watch-base");
+  const inside = join(base, "a.ts");
+  const sibling = base + "x" + sep + "a.ts";
+  expect(toolTarget("edit", { filePath: inside }, "")).toBe(inside);
+  expect(toolTarget("edit", { filePath: inside })).toBe(inside);
+  expect(toolTarget("edit", { filePath: sibling }, base)).toBe(sibling);
+  expect(toolTarget("edit", { filePath: base }, base)).toBe(base);
+  expect(toolTarget("read", { filePath: 42 }, base)).toBe("");
+  expect(toolTarget("bash", { command: 7 })).toBe("");
+  expect(toolTarget("bash", "ls")).toBe("");
+  expect(toolTarget("bash", { command: "npm test\r\nsecond" })).toBe("npm test");
+  expect(toolTarget("bash", { command: "" })).toBe("");
+});
+
+test("scan: no jobs folder gives nothing; jobs print in name order; the ▶ line takes steps and the model's last segment", () => {
+  const root = tempRoot();
+  const state = watchState(root);
+  expect(scan(state)).toEqual([]);
+  const jobs = join(root, ".cheapag", "jobs");
+  mkdirSync(jobs, { recursive: true });
+  writeFileSync(join(jobs, "a-file"), "not a job folder");
+  const requests: Record<string, string> = {
+    j6: JSON.stringify({ steps: "1-2,3", model: "a/b/" }),
+    j5: JSON.stringify("text"),
+    j4: "null",
+    j3: JSON.stringify({ model: 42 }),
+    j2: JSON.stringify({ steps: null, model: "" }),
+    j1: JSON.stringify({ steps: 2, model: "plain-model" }),
+  };
+  for (const [id, request] of Object.entries(requests)) {
+    mkdirSync(join(jobs, id));
+    writeFileSync(join(jobs, id, "request.json"), request);
+  }
+  mkdirSync(join(jobs, "j10"));
+  expect(scan(state)).toEqual([
+    "▶ j1 · steps 2 · plain-model",
+    "▶ j10",
+    "▶ j2 · steps null",
+    "▶ j3",
+    "▶ j4",
+    "▶ j5",
+    "▶ j6 · steps 1-2,3",
+  ]);
+  expect(scan(state)).toEqual([]);
+});
+
+test("scan: a BLOCKED job is live, a job final at first sight stays hidden, and the verdict is the trimmed first line", () => {
+  const root = tempRoot();
+  const jobs = join(root, ".cheapag", "jobs");
+  const blocked = join(jobs, "jblocked");
+  const done = join(jobs, "jdone");
+  const spaced = join(jobs, "jspaced");
+  for (const dir of [blocked, done, spaced]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(blocked, "result.txt"), "BLOCKED jblocked ask\n");
+  writeFileSync(join(done, "result.txt"), "FAIL jdone\n");
+  writeFileSync(join(spaced, "result.txt"), "  OK jspaced\n"); // no first word: never final
+
+  const state = watchState(root);
+  expect(scan(state)).toEqual(["▶ jblocked", "▶ jspaced"]);
+  expect(JSON.stringify([...state.jobs])).toBe(
+    JSON.stringify([
+      [blocked, { offset: 0, started: true, verdict: false, skipped: false }],
+      [done, { offset: 0, started: true, verdict: true, skipped: true }],
+      [spaced, { offset: 0, started: true, verdict: false, skipped: false }],
+    ]),
+  );
+
+  const bash = { tool: "bash", state: { status: "completed", input: { command: "ls" } } };
+  appendFileSync(join(done, "events.jsonl"), toolEventLine(bash) + "\n");
+  writeFileSync(join(done, "result.txt"), "RUNNING jdone\n");
+  writeFileSync(join(blocked, "result.txt"), "OK jblocked step=1  \r\nsummary: x\n");
+  writeFileSync(join(spaced, "result.txt"), "OK jspaced");
+  expect(scan(state)).toEqual(["■ jblocked OK jblocked step=1", "■ jspaced OK jspaced"]);
+  writeFileSync(join(done, "result.txt"), "OK jdone\n");
+  expect(scan(state)).toEqual([]);
+});
+
+test("scan: only finished tool parts print, errors get ✗, and the byte offset survives multi-byte text", () => {
+  const root = tempRoot();
+  const dir = join(root, ".cheapag", "jobs", "j1");
+  mkdirSync(dir, { recursive: true });
+  const events = join(dir, "events.jsonl");
+  const complete = [
+    toolEventLine({ tool: "read", state: { status: "error", input: { filePath: "é/ü.ts" } } }),
+    "",
+    "null",
+    toolEventLine({ tool: "edit", state: { status: "running", input: { filePath: "a.ts" } } }),
+    JSON.stringify({
+      type: "message.part.updated",
+      properties: { part: { type: "text", text: "✗✗" } },
+    }),
+    JSON.stringify({
+      type: "message.updated",
+      properties: { part: { type: "tool", tool: "bash", state: { status: "completed" } } },
+    }),
+    toolEventLine({ state: { status: "completed" } }),
+    toolEventLine({ tool: "grep", state: { status: "completed", input: { pattern: "x" } } }) + "\r",
+  ];
+  const write = { tool: "write", state: { status: "completed", input: { filePath: "ß.ts" } } };
+  const partial = Buffer.from(toolEventLine(write) + "\n");
+  const cut = partial.indexOf(Buffer.from("ß")) + 1; // inside the two bytes of ß
+  writeFileSync(
+    events,
+    Buffer.concat([Buffer.from(complete.join("\n") + "\n"), partial.subarray(0, cut)]),
+  );
+
+  const state = watchState(root);
+  expect(scan(state)).toEqual(["▶ j1", "  j1  read é/ü.ts ✗", "  j1  ", "  j1  grep"]);
+  appendFileSync(events, partial.subarray(cut));
+  expect(scan(state)).toEqual(["  j1  write ß.ts"]);
+  expect(state.jobs.get(dir)?.offset).toBe(readFileSync(events).length);
+  expect(scan(state)).toEqual([]);
+});
+
+test("scan: a tool's path is shown relative to the part's directory, else the event's, else the job's worktree", () => {
+  const root = tempRoot();
+  const dir = join(root, ".cheapag", "jobs", "j1");
+  mkdirSync(dir, { recursive: true });
+  const tree = join(root, ".cheapag", "worktrees", "j1");
+  const [a, b, c] = [join(root, "a"), join(root, "b"), join(root, "c")];
+  const edit = (filePath: string) => ({
+    tool: "edit",
+    state: { status: "completed", input: { filePath } },
+  });
+  const lines = [
+    toolEventLine({ ...edit(join(a, "1.ts")), directory: a }, { directory: b }, { directory: c }),
+    toolEventLine({ ...edit(join(b, "2.ts")), directory: "" }, { directory: b }, { directory: c }),
+    toolEventLine({ ...edit(join(c, "3.ts")), directory: 5 }, { directory: 6 }, { directory: c }),
+    toolEventLine(edit(join(tree, "4.ts"))),
+    toolEventLine(edit(join(a, "5.ts")), { directory: b }),
+  ];
+  writeFileSync(join(dir, "events.jsonl"), lines.join("\n") + "\n");
+  expect(scan(watchState(root))).toEqual([
+    "▶ j1",
+    "  j1  edit 1.ts",
+    "  j1  edit 2.ts",
+    "  j1  edit 3.ts",
+    "  j1  edit 4.ts",
+    `  j1  edit ${join(a, "5.ts")}`,
+  ]);
+});
+
+test("follow: BLOCKED ends a job too, blank progress prints nothing, results follow the ids' order, no ids resolves at once", async () => {
+  const root = tempRoot();
+  const jobs = join(root, ".cheapag", "jobs");
+  mkdirSync(join(jobs, "ja"), { recursive: true });
+  mkdirSync(join(jobs, "jb"), { recursive: true });
+  writeFileSync(join(jobs, "jb", "progress.txt"), "  \n");
+  writeFileSync(join(jobs, "jb", "result.txt"), "BLOCKED jb ask\n\n");
+  writeFileSync(join(jobs, "ja", "result.txt"), "OK ja\n");
+  const { sink, text } = textSink();
+  expect(await follow(root, ["jb", "ja"], sink, 10)).toBe(0);
+  expect(text()).toBe("\nBLOCKED jb ask\n\nOK ja\n");
+  expect(await follow(root, [], sink, 10)).toBe(0);
+  expect(text()).toBe("\nBLOCKED jb ask\n\nOK ja\n");
+});
+
+test("follow: reads once at the start, then every pollMs (500 by default), and stops without another wait", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => void vi.useRealTimers());
+  const root = tempRoot();
+  const dir = join(root, ".cheapag", "jobs", "j1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "progress.txt"), "turn 1\n");
+  writeFileSync(join(dir, "result.txt"), "RUNNING j1\n");
+  const { sink, text } = textSink();
+
+  const done = follow(root, ["j1"], sink);
+  expect(text()).toBe("  j1  turn 1\n");
+  writeFileSync(join(dir, "progress.txt"), "turn 2\n");
+  await vi.advanceTimersByTimeAsync(499);
+  expect(text()).toBe("  j1  turn 1\n");
+  await vi.advanceTimersByTimeAsync(1);
+  expect(text()).toBe("  j1  turn 1\n  j1  turn 2\n");
+  writeFileSync(join(dir, "result.txt"), "OK j1\n");
+  await vi.advanceTimersByTimeAsync(500);
+  expect(await done).toBe(0);
+  expect(text()).toBe("  j1  turn 1\n  j1  turn 2\n\nOK j1\n");
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("watch: prints the header and each scan's lines, scanning at once and then every pollMs (500 by default)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => void vi.useRealTimers());
+  const root = tempRoot();
+  const dir = join(root, ".cheapag", "jobs", "j1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "result.txt"), "RUNNING j1\n");
+  const { sink, text } = textSink();
+  const header = `watching ${join(root, ".cheapag", "jobs")} (Ctrl-C to stop)\n`;
+
+  void watch(root, sink);
+  expect(text()).toBe(`${header}▶ j1\n`);
+  writeFileSync(join(dir, "result.txt"), "OK j1 step=1\n");
+  await vi.advanceTimersByTimeAsync(499);
+  expect(text()).toBe(`${header}▶ j1\n`);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(text()).toBe(`${header}▶ j1\n■ j1 OK j1 step=1\n`);
+  expect(vi.getTimerCount()).toBe(1);
+});
