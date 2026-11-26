@@ -32,6 +32,23 @@ function repoRoot(): string | undefined {
   }
 }
 
+function readIfPresent(file: string): string | undefined {
+  return existsSync(file) ? readFileSync(file, "utf8") : undefined;
+}
+
+/** Taken before the switch, so a failed live check can put the user config and this repo's consent back. */
+function saveRollBack(root: string | undefined): () => void {
+  const userFile = userConfigFile();
+  const userBefore = readIfPresent(userFile);
+  const consentFile = root && join(root, ".cheapag", "consent.json");
+  const consentBefore = consentFile ? readIfPresent(consentFile) : undefined;
+  return () => {
+    if (userBefore === undefined) rmSync(userFile, { force: true });
+    else writeFileSync(userFile, userBefore);
+    if (consentFile && consentBefore !== undefined) writeFileSync(consentFile, consentBefore);
+  };
+}
+
 function listProviders(usable: ProviderId[], current: ProviderId | undefined): number {
   if (!usable.length) {
     out(`✗ no provider set up; run ${LOGIN_COMMAND}`);
@@ -78,18 +95,8 @@ export async function provider(args: string[]): Promise<number> {
     return 0;
   }
 
-  // what to put back if the new provider fails its live check
-  const userFile = userConfigFile();
-  const userBefore = existsSync(userFile) ? readFileSync(userFile, "utf8") : undefined;
   const root = repoRoot();
-  const consentFile = root && join(root, ".cheapag", "consent.json");
-  const consentBefore =
-    consentFile && existsSync(consentFile) ? readFileSync(consentFile, "utf8") : undefined;
-  const rollBack = () => {
-    if (userBefore === undefined) rmSync(userFile, { force: true });
-    else writeFileSync(userFile, userBefore);
-    if (consentFile && consentBefore !== undefined) writeFileSync(consentFile, consentBefore);
-  };
+  const rollBack = saveRollBack(root);
 
   if (!setUserKey("provider", target, out)) return 1;
   out(
