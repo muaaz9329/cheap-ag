@@ -156,10 +156,10 @@ export function presetOf(provider: ProviderId, models: ModelsConfig = {}): Prese
   );
 }
 
-const model = (provider: ProviderId, id: string): WorkerModel =>
-  provider === "openrouter"
-    ? { providerID: provider, id, options: OPENROUTER_PRIVATE }
-    : { providerID: provider, id };
+function workerModel(provider: ProviderId, id: string): WorkerModel {
+  if (provider === "openrouter") return { providerID: provider, id, options: OPENROUTER_PRIVATE };
+  return { providerID: provider, id };
+}
 
 /**
  * The models one job may run. `fallbacks` continue the session, in order, when the current model hits a provider limit;
@@ -246,7 +246,7 @@ export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Rout
     const variant = models.variants?.[modelName(m)];
     return variant === undefined ? m : { ...m, variant };
   };
-  const routed = (id: string) => withVariant(model(provider, id));
+  const routed = (id: string) => withVariant(workerModel(provider, id));
   const tier = (name?: string) => (own(name) ? routed(own(name)!) : undefined);
   return {
     implement: routed(own(models.implement) ?? roles.implement[0]),
