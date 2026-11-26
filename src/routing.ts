@@ -101,8 +101,8 @@ function rolesOf(provider: ProviderId) {
 export const PRESET_NAMES = ["cheapest", "balanced", "strongest"] as const;
 export type Preset = (typeof PRESET_NAMES)[number];
 // balanced is the default route, Flash for every tier: GLM-5.3 cost Claude 1.5x fewer tokens than Flash on the tasks Flash
-// lost (ticket 25) but showed no gain on the hard tier (26), so it is opt-in as strongest. cheapest is balanced until a
-// cheaper worker than Flash exists (a tie reports balanced). Kimi K3 was dropped: $0.36 worker per task, BUDGET on half.
+// lost but showed no gain on the hard tier, so it is opt-in as strongest. cheapest is balanced until a cheaper worker than
+// Flash exists (a tie reports balanced). Kimi K3 is left out: $0.36 worker per task, BUDGET on half.
 // a local server has no presets: login asks for its model instead
 export const PRESETS: Record<Exclude<ProviderId, "local">, Record<Preset, ModelsConfig>> = {
   // Ollama Cloud only: a local endpoint has no presets (its one configured model is the route)
