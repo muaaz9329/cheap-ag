@@ -18,15 +18,7 @@ export type CatalogModel = {
 /** The provider's tool-calling models from the bundled OpenCode's own catalog, cheapest input price first. */
 export async function catalog(provider: Provider, cwd: string): Promise<CatalogModel[]> {
   // Ollama is not in OpenCode's catalog: ask its own API, which is also what `cheapag login` offers
-  if (provider.provider === "ollama") {
-    const ollama = ollamaEndpoint();
-    if (!ollama) throw new Error("no Ollama endpoint configured; run npx cheap-agent login");
-    return ollamaModels(
-      ollama.endpoint,
-      ollama.base_url,
-      ollama.api_key_env ? process.env[ollama.api_key_env] : undefined,
-    );
-  }
+  if (provider.provider === "ollama") return configuredOllamaModels();
   const opencode = await ensureOpencode(provider, cwd);
   const client = createOpencodeClient({
     baseUrl: opencode.url,
@@ -49,6 +41,14 @@ export async function catalog(provider: Provider, cwd: string): Promise<CatalogM
       efforts: Object.keys(model.variants ?? {}),
     }))
     .sort((left, right) => left.input - right.input);
+}
+
+/** The models of the Ollama endpoint the user config sets up, with the key from the env variable it names. */
+async function configuredOllamaModels(): Promise<CatalogModel[]> {
+  const ollama = ollamaEndpoint();
+  if (!ollama) throw new Error("no Ollama endpoint configured; run npx cheap-agent login");
+  const apiKey = ollama.api_key_env ? process.env[ollama.api_key_env] : undefined;
+  return ollamaModels(ollama.endpoint, ollama.base_url, apiKey);
 }
 
 /**
