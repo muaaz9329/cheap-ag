@@ -1,7 +1,7 @@
 import { emitKeypressEvents } from "node:readline";
 
 type Option = { label: string; hint?: string };
-type RawInput = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
+type In = NodeJS.ReadStream & { setRawMode?: (on: boolean) => unknown };
 type Key = { name?: string; ctrl?: boolean };
 /** The selected row, and the digits typed so far to jump to a row by its number. */
 type Selection = { index: number; typedNumber: string };
@@ -67,9 +67,9 @@ export function select(
   question: string,
   options: Option[],
   initial = 0,
-  io: { input?: RawInput; output?: NodeJS.WriteStream } = {},
+  io: { input?: In; output?: NodeJS.WriteStream } = {},
 ): Promise<number> {
-  const input = io.input ?? (process.stdin as RawInput);
+  const input = io.input ?? (process.stdin as In);
   const output = io.output ?? process.stdout;
   return new Promise((resolve, reject) => {
     let selection: Selection = { index: clamp(initial, 0, options.length - 1), typedNumber: "" };
