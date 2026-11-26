@@ -202,11 +202,15 @@ export function operationInProgress(root: string) {
     REVERT_HEAD: "a revert",
   };
   for (const [marker, name] of Object.entries(markers)) {
-    if (existsSync(git(root, ["rev-parse", "--path-format=absolute", "--git-path", marker]).trim()))
-      return `${name} is in progress`;
+    if (existsSync(gitPath(root, marker))) return `${name} is in progress`;
   }
   // e.g. after a conflicted `git stash pop`: no marker file, but `git stash create` would fail
   if (git(root, ["ls-files", "--unmerged"]).trim()) return "there are unresolved conflicts";
+}
+
+/** The absolute path of `name` inside the repository's git directory, which a worktree keeps apart from `.git`. */
+function gitPath(root: string, name: string) {
+  return git(root, ["rev-parse", "--path-format=absolute", "--git-path", name]).trim();
 }
 
 export function removeWorktree(root: string, worktree: Worktree) {
@@ -319,10 +323,7 @@ export function land(
   return withLock(root, () => {
     if (!patch.trim()) return undefined;
     const index = join(root, ".cheapag", "jobs", job, "land.index");
-    copyFileSync(
-      git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim(),
-      index,
-    );
+    copyFileSync(gitPath(root, "index"), index);
     const env = { GIT_INDEX_FILE: index };
     try {
       // bring exactly the patch's paths into the throwaway index as they are on disk now, untracked files included:
