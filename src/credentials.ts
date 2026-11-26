@@ -33,6 +33,11 @@ function authFile() {
   );
 }
 
+/** Local and Ollama are set up in the user config, so a saved login never makes them usable. */
+function isConfigBased(id: Provider["provider"]) {
+  return id === "local" || id === "ollama";
+}
+
 /** Supported providers with a saved login, in detection order. Only the provider ids are used; keys are never kept or passed on. */
 export function savedProviders(): Provider["provider"][] {
   let saved: Record<string, unknown>;
@@ -41,9 +46,7 @@ export function savedProviders(): Provider["provider"][] {
   } catch {
     return []; // an unreadable auth file is the same as no login
   }
-  return PROVIDERS.map((p) => p.id).filter(
-    (id) => id in saved && id !== "local" && id !== "ollama",
-  );
+  return PROVIDERS.map((p) => p.id).filter((id) => id in saved && !isConfigBased(id));
 }
 
 /** Whether the user config names a usable local server; a damaged one counts as none here, loadConfig reports it. */
@@ -83,9 +86,8 @@ export function usableProviders(): Provider["provider"][] {
  */
 export function detectProvider(): Provider | undefined {
   const chosen = PROVIDERS.find((p) => p.id === chosenProvider())?.id;
-  const configBased = (id: Provider["provider"]) => id === "local" || id === "ollama";
   if (chosen && usableProviders().includes(chosen))
-    return { provider: chosen, via: configBased(chosen) ? "config" : "login" };
+    return { provider: chosen, via: isConfigBased(chosen) ? "config" : "login" };
   if (ollamaConfigured()) return { provider: "ollama", via: "config" };
   if (localConfigured()) return { provider: "local", via: "config" };
   const [first] = savedProviders();
