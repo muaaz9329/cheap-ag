@@ -36,7 +36,7 @@ export async function model(args: string[]): Promise<number> {
   try {
     const models = await catalog(provider, dir);
     const current = currentRoute(provider);
-    if (flags.main !== undefined) return save(provider, models, flags as Required<Pick2>, out);
+    if (flags.main !== undefined) return save(provider, models, flags as Required<Flags>, out);
     if (!flags.list && process.stdin.isTTY) return await pick(provider, models, current, out);
     out(describe(provider, models, current));
     // a `models` entry naming another provider is ignored when the next job routes
@@ -52,7 +52,7 @@ export async function model(args: string[]): Promise<number> {
   }
 }
 
-type Pick2 = {
+type Flags = {
   list: boolean;
   main?: string;
   effort?: string;
@@ -60,8 +60,8 @@ type Pick2 = {
   fallbackEffort?: string;
 };
 
-function parse(args: string[]): Pick2 | string {
-  const flags: Pick2 = { list: false };
+function parse(args: string[]): Flags | string {
+  const flags: Flags = { list: false };
   const keys: Record<string, "main" | "effort" | "fallback" | "fallbackEffort"> = {
     "--main": "main",
     "--effort": "effort",
@@ -140,7 +140,7 @@ function describe(
 function save(
   provider: Provider,
   models: CatalogModel[],
-  flags: Required<Pick2>,
+  flags: Required<Flags>,
   out: (l: string) => void,
 ) {
   const label = providerLabel(provider.provider);
