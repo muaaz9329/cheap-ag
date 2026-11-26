@@ -158,6 +158,11 @@ export function localServer(): LocalServer | undefined {
   return value?.local === undefined ? undefined : parseLocal(value.local, file);
 }
 
+/** Whether a parsed JSON value is an object with keys: not null and not an array. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** The optional price and token limits a `local` and an `ollama` entry share; `entry` names it in the errors. */
 function parseLimits(entry: "local" | "ollama", raw: Record<string, unknown>, file: string) {
   const { context, output } = raw;
@@ -186,9 +191,8 @@ function parseLimits(entry: "local" | "ollama", raw: Record<string, unknown>, fi
 }
 
 function parseLocal(local: unknown, file: string): LocalServer {
-  if (typeof local !== "object" || local === null || Array.isArray(local))
-    throw new Error(`${file}: local must be an object`);
-  const { base_url, model, api_key_file, api_key_env } = local as Record<string, unknown>;
+  if (!isPlainObject(local)) throw new Error(`${file}: local must be an object`);
+  const { base_url, model, api_key_file, api_key_env } = local;
   if (typeof base_url !== "string" || !/^https?:\/\/\S+$/.test(base_url))
     throw new Error(
       `${file}: local.base_url must be an http(s) URL, e.g. http://127.0.0.1:8080/v1`,
@@ -206,7 +210,7 @@ function parseLocal(local: unknown, file: string): LocalServer {
     );
   if (api_key_file !== undefined && api_key_env !== undefined)
     throw new Error(`${file}: local takes api_key_file or api_key_env, not both`);
-  const limits = parseLimits("local", local as Record<string, unknown>, file);
+  const limits = parseLimits("local", local, file);
   return {
     base_url: base_url.replace(/\/+$/, ""),
     model: model.trim(),
@@ -217,9 +221,8 @@ function parseLocal(local: unknown, file: string): LocalServer {
 }
 
 function parseOllama(raw: unknown, file: string): OllamaConfig {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    throw new Error(`${file}: ollama must be an object`);
-  const { endpoint, model, base_url, api_key_env } = raw as Record<string, unknown>;
+  if (!isPlainObject(raw)) throw new Error(`${file}: ollama must be an object`);
+  const { endpoint, model, base_url, api_key_env } = raw;
   if (endpoint !== "local" && endpoint !== "cloud")
     throw new Error(`${file}: ollama.endpoint must be "local" or "cloud"`);
   const defaults = OLLAMA_URLS[endpoint];
@@ -242,7 +245,7 @@ function parseOllama(raw: unknown, file: string): OllamaConfig {
     throw new Error(
       `${file}: ollama.api_key_env must be an environment variable name, e.g. ${OLLAMA_KEY_ENV}`,
     );
-  const limits = parseLimits("ollama", raw as Record<string, unknown>, file);
+  const limits = parseLimits("ollama", raw, file);
   return {
     endpoint,
     base_url: base.replace(/\/+$/, ""),
@@ -310,8 +313,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   } catch (err) {
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error(`${file} must hold a JSON object`);
+  if (!isPlainObject(value)) throw new Error(`${file} must hold a JSON object`);
   const {
     test_cmd,
     integration_cmd,
@@ -354,10 +356,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
     if (!PRESET_NAMES.includes(preset as Preset))
       throw new Error(`${file}: preset must be one of ${PRESET_NAMES.join(", ")}`);
   }
-  if (
-    limits !== undefined &&
-    (typeof limits !== "object" || limits === null || Array.isArray(limits))
-  )
+  if (limits !== undefined && !isPlainObject(limits))
     throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet
@@ -391,10 +390,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
     }
     caps[key] = v;
   }
-  if (
-    retention !== undefined &&
-    (typeof retention !== "object" || retention === null || Array.isArray(retention))
-  )
+  if (retention !== undefined && !isPlainObject(retention))
     throw new Error(`${file}: retention must be an object`);
   const keep: Partial<Retention> = {};
   for (const key of ["unlanded_worktree_days", "job_log_days"] as const) {
@@ -411,10 +407,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
   ) {
     throw new Error(`${file}: allow_commands must be a list of commands`);
   }
-  if (
-    models !== undefined &&
-    (typeof models !== "object" || models === null || Array.isArray(models))
-  )
+  if (models !== undefined && !isPlainObject(models))
     throw new Error(`${file}: models must be an object`);
   const roles = (models ?? {}) as Record<string, unknown>;
   const name = (v: unknown) => typeof v === "string" && /^[\w.-]+\/\S+$/.test(v);
@@ -431,12 +424,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & {
     throw new Error(`${file}: models.fallback must be a list of provider/model names`);
   if (roles.variants !== undefined) {
     const variants = roles.variants;
-    if (
-      typeof variants !== "object" ||
-      variants === null ||
-      Array.isArray(variants) ||
-      Object.values(variants).some((v) => typeof v !== "string")
-    ) {
+    if (!isPlainObject(variants) || Object.values(variants).some((v) => typeof v !== "string")) {
       throw new Error(
         `${file}: models.variants must map provider/model names to an effort, e.g. {"opencode-go/deepseek-v4.1-flash": "high"}`,
       );
