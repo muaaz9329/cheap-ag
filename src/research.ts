@@ -94,16 +94,7 @@ export async function research(
     startedAt,
   });
 
-  const prompt = [
-    `Question: ${input.question}`,
-    scope.length && `Scope: look only under ${scope.join(", ")}; cite only files there.`,
-    REPRO_RULE,
-    `Answer in at most ${maxWords} words.`,
-    // repeated here because real models skipped the agent prompt's format (seen live): without it a right answer is UNSURE
-    BRIEF_FORMAT,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const prompt = researchPrompt(input.question, scope, maxWords);
   const files = new Set<string>();
   const ran: string[] = []; // the commands the worker actually ran: a claimed reproduction must be one of them
   const spent = { turns: 0, calls: 0, costUsd: 0 };
@@ -309,6 +300,20 @@ function findByBasename(root: string, path: string): { path: string } | { block:
   if (matches.length > 1)
     return { block: failBlock(`path ${path} not found; did you mean: ${matches.join(", ")}`) };
   return { path: normalisePath(matches[0]) };
+}
+
+/** The worker's prompt: the question, its scope, the repro rule, the word cap, then the brief format. */
+function researchPrompt(question: string, scope: string[], maxWords: number) {
+  return [
+    `Question: ${question}`,
+    scope.length && `Scope: look only under ${scope.join(", ")}; cite only files there.`,
+    REPRO_RULE,
+    `Answer in at most ${maxWords} words.`,
+    // repeated here because real models skipped the agent prompt's format (seen live): without it a right answer is UNSURE
+    BRIEF_FORMAT,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 const PARTIAL_PROMPT =
