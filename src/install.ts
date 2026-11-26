@@ -63,6 +63,20 @@ if (existsSync(entry)) {
 `;
 }
 
+/**
+ * How hooks and commands run the launcher. Windows commands run in Git Bash or PowerShell, so they take double quotes
+ * and forward slashes; POSIX keeps single quotes.
+ */
+function launcherCommand(launcher: string, platform: NodeJS.Platform) {
+  if (platform === "win32") return `node "${normalisePath(launcher)}"`;
+  return `node '${launcher}'`;
+}
+
+/** Replaces the pinned npx command in `file` with the launcher command. */
+function replaceNpxCommand(file: string, command: string) {
+  writeFileSync(file, readFileSync(file, "utf8").replaceAll(NPX_COMMAND, command));
+}
+
 /** Writes the launcher and the plugin's marketplace; returns the marketplace directory. */
 export function writePlugin(
   entry: string,
@@ -72,28 +86,26 @@ export function writePlugin(
   const { launcher, marketplace } = installPaths();
   mkdirSync(dirname(launcher), { recursive: true });
   writeFileSync(launcher, launcherScript(entry));
-  // Windows commands run in Git Bash or PowerShell, so they take double quotes and forward slashes; POSIX keeps single quotes
-  const ref = platform === "win32" ? `node "${normalisePath(launcher)}"` : `node '${launcher}'`;
+  const command = launcherCommand(launcher, platform);
 
   rmSync(marketplace, { recursive: true, force: true });
   const plugin = join(marketplace, "cheapag");
   cpSync(PLUGIN_SOURCE, plugin, { recursive: true });
   rmSync(join(plugin, ".mcp.json"), { force: true });
-  const skills = readdirSync(join(plugin, "skills")).map((s) =>
-    join(plugin, "skills", s, "SKILL.md"),
-  );
-  for (const f of skills) writeFileSync(f, readFileSync(f, "utf8").replaceAll(NPX_COMMAND, ref));
+  for (const skill of readdirSync(join(plugin, "skills"))) {
+    replaceNpxCommand(join(plugin, "skills", skill, "SKILL.md"), command);
+  }
   const hooksFile = join(plugin, "hooks", "hooks.json");
   if (platform === "win32") {
     // rewrite the commands as JSON: a raw replace would put unescaped double quotes inside the strings; no sh prefix, since the launcher gates and exits 0
     const json = JSON.parse(readFileSync(hooksFile, "utf8"));
-    const command = (action: string) => `${ref} hook ${action}`;
-    json.hooks.PreToolUse[0].hooks[0].command = command("guard");
-    json.hooks.PostToolUse[0].hooks[0].command = command("result");
-    json.hooks.SessionStart[0].hooks[0].command = command("context");
+    const hookCommand = (action: string) => `${command} hook ${action}`;
+    json.hooks.PreToolUse[0].hooks[0].command = hookCommand("guard");
+    json.hooks.PostToolUse[0].hooks[0].command = hookCommand("result");
+    json.hooks.SessionStart[0].hooks[0].command = hookCommand("context");
     writeFileSync(hooksFile, JSON.stringify(json, null, 2) + "\n");
   } else {
-    writeFileSync(hooksFile, readFileSync(hooksFile, "utf8").replaceAll(NPX_COMMAND, ref));
+    replaceNpxCommand(hooksFile, command);
   }
   mkdirSync(join(marketplace, ".claude-plugin"), { recursive: true });
   writeFileSync(
