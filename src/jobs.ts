@@ -741,27 +741,19 @@ function runGroup(groupRun: GroupRun) {
     if (!why) {
       landing = true;
       pauseClock();
-      if (
-        !(await land(
-          root,
-          job,
-          diff.patch,
-          diff.changed.map((c) => c.path),
-        ))
-      ) {
+      const clashAgain = await land(
+        root,
+        job,
+        diff.patch,
+        diff.changed.map((c) => c.path),
+      );
+      if (!clashAgain) {
         await cleanUp(worktree);
         return;
       }
       why = "redo could not reconcile";
     }
-    const others = landedSince(root, job, startedAt);
-    conflict = files.map((f) => {
-      const by = others.filter((r) => r.changed.some((c) => c.path === f)).map((r) => r.job);
-      const changedBy = by.length
-        ? `also changed by ${by.join(", ")}, landed first`
-        : "changed in the working tree meanwhile";
-      return `${f} (${changedBy}; ${why})`;
-    });
+    conflict = conflictLines(files, landedSince(root, job, startedAt), why);
   };
 
   /** Waits for the job's turn (a batch's scheduling), then opens its worktree and the worker session. */
@@ -2137,6 +2129,21 @@ function redoFailure(redo: {
   if (leftoverMarkers(redo.worktree).length) return "redo left conflict markers";
   if (!redo.changed.length) return "redo made no changes";
   return undefined;
+}
+
+/** A CONFLICT job's lines: each clashing file, any jobs that changed it and landed first, and why the redo could not land. */
+function conflictLines(
+  files: string[],
+  others: { job: string; changed: Changed[] }[],
+  why: string,
+) {
+  return files.map((f) => {
+    const by = others.filter((r) => r.changed.some((c) => c.path === f)).map((r) => r.job);
+    const changedBy = by.length
+      ? `also changed by ${by.join(", ")}, landed first`
+      : "changed in the working tree meanwhile";
+    return `${f} (${changedBy}; ${why})`;
+  });
 }
 
 /** A redo diff longer than this is cut in its prompt. */
