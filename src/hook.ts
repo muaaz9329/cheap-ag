@@ -327,10 +327,8 @@ function budget(input: Input): string | undefined {
     // the user is being asked: whatever they pick is theirs, and the reply that follows may go through
     state = { ...state, permission: undefined };
     writeFileSync(file, JSON.stringify(state satisfies PromptState));
-  } else if (state.permission && CHEAPAG_TOOL.test(tool) && tool.endsWith("__reply")) {
-    const job = input.tool_input?.job;
-    if (typeof job !== "string" || job === state.permission) return PERMISSION_REPLY;
   }
+  if (replyBeforeAsk(state, tool, input.tool_input?.job)) return PERMISSION_REPLY;
   if (CHEAPAG_TOOL.test(tool)) return;
   const config = loadConfig(root);
   if (state.notDone) return takeoverReason(state, file, { input, root, config });
@@ -338,6 +336,12 @@ function budget(input: Input): string | undefined {
   if (state.okPassed && tool === "Bash" && typeof command === "string" && TEST_CMD.test(command)) {
     return OK_DONE;
   }
+}
+
+/** A reply to the job whose command permission the user has not been asked about yet; a reply naming no job counts. */
+function replyBeforeAsk(state: PromptState, tool: string, job: unknown): boolean {
+  if (!state.permission || !CHEAPAG_TOOL.test(tool) || !tool.endsWith("__reply")) return false;
+  return typeof job !== "string" || job === state.permission;
 }
 
 /**
