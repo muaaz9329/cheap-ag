@@ -70,9 +70,11 @@ export const providerLabel = (id: Provider["provider"]) =>
 /** Supported providers ready to use: saved logins, plus the config-based endpoints when the user set them up; in detection order. */
 export function usableProviders(): Provider["provider"][] {
   const saved = savedProviders();
-  return PROVIDERS.map((p) => p.id).filter((id) =>
-    id === "local" ? localConfigured() : id === "ollama" ? ollamaConfigured() : saved.includes(id),
-  );
+  return PROVIDERS.map((p) => p.id).filter((id) => {
+    if (id === "local") return localConfigured();
+    if (id === "ollama") return ollamaConfigured();
+    return saved.includes(id);
+  });
 }
 
 /**
