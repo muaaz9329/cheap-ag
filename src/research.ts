@@ -459,47 +459,61 @@ export function parseAnswer(
           confidence: "low",
         }
       : undefined;
-  const fields: Record<string, string> = {};
-  let key: string | undefined;
-  for (const line of block.split("\n")) {
-    const kv = line.match(
-      /^\s*(status|confidence|refs|files|repro|dead[ _]ends|answer|notes):\s*(.*)$/i,
-    );
-    // files/notes are the brief's names (ticket 23.4); refs/answer still read
-    if (kv)
-      fields[
-        (key =
-          (
-            {
-              files: "refs",
-              notes: "answer",
-              "dead ends": "deadEnds",
-              dead_ends: "deadEnds",
-            } as Record<string, string>
-          )[kv[1].toLowerCase()] ?? kv[1].toLowerCase())
-      ] = kv[2];
-    else if (key === "answer") fields.answer += `\n${line}`; // the answer is prose: it may span lines
-  }
+  const fields = briefFields(block);
   const answer = (fields.answer ?? "").trim();
   if (!answer) return undefined;
   const listed = refs(fields.refs ?? "", root, scope);
-  const confidence = fields.confidence
-    ?.trim()
-    .toLowerCase()
-    .match(/^(high|medium|low)/)?.[1] as Answer["confidence"];
+  const status = fields.status?.trim() ?? "";
   return {
-    status: /^unsure/i.test(fields.status?.trim() ?? "") ? "UNSURE" : "ANSWER",
-    partial: /^partial/i.test(fields.status?.trim() ?? "") || undefined,
+    status: /^unsure/i.test(status) ? "UNSURE" : "ANSWER",
+    partial: /^partial/i.test(status) || undefined,
     answer: capWords(answer, maxWords),
     // refs from the refs line; failing that, any cited in the prose
     refs: listed.length ? listed : refs(answer, root, scope),
-    confidence: confidence ?? "low",
+    confidence: confidenceLevel(fields.confidence),
     repro: fields.repro?.trim() || undefined,
-    deadEnds:
-      fields.deadEnds?.trim() && !/^none\.?$/i.test(fields.deadEnds.trim())
-        ? fields.deadEnds.trim()
-        : undefined,
+    deadEnds: ruledOut(fields.deadEnds),
   };
+}
+
+/** A brief line: one of the field names, a colon, then its value. */
+const FIELD_LINE = /^\s*(status|confidence|refs|files|repro|dead[ _]ends|answer|notes):\s*(.*)$/i;
+/** The brief's names that the record names differently; the older refs and answer are still read as they are. */
+const RECORD_NAMES: Record<string, string> = {
+  files: "refs",
+  notes: "answer",
+  "dead ends": "deadEnds",
+  dead_ends: "deadEnds",
+};
+
+/** The brief's fields under their record names. Lines that are not a field belong to the answer when it came last. */
+function briefFields(block: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  let key: string | undefined;
+  for (const line of block.split("\n")) {
+    const field = line.match(FIELD_LINE);
+    if (field) {
+      const name = field[1].toLowerCase();
+      key = RECORD_NAMES[name] ?? name;
+      fields[key] = field[2];
+    } else if (key === "answer") fields.answer += `\n${line}`; // the answer is prose: it may span lines
+  }
+  return fields;
+}
+
+/** The rated confidence, read from the start of the field; low when it is missing or not a level. */
+function confidenceLevel(rated: string | undefined): NonNullable<Answer["confidence"]> {
+  const level = rated
+    ?.trim()
+    .toLowerCase()
+    .match(/^(high|medium|low)/)?.[1];
+  return (level as Answer["confidence"]) ?? "low";
+}
+
+/** What the worker ruled out, unless it wrote none. */
+function ruledOut(deadEnds: string | undefined) {
+  const trimmed = deadEnds?.trim();
+  return trimmed && !/^none\.?$/i.test(trimmed) ? trimmed : undefined;
 }
 
 /** The raw `path:line(-line)` candidates in text, before validation. Accepts a Windows drive letter and backslashes. */
