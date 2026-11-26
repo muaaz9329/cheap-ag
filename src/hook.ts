@@ -23,9 +23,9 @@ const REDIRECT =
 const CHEAPAG_TOOL = /^mcp__(?:plugin_cheapag_)?cheapag__/;
 // a job block's first word means the worker did not finish the step (the server's FAIL/PARTIAL/TIMEOUT)
 const NOT_DONE = /^(?:FAIL|PARTIAL|TIMEOUT) j\w+ /;
-// an OK whose checks passed in the worker's worktree (ticket 30: re-running them caught nothing)
+// an OK whose checks passed in the worker's worktree (re-running them caught nothing)
 const OK_PASSED = /^OK j\w+ step=\S+ .*\btests=pass\b/m;
-// a command permission block (ticket 69) is the user's decision, so reply waits for AskUserQuestion like take-over "ask"
+// a command permission block is the user's decision, so reply waits for AskUserQuestion like take-over "ask"
 const PERMISSION_BLOCK = /^BLOCKED (\S+) step=\S+ permission\b/m;
 const PERMISSION_REPLY =
   "This job is asking for a command permission: ask the user with AskUserQuestion first, then reply with their answer.";
@@ -34,7 +34,7 @@ const TEST_CMD =
   /swebench-test\.sh|\bpytest\b|runtests\.py|bin\/test\b|\b(?:npm|pnpm|yarn|bun) (?:run )?test\b|node --test|\btox\b|\bvitest\b|\bjest\b|\bgo test\b|\bcargo test\b|\b(?:mvn|gradle|gradlew) test\b|\brspec\b|\bphpunit\b|-m unittest\b|\bmake test\b/;
 // sonnet take-over: reads are how the subagent (or Claude) inspects the worker's diff before handing it over
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
-// asking the user and loading a tool are free in both take-over modes (ticket 51)
+// asking the user and loading a tool are free in both take-over modes
 const ASK_TOOLS = new Set(["AskUserQuestion", "ToolSearch"]);
 // the desktop app's own tools, e.g. mcp__ccd_turn__wrap_up, are the user's session, not the repo
 const DESKTOP_TOOL = "mcp__ccd_";
@@ -57,7 +57,7 @@ const READ_PARTS = [
   "echo",
 ];
 
-/** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
+/** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off. */
 function flagFile(root: string) {
   return join(root, ".cheapag", "hook.json");
 }
@@ -307,7 +307,7 @@ const OK_DONE =
   "An OK is done: its checks already passed in the worker's worktree, so don't re-run tests. Report the result, or delegate the next step.";
 
 /**
- * The prompt rules (tickets 29, 30, 51), for the main loop only:
+ * The prompt rules, for the main loop only:
  * - after a FAIL, PARTIAL or TIMEOUT, takeover "ask" (the default) allows only reads, one AskUserQuestion, tool loading
  *   and the desktop app's tools; "sonnet" leaves the Agent tool (to hand the step to a Sonnet subagent), reads, the same
  *   asking/loading tools and cheapag's tools; "self" denies the call after limits.takeover_calls (resolved take-overs
@@ -407,7 +407,7 @@ function result(): number {
     const okPassed = OK_PASSED.test(response);
     // the worker's own `land applied` finished the block: drop the take-over even when the check never ran
     const cleared = /^OK j\w+ (applied|discarded)\b/m.test(response);
-    // a command permission block: Claude must ask the user before it may reply (ticket 69)
+    // a command permission block: Claude must ask the user before it may reply
     const permission = PERMISSION_BLOCK.exec(response)?.[1];
     if (!notDone && !okPassed && !cleared && !permission) return 0;
     const root = projectRoot(input.cwd);
