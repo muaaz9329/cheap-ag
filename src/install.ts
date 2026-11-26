@@ -21,8 +21,8 @@ import { firstLine, normalisePath, runCli, which } from "./platform.js";
  */
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
-const PLUGIN_SRC = fileURLToPath(new URL("../plugin", import.meta.url));
-const NPX = `npx -y cheap-agent@${version}`;
+const PLUGIN_SOURCE = fileURLToPath(new URL("../plugin", import.meta.url));
+const NPX_COMMAND = `npx -y cheap-agent@${version}`;
 export const MARKETPLACE = "cheapag";
 
 /** Where setup keeps the launcher and the generated marketplace: next to the user config. */
@@ -77,12 +77,12 @@ export function writePlugin(
 
   rmSync(marketplace, { recursive: true, force: true });
   const plugin = join(marketplace, "cheapag");
-  cpSync(PLUGIN_SRC, plugin, { recursive: true });
+  cpSync(PLUGIN_SOURCE, plugin, { recursive: true });
   rmSync(join(plugin, ".mcp.json"), { force: true });
   const skills = readdirSync(join(plugin, "skills")).map((s) =>
     join(plugin, "skills", s, "SKILL.md"),
   );
-  for (const f of skills) writeFileSync(f, readFileSync(f, "utf8").replaceAll(NPX, ref));
+  for (const f of skills) writeFileSync(f, readFileSync(f, "utf8").replaceAll(NPX_COMMAND, ref));
   const hooksFile = join(plugin, "hooks", "hooks.json");
   if (platform === "win32") {
     // rewrite the commands as JSON: a raw replace would put unescaped double quotes inside the strings; no sh prefix, since the launcher gates and exits 0
@@ -93,7 +93,7 @@ export function writePlugin(
     json.hooks.SessionStart[0].hooks[0].command = command("context");
     writeFileSync(hooksFile, JSON.stringify(json, null, 2) + "\n");
   } else {
-    writeFileSync(hooksFile, readFileSync(hooksFile, "utf8").replaceAll(NPX, ref));
+    writeFileSync(hooksFile, readFileSync(hooksFile, "utf8").replaceAll(NPX_COMMAND, ref));
   }
   mkdirSync(join(marketplace, ".claude-plugin"), { recursive: true });
   writeFileSync(
