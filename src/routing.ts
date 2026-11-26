@@ -216,16 +216,16 @@ export type ForeignModel = {
 };
 
 export function foreignModels(provider: ProviderId, models: ModelsConfig = {}): ForeignModel[] {
-  const own = (name: string) => name.startsWith(`${provider}/`);
+  const isOwn = (name: string) => name.startsWith(`${provider}/`);
   const roles = ["implement", "medium", "hard", "research", "escalation"] as const;
   const foreign = roles.flatMap((role) => {
     const name = models[role];
-    return name && !own(name) ? [{ role, name }] : [];
+    return name && !isOwn(name) ? [{ role, name }] : [];
   });
   return [
     ...foreign,
     ...(models.fallback ?? [])
-      .filter((name) => !own(name))
+      .filter((name) => !isOwn(name))
       .map((name) => ({ role: "fallback" as const, name })),
   ];
 }
@@ -401,11 +401,11 @@ function goWindow(limit: Limit) {
 
 /** Local time as HH:MM, with the date in front when it is not today. */
 export function clock(ms: number) {
-  const d = new Date(ms);
-  const hhmm = d.toTimeString().slice(0, 5);
-  return d.toDateString() === new Date().toDateString()
+  const date = new Date(ms);
+  const hhmm = date.toTimeString().slice(0, 5);
+  return date.toDateString() === new Date().toDateString()
     ? hhmm
-    : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${hhmm}`;
+    : `${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${hhmm}`;
 }
 
 // ---- spend ledger ----
@@ -440,7 +440,7 @@ export function recordSpend(spend: Record<string, number>) {
   const lines = Object.entries(spend)
     .filter(([, cost]) => cost > 0)
     .map(
-      ([m, costUsd]) => JSON.stringify({ at: new Date().toISOString(), model: m, costUsd }) + "\n",
+      ([model, costUsd]) => JSON.stringify({ at: new Date().toISOString(), model, costUsd }) + "\n",
     );
   if (!lines.length) return;
   mkdirSync(dirname(ledgerFile()), { recursive: true });
@@ -459,7 +459,7 @@ export function capUse(
   return WINDOWS.map(({ name: window, ms, share }) => {
     const spent = extra + spentWithin(entries, now, ms);
     return { used: spent / (monthly * share), window, capUsd: monthly * share };
-  }).reduce((a, b) => (b.used > a.used ? b : a));
+  }).reduce((fullest, next) => (next.used > fullest.used ? next : fullest));
 }
 
 /** Tracked spend per model and window, with the window's cap where Go has one (for `cheapag status`); models unspent this month are left out. */
@@ -478,10 +478,10 @@ export function spendWindows(now = Date.now()) {
 
 type LedgerEntry = { at: number; model: string; costUsd: number };
 
-/** The USD the entries spent in the `ms` before `now`. */
-function spentWithin(entries: LedgerEntry[], now: number, ms: number) {
+/** The USD the entries spent in the `windowMs` before `now`. */
+function spentWithin(entries: LedgerEntry[], now: number, windowMs: number) {
   return entries
-    .filter((entry) => now - entry.at < ms)
+    .filter((entry) => now - entry.at < windowMs)
     .reduce((sum, entry) => sum + entry.costUsd, 0);
 }
 
@@ -521,7 +521,7 @@ export function escalationSkip(
   if (!escalation)
     return "esc: skipped, the escalation model is not allowed by this repo's consent";
   const name = modelName(escalation);
-  if (c.limits.some((l) => l.model === name))
+  if (c.limits.some((limit) => limit.model === name))
     return `esc: skipped, ${escalation.id} hit its usage limit in this job`;
   const use = capUse(name, spent[name] ?? 0);
   if (use && use.used >= skipAt)
@@ -534,4 +534,4 @@ export function escalationSkip(
  * a Go model whose tracked spend, this job included, is past a window's cap kept answering, which only balance allows.
  */
 export const usedBalance = (spent: Record<string, number>) =>
-  Object.keys(spent).some((m) => (capUse(m)?.used ?? 0) > 1);
+  Object.keys(spent).some((name) => (capUse(name)?.used ?? 0) > 1);
