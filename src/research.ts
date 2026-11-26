@@ -106,14 +106,7 @@ export async function research(
     cleanupError: undefined as string | undefined,
     worktree: undefined as string | undefined,
   };
-  let block = "";
-  const save = () => {
-    block = renderResearch(record);
-    // research.json, not result.json: `jobs list` reads only job records
-    writeLog(directory, "research.json", record);
-    writeLog(directory, "result.txt", block + "\n");
-  };
-  save();
+  let block = writeRecord(directory, record);
   if (run.worktree) {
     try {
       await releaseDirectory(run.worktree.path); // release before the worktree is removed
@@ -122,7 +115,7 @@ export async function research(
       // Cleanup failure must not replace the worker's answer or its original error.
       record.cleanupError = (error as Error).message;
       record.worktree = normalisePath(relative(root, run.worktree.path));
-      save();
+      block = writeRecord(directory, record);
     }
   }
   if (answer.status === "ANSWER") gzipEvents(directory);
@@ -619,6 +612,15 @@ function newResearch(root: string) {
     mkdirSync(directory, { recursive: true });
     return { id, directory };
   }
+}
+
+/** Writes the record and its rendered block to the research log, and returns the block. */
+function writeRecord(directory: string, record: ResearchRecord): string {
+  const block = renderResearch(record);
+  // research.json, not result.json: `jobs list` reads only job records
+  writeLog(directory, "research.json", record);
+  writeLog(directory, "result.txt", block + "\n");
+  return block;
 }
 
 /** Writes one file of the research log with keys redacted; a value that is not a string is written as JSON. */
