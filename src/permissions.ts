@@ -398,9 +398,8 @@ function makeTargets(directory: string): string[] {
 /** The program a command names, plus a bare second word (`git branch`, `npm run`), for an "always allow" prefix. */
 export function commandPrefix(command: string): string {
   const [first, second] = command.trim().split(/\s+/);
-  return first && second && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(second)
-    ? `${first} ${second}`
-    : (first ?? command.trim());
+  if (first && second && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(second)) return `${first} ${second}`;
+  return first ?? command.trim();
 }
 
 const globToRegExp = (pattern: string) =>
