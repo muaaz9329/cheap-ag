@@ -751,10 +751,9 @@ export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line
   const dir = mkdtempSync(join(tmpdir(), "cheapag-login-"));
   let name = provider.provider as string;
   let timer: NodeJS.Timeout | undefined;
-  let timeoutMs = CHECK_TIMEOUT_MS;
   try {
     // a local model may first have to load from disk, and Ollama on this machine unloads it when idle
-    timeoutMs = localEndpoint(provider.provider) ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
+    const timeoutMs = localEndpoint(provider.provider) ? LOCAL_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS;
     // the throwaway dir has no cheapag.json, so this is the user's config alone
     const route = fullRoute(provider.provider, effectiveModels(provider.provider, loadConfig(dir)));
     const model = route.implement;
@@ -770,13 +769,12 @@ export async function liveCheck(provider: Provider): Promise<{ ok: boolean; line
       }),
     );
     // covers boot as well as the answer; on timeout, stopping OpenCode below ends the session, and login exits
-    const timeout = new Promise<never>(
-      (_, reject) =>
-        (timer = setTimeout(
-          () => reject(new Error(`no answer within ${timeoutMs / 1000}s`)),
-          timeoutMs,
-        )),
-    );
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no answer within ${timeoutMs / 1000}s`)),
+        timeoutMs,
+      );
+    });
     const result = await Promise.race([run, timeout]);
     if (result.error) return { ok: false, line: explain(result.error, name) };
     return { ok: true, line: `${name} answered (cost $${result.usage.costUsd.toFixed(4)})` };
