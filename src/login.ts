@@ -294,11 +294,11 @@ function savePreset(provider: ProviderId, choice: Choice, out: Output) {
     );
     return true;
   }
+  const presetModels = PRESETS[provider][choice];
   const saved = updateUser(
     (user) => {
       const config: Record<string, unknown> = { ...user, preset: choice };
-      if (JSON.stringify(config.models) === JSON.stringify(PRESETS[provider][choice]))
-        delete config.models;
+      if (JSON.stringify(config.models) === JSON.stringify(presetModels)) delete config.models;
       return config;
     },
     out,
@@ -306,7 +306,7 @@ function savePreset(provider: ProviderId, choice: Choice, out: Output) {
   );
   if (!saved) return false;
   out(
-    `✓ Worker models: ${choice} preset (implement ${PRESETS[provider][choice].implement}), saved in ${file}; follows new releases`,
+    `✓ Worker models: ${choice} preset (implement ${presetModels.implement}), saved in ${file}; follows new releases`,
   );
   return true;
 }
