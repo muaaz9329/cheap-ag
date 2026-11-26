@@ -55,7 +55,7 @@ import { runSession } from "./worker.js";
 /**
  * `cheapag login`: the only setup (ADR-0004). Picks a provider, lets the bundled OpenCode's own login take the key
  * (hidden input, saved in OpenCode's store; Cheap Agent never sees it), live-checks it, then offers to register
- * the server with Claude Code at user scope and install the plugin (ticket 31). `npx cheap-agent` in a terminal runs it too.
+ * the server with Claude Code at user scope and install the plugin. `npx cheap-agent` in a terminal runs it too.
  */
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -517,7 +517,7 @@ async function askPrice(
 }
 
 /**
- * Asks for the Ollama endpoint (issue #27): this machine's daemon, no key, the models already pulled; or Ollama Cloud,
+ * Asks for the Ollama endpoint: this machine's daemon, no key, the models already pulled; or Ollama Cloud,
  * which reads the key from OLLAMA_API_KEY. Saves it as the user config's `ollama`, other keys kept. Login reads the key
  * only to list the cloud models; the config names the variable, and OpenCode resolves it for every job.
  */
