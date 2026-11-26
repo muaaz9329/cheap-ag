@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, startServer, tempRepo } from "./harness.js";
-import { recoverJobs } from "../src/jobs.js";
+import { jobs as jobsTool, landJobs, recoverJobs, reply } from "../src/jobs.js";
 import { isAlive } from "../src/platform.js";
 
 const plan = (doneWhen: string, doText = "export hello = 2", kind?: string) =>
@@ -718,4 +718,277 @@ test("land with a damaged cheapag.json fails naming the file", async () => {
 
 test("recoverJobs outside a repository does nothing", () => {
   expect(recoverJobs(tmpdir())).toBeUndefined();
+});
+
+test("turn cap during a self-fix with no missing: in the report → PARTIAL names the stop as missing:, and tried: says the fix was stopped", async () => {
+  const { delegate, record } = await scenario({
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { max_turns: 3 } },
+    scripts: [
+      [
+        { edit: "src/hello.ts", content: "export const hello = 1;\n" },
+        { tool: "write" },
+        { finish: { summary: "hello added", risks: [], review: [], missing: [] } },
+      ],
+      [
+        { edit: "src/hello.ts", content: "export const hello = 2;\n" },
+        { tool: "write" },
+        LONG,
+        { finish: { summary: "never", risks: [], review: [], missing: [] } },
+      ],
+    ],
+  });
+  const text = await delegate();
+  const job = jobOf(text);
+  expect(text).toBe(
+    [
+      `PARTIAL ${job} step=1 files=1 +1/-0 tests=pass turns=3 cost=$0.000 fix=1`,
+      "summary: hello added",
+      "changed:",
+      "  A src/hello.ts +1",
+      "missing:",
+      "  - unknown: stopped (turn cap (3) reached); compare the diff with the step",
+      `worktree: .cheapag/worktrees/${job}/`,
+      `log: .cheapag/jobs/${job}/`,
+    ].join("\n"),
+  );
+  expect(record(job)).toMatchObject({
+    status: "PARTIAL",
+    tried: ["fix 1: (no summary) → stopped: turn cap (3) reached"],
+    missing: ["unknown: stopped (turn cap (3) reached); compare the diff with the step"],
+  });
+});
+
+test("a self-fix that changes the failure says different failure in tried:, the next one that passes says passed", async () => {
+  const { repo, delegate, record } = await scenario({
+    doneWhen: "`node differs.mjs` passes",
+    scripts: [
+      [
+        { edit: "src/hello.ts", content: "export const hello = 1;\n" },
+        { tool: "write" },
+        { finish: { summary: "one", risks: [], review: [], missing: [] } },
+      ],
+      [
+        { edit: "src/hello.ts", content: "export const hello = three;\n" },
+        { tool: "write" },
+        { finish: { summary: "three", risks: [], review: [], missing: [] } },
+      ],
+      [
+        { edit: "src/hello.ts", content: "export const hello = 2;\n" },
+        { tool: "write" },
+        { finish: { summary: "two", risks: [], review: [], missing: [] } },
+      ],
+    ],
+  });
+  writeFileSync(
+    join(repo.dir, "differs.mjs"),
+    `import { readFileSync } from "node:fs";
+const value = readFileSync("src/hello.ts", "utf8").trim();
+if (value !== "export const hello = 2;") { console.log(" ✗ hello › got " + value); process.exit(1); }
+`,
+  );
+  const text = await delegate();
+  const job = jobOf(text);
+  expect(text.split("\n")[0]).toBe(
+    `OK ${job} step=1 files=1 +1/-0 tests=pass turns=6 cost=$0.000 fix=2`,
+  );
+  expect(record(job)).toMatchObject({
+    status: "OK",
+    tried: ["fix 1: three → different failure", "fix 2: two → passed"],
+  });
+});
+
+test("a stopped job's findings longer than 600 characters are cut to 599 and an ellipsis", async () => {
+  const { delegate, record } = await scenario({
+    doText: "fix the bug: hello should be 2",
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [
+      [{ tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG, { tool: "write" }],
+      [{ text: "x".repeat(700) }],
+    ],
+  });
+  const job = jobOf(await delegate());
+  expect(record(job).found).toBe(`${"x".repeat(599)}…`);
+});
+
+test("an escalation after the turn cap that reaches its own turn cap says stopped: in tried:", async () => {
+  const { delegate, record } = await scenario({
+    doneWhen: "`node check.mjs` passes",
+    repoConfig: { limits: { max_turns: 3, repro_by_turns: 20 } },
+    scripts: [
+      [
+        { edit: "src/hello.ts", content: "export const hello = 1;\n" },
+        { tool: "write" },
+        { tool: "read" },
+        { tool: "grep" },
+        LONG,
+        { tool: "write" },
+      ],
+      [{ tool: "read" }, { tool: "grep" }, { tool: "read" }, LONG, { tool: "write" }],
+    ],
+  });
+  const text = await delegate();
+  const job = jobOf(text);
+  expect(text).toContain("\nreason: turn cap (3) reached\n");
+  expect(record(job)).toMatchObject({
+    status: "FAIL",
+    tried: ["esc: (no summary) → stopped: turn cap (3) reached"],
+    models: { escalated: true },
+  });
+});
+
+const FLASH = "opencode-go/deepseek-v4.1-flash";
+/** A finished job's record as the server writes it, with `extra` fields over an OK default. */
+const diskRecord = (job: string, extra: Record<string, unknown> = {}) => ({
+  format: "cheapag/1",
+  job,
+  status: "OK",
+  landed: false,
+  steps: "1",
+  summary: "",
+  changed: [],
+  risks: [],
+  review: [],
+  missing: [],
+  worktree: null,
+  usage: { turns: 0, costUsd: 0 },
+  selfFix: 0,
+  models: { requested: FLASH, final: FLASH, escalated: false },
+  timing: { startedAt: "2026-01-01T00:00:00.000Z" },
+  ...extra,
+});
+
+/** A repository with job records on disk only (no live job in this process), for the in-process tool calls. */
+function recordsRepo(jobRecords: Record<string, Record<string, unknown>>) {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  // in-process: loadConfig must not read the developer's own user config
+  vi.stubEnv("XDG_CONFIG_HOME", join(repo.dir, ".git", "no-user-config"));
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+  for (const [job, extra] of Object.entries(jobRecords)) {
+    const dir = join(repo.dir, ".cheapag", "jobs", job);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "result.json"), JSON.stringify(diskRecord(job, extra)));
+    writeFileSync(join(dir, "result.txt"), `block of ${job}\n`);
+  }
+  return repo;
+}
+
+const NO_WORKERS = {
+  provider: { provider: "opencode-go", via: "login" },
+  opencode: async () => {
+    throw new Error("no worker in this test");
+  },
+  progress: () => {},
+} as const;
+
+test("jobs list shows the 20 newest jobs, then how many older ones it left out", async () => {
+  const jobRecords = Object.fromEntries(
+    Array.from({ length: 21 }, (_, i) => [
+      `j00${String(i).padStart(2, "0")}`,
+      { timing: { startedAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() } },
+    ]),
+  );
+  const repo = recordsRepo(jobRecords);
+  const lines = (await jobsTool({ action: "list", root: repo.dir })).split("\n");
+  expect(lines).toHaveLength(21);
+  expect(lines[0]).toMatch(/^OK j0020 step=1 /);
+  expect(lines[19]).toMatch(/^OK j0001 step=1 /);
+  expect(lines[20]).toBe("… +1 older");
+});
+
+test("jobs on a job that only has a record: show and wait give its block; cancel, and a job another session runs, are refused", async () => {
+  const repo = recordsRepo({
+    jdone: {},
+    jrun1: { status: "RUNNING", pid: 123456 },
+    jblk1: { status: "BLOCKED" },
+  });
+  const call = (action: "list" | "show" | "wait" | "cancel", job?: string) =>
+    jobsTool({ action, job, root: repo.dir });
+  expect(await call("show", "jdone")).toBe("block of jdone");
+  expect(await call("wait", "jdone")).toBe("block of jdone");
+  expect(await call("cancel", "jdone")).toBe(
+    "FAIL reason: job jdone already finished (OK); nothing to cancel",
+  );
+  expect(await call("show", "jrun1")).toBe("block of jrun1");
+  expect(await call("wait", "jrun1")).toBe(
+    "FAIL reason: job jrun1 is RUNNING but not in this session (server pid 123456); wait for it from the session that started it",
+  );
+  expect(await call("cancel", "jblk1")).toBe(
+    "FAIL reason: job jblk1 is BLOCKED but not in this session (server pid unknown); cancel it from the session that started it",
+  );
+  expect(await call("show", "jnone")).toBe("FAIL reason: job jnone not found");
+  expect(await call("show")).toBe("FAIL reason: jobs show needs a job id, e.g. j7f3a");
+  expect(await call("wait", "nope")).toBe(
+    "FAIL reason: jobs wait needs a job id, e.g. j7f3a or a batch id, e.g. b4k1x",
+  );
+});
+
+test("jobs wait on a batch that only has records: missing, or with a job record gone", async () => {
+  const repo = recordsRepo({ jdone: {} });
+  mkdirSync(join(repo.dir, ".cheapag", "batches"));
+  writeFileSync(
+    join(repo.dir, ".cheapag", "batches", "bmiss.json"),
+    JSON.stringify({ format: "cheapag/1", batch: "bmiss", jobs: ["jdone", "jgone"] }),
+  );
+  expect(await jobsTool({ action: "wait", job: "bzzzz", root: repo.dir })).toBe(
+    "FAIL reason: batch bzzzz not found",
+  );
+  expect(await jobsTool({ action: "wait", job: "bmiss", root: repo.dir })).toBe(
+    "FAIL reason: batch bmiss: a job record is missing (cleaned up?)",
+  );
+});
+
+test("land refuses each job it cannot apply or discard, one line per job, with the reason", async () => {
+  const repo = recordsRepo({
+    jrun1: { status: "RUNNING", pid: 123456 },
+    jblk1: { status: "BLOCKED" },
+    jland: { landed: true },
+    jdisc: { discarded: true },
+    jgone: { status: "FAIL" },
+    jold1: { status: "FAIL" },
+  });
+  mkdirSync(join(repo.dir, ".cheapag", "worktrees", "jold1"), { recursive: true });
+  const ids = "nope, jnone, jrun1, jblk1, jland, jdisc, jgone";
+  expect(await landJobs({ job: ids, action: "discard", root: repo.dir }, NO_WORKERS)).toBe(
+    [
+      "FAIL nope reason: nope is not a job id, e.g. j7f3a",
+      "FAIL jnone reason: job jnone not found",
+      "FAIL jrun1 reason: job jrun1 is RUNNING in another session (server pid 123456)",
+      "FAIL jblk1 reason: job jblk1 is BLOCKED in another session (server pid unknown)",
+      "FAIL jland reason: job jland already landed",
+      "FAIL jdisc reason: job jdisc was already discarded",
+      "FAIL jgone reason: job jgone has no worktree left (cleaned up); nothing to discard",
+    ].join("\n"),
+  );
+  expect(
+    await landJobs({ job: "jgone, jold1, jland", action: "apply", root: repo.dir }, NO_WORKERS),
+  ).toBe(
+    [
+      "FAIL jgone reason: job jgone has no worktree left (cleaned up); nothing to apply",
+      "FAIL jold1 reason: not applied, since jgone before it did not land",
+      "FAIL jland reason: not applied, since jgone before it did not land",
+    ].join("\n"),
+  );
+  expect(await landJobs({ job: "jold1", action: "apply", root: repo.dir }, NO_WORKERS)).toBe(
+    "FAIL jold1 reason: job jold1 has no recorded base (made by an older version); land it by hand from .cheapag/worktrees/jold1/",
+  );
+  expect(await landJobs({ job: " , ", action: "apply", root: repo.dir }, NO_WORKERS)).toBe(
+    'FAIL reason: land needs a job id, or several in landing order, e.g. "j7f3a,j7f3b"',
+  );
+});
+
+test("reply to a job that is not waiting in this process says why, from its record", async () => {
+  const repo = recordsRepo({ jdone: {}, jblk1: { status: "BLOCKED" } });
+  const answer = (job: string) => reply({ job, answer: "a", root: repo.dir }, () => {});
+  expect(await answer("jblk1")).toBe(
+    "FAIL reason: job jblk1 is no longer waiting for a reply (already answered, or its session ended); delegate the step again",
+  );
+  expect(await answer("jdone")).toBe(
+    "FAIL reason: job jdone is OK, not BLOCKED; only a BLOCKED job takes a reply",
+  );
+  expect(await answer("jnone")).toBe("FAIL reason: no job jnone; reply only to a BLOCKED job's id");
 });
