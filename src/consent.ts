@@ -34,18 +34,31 @@ const file = (root: string) => join(root, ".cheapag", "consent.json");
 
 /** The repo's consent, or undefined when there is none (a damaged record counts as none; `cheapag allow` rewrites it). */
 export function readConsent(root: string): Consent | undefined {
+  const path = file(root);
+  if (!existsSync(path)) return undefined;
+  const stored = readJson(path);
+  return isConsent(stored) ? stored : undefined;
+}
+
+/** The file's parsed JSON, or undefined when it cannot be read or parsed (a damaged record counts as none). */
+function readJson(path: string): unknown {
   try {
-    if (!existsSync(file(root))) return undefined;
-    const c = JSON.parse(readFileSync(file(root), "utf8")) as Consent;
-    const valid =
-      ["all", "zdr-only", "models"].includes(c.mode) &&
-      typeof c.provider === "string" &&
-      (c.mode !== "models" ||
-        (Array.isArray(c.models) && c.models.every((m) => typeof m === "string")));
-    return valid ? c : undefined;
+    return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return undefined;
   }
+}
+
+const MODES = ["all", "zdr-only", "models"];
+
+/** A stored record is a consent when its mode and provider are set; the models mode needs its list of names too. */
+function isConsent(value: unknown): value is Consent {
+  if (typeof value !== "object" || value === null) return false;
+  const { mode, provider, models } = value as Record<string, unknown>;
+  if (typeof mode !== "string" || !MODES.includes(mode)) return false;
+  if (typeof provider !== "string") return false;
+  if (mode !== "models") return true;
+  return Array.isArray(models) && models.every((name) => typeof name === "string");
 }
 
 export function writeConsent(root: string, consent: Consent) {
