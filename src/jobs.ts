@@ -111,11 +111,11 @@ function rulesetFor(worktree: Worktree, cmds: string[], config: Config) {
 /** More rejections than this in one job earn a risk line. */
 const MAX_QUIET_REJECTIONS = 5;
 
-/** Ticket 33: a harder step earns proportionally more turns before its cap (defaults 25/50/75 for easy/medium/hard). */
+/** A harder step earns proportionally more turns before its cap (defaults 25/50/75 for easy/medium/hard). */
 const TURN_SCALE: Record<Difficulty, number> = { easy: 1, medium: 2, hard: 3 };
-/** The turn cap for the escalation attempt after a turn-cap stop: its own, smaller budget (ticket 33). */
+/** The turn cap for the escalation attempt after a turn-cap stop: its own, smaller budget. */
 const ESCALATION_TURNS = 15;
-/** Fail fast applies only to fixes (ticket 37): a step or source naming any of these is a bug to reproduce first. */
+/** Fail fast applies only to fixes: a step or source naming any of these is a bug to reproduce first. */
 const FIX_WORDS =
   /\b(bug|fix(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|error|crash(?:es|ed)?|regress(?:ion|ed)?|broken|incorrect|wrong|traceback|exception)\b/i;
 
@@ -392,7 +392,7 @@ function runGroup(g: GroupRun) {
       ? writeWhole(join(dir, name), redact(value))
       : writeJson(join(dir, name), value);
   const stepIds = g.group.label;
-  // a step's own difficulty: wins over the call's; in a range the hardest step decides (ticket 26)
+  // a step's own difficulty: wins over the call's; in a range the hardest step decides
   const difficulty =
     [...DIFFICULTIES].reverse().find((d) => steps.some((s) => s.fields.difficulty === d)) ??
     input.difficulty;
@@ -454,7 +454,7 @@ function runGroup(g: GroupRun) {
   };
   let notStarted: string | undefined;
   let asked: Asked[] | null = null;
-  let pending: PermissionBlock | null = null; // the command permission ask this job is paused on (ticket 69)
+  let pending: PermissionBlock | null = null; // the command permission ask this job is paused on
   let blockedAt: Date | undefined;
   let expiry: NodeJS.Timeout | undefined; // max_blocked_minutes, while BLOCKED
   let worktree: Worktree | undefined;
@@ -464,7 +464,7 @@ function runGroup(g: GroupRun) {
   let reason: string | undefined;
   const verified: VerifyRun[] = [];
   const tried: string[] = [];
-  let found: string | undefined; // a stopped worker's findings note (ticket 29)
+  let found: string | undefined; // a stopped worker's findings note
   let selfFix = 0;
   let escalated = false;
   let repro: JobRecord["repro"]; // the server's check of the worker's reproduction test (OK jobs only)
@@ -476,7 +476,7 @@ function runGroup(g: GroupRun) {
 
   // caps count across the whole job; any stop aborts the session, and all but the turn cap also kill verify
   const { limits } = config;
-  // ticket 33: the turn cap scales with the step's difficulty, and the escalation attempt gets its own smaller one
+  // the turn cap scales with the step's difficulty, and the escalation attempt gets its own smaller one
   const scale = TURN_SCALE[difficulty ?? "easy"];
   let turnCap = limits.max_turns * scale;
   let turnBase = 0; // turns already spent when the current turn budget began (reset for the escalation attempt)
@@ -504,9 +504,9 @@ function runGroup(g: GroupRun) {
     if (session && session.totals().turns - turnBase >= turnCap)
       stop({ cap: "turns", reason: `turn cap (${turnCap}) reached` });
   };
-  // fail fast (ticket 28): a step with checks that has edited nothing by repro_by_turns stops now, so Claude takes over
+  // fail fast: a step with checks that has edited nothing by repro_by_turns stops now, so Claude takes over
   // without a 40-turn failed job in its context; any edit, source or test, lifts the stop and the job runs to its normal cap
-  // ticket 37: only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
+  // only a fix has a bug to reproduce; a feature step is never stopped for lacking a test
   const kind = steps.find((s) => s.fields.kind)?.fields.kind;
   const isFix =
     g.fix ||
@@ -1415,7 +1415,7 @@ async function findings(session: Session): Promise<string | undefined> {
 }
 
 /**
- * Checks the worker's reproduction test (ticket 24.1): its command must pass on the fixed tree and fail once the non-test
+ * Checks the worker's reproduction test: its command must pass on the fixed tree and fail once the non-test
  * changes are set aside, which proves it tests the problem. The command comes from the worker, so it only runs when it
  * starts with a command this job may already run (done-when, test_cmd, allow_commands); anything else stays unverified.
  * `passed` are verify commands that already passed on this tree, so a claim equal to one skips the fixed-code rerun.
@@ -2079,7 +2079,7 @@ function contextPack(
     // start from what the scout found instead of re-exploring; an "unverified" repro is a lead, not a fact
     brief &&
       `Scout brief (from research; start here, and check anything marked unverified):\n${brief}`,
-    // the user's own words: the step is Claude's reading of them, and only the worker sees both (ticket 28)
+    // the user's own words: the step is Claude's reading of them, and only the worker sees both
     source &&
       `Source (the user's request or the issue, verbatim; check the step against it and report disagreements in finish's disagree):\n${source}`,
   ]
