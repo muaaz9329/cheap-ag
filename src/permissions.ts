@@ -331,14 +331,13 @@ export function baselinePermission() {
   const config: Record<string, string | Record<string, string>> = {};
   // the server-wide baseline never pauses: a session that can be asked carries its own ruleset with `ask`
   for (const rule of workerRuleset({ onBlockedCommand: "deny" })) {
-    if (rule.pattern === "*" && !(rule.permission in config)) config[rule.permission] = rule.action;
-    else {
-      const current = config[rule.permission];
-      config[rule.permission] = {
-        ...(typeof current === "string" ? { "*": current } : current),
-        [rule.pattern]: rule.action,
-      };
+    if (rule.pattern === "*" && !(rule.permission in config)) {
+      config[rule.permission] = rule.action;
+      continue;
     }
+    const current = config[rule.permission];
+    const patterns = typeof current === "string" ? { "*": current } : current;
+    config[rule.permission] = { ...patterns, [rule.pattern]: rule.action };
   }
   return config;
 }
