@@ -458,43 +458,52 @@ export function renderResearch(r: ResearchRecord) {
  * adjacent single lines), then `next:`. The fix job is not a group: it counts in the cost only.
  */
 export function renderBatch(b: BatchRecord, jobs: JobRecord[], fix?: JobRecord) {
-  const sorted = [...jobs].sort((x, y) => rank(x.status) - rank(y.status));
-  const counts = URGENCY.map(
-    (s) => [s, sorted.filter((j) => j.status === s).length] as const,
-  ).filter(([, n]) => n);
-  const head = [
-    [
-      `BATCH ${b.batch} groups=${b.groups.length}`,
-      ...counts.map(([s, n]) => `${s}=${n}`),
-      `landed=${jobs.filter((j) => j.landed).length}`,
-      `integration=${b.integration}`,
-      `cost=$${[...jobs, ...(fix ? [fix] : [])].reduce((n, j) => n + j.usage.costUsd, 0).toFixed(3)}`,
-    ].join(" "),
-  ];
+  const sorted = [...jobs].sort((left, right) => rank(left.status) - rank(right.status));
+  const head = [batchHeadline(b, jobs, fix)];
   if (b.notes.length) head.push(`note: ${b.notes.join("; ")}`);
   if (b.integrationError?.length)
     head.push(`error: ${b.integrationError[0]}`, ...b.integrationError.slice(1));
   const chunks = fix ? [renderJob(fix)] : [];
-  sorted.forEach((j, i) => {
-    if (j.status === "RUNNING" && sorted[i - 1]?.status === "RUNNING")
-      chunks[chunks.length - 1] += `\n${renderJob(j)}`;
-    else chunks.push(renderJob(j, BUDGET_TOKENS, true));
+  sorted.forEach((job, index) => {
+    if (job.status === "RUNNING" && sorted[index - 1]?.status === "RUNNING")
+      chunks[chunks.length - 1] += `\n${renderJob(job)}`;
+    else chunks.push(renderJob(job, BUDGET_TOKENS, true));
   });
-  const blocked = sorted.find((j) => j.status === "BLOCKED");
-  const next = [
-    blocked && `reply(job="${blocked.job}", ...)`,
-    (b.integration === "running" ||
-      sorted.some((j) => j.status === "BLOCKED" || j.status === "RUNNING")) &&
-      `jobs(action="wait", job="${b.batch}")`,
-  ]
-    .filter(Boolean)
-    .join(" then ");
+  const next = nextStep(b, sorted);
   // only blocks that were compacted have more to show
-  const settled = sorted.filter((j) => COMPACTED.has(j.status)).map((j) => j.job);
+  const settled = sorted.filter((job) => COMPACTED.has(job.status)).map((job) => job.job);
   const full = settled.length ? fit(`full blocks: jobs show ${settled.join(", ")}`) : "";
   return [head.map(fit).join("\n"), chunks.join("\n\n"), full, next && fit(`next: ${next}`)]
     .filter(Boolean)
     .join("\n");
+}
+
+/** The BATCH line: groups, a count per status by urgency, landed, integration, cost (fix included). */
+function batchHeadline(batch: BatchRecord, jobs: JobRecord[], fix?: JobRecord) {
+  const counts = URGENCY.map(
+    (status) => [status, jobs.filter((job) => job.status === status).length] as const,
+  ).filter(([, count]) => count);
+  const billed = [...jobs, ...(fix ? [fix] : [])];
+  const cost = billed.reduce((total, job) => total + job.usage.costUsd, 0);
+  return [
+    `BATCH ${batch.batch} groups=${batch.groups.length}`,
+    ...counts.map(([status, count]) => `${status}=${count}`),
+    `landed=${jobs.filter((job) => job.landed).length}`,
+    `integration=${batch.integration}`,
+    `cost=$${cost.toFixed(3)}`,
+  ].join(" ");
+}
+
+/** Reply to the first BLOCKED job, then wait while anything is open; empty when nothing is. */
+function nextStep(batch: BatchRecord, sorted: JobRecord[]) {
+  const blocked = sorted.find((job) => job.status === "BLOCKED");
+  const open = sorted.some((job) => job.status === "BLOCKED" || job.status === "RUNNING");
+  return [
+    blocked && `reply(job="${blocked.job}", ...)`,
+    (batch.integration === "running" || open) && `jobs(action="wait", job="${batch.batch}")`,
+  ]
+    .filter(Boolean)
+    .join(" then ");
 }
 
 /** D5 CONSENT: no job is created. */
