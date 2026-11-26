@@ -183,14 +183,16 @@ export function errorTail(run: VerifyRun, root: string): string[] {
   const lines = tailLines(run.output, root);
   const failures = findFailures(lines);
   const body = failures.length
-    ? failures
-        .slice(0, MAX_FAILURES)
-        .flatMap((f) => [
-          f.count > 1 ? `${f.lines[0]} (×${f.count})` : f.lines[0],
-          ...f.lines.slice(1),
-        ])
+    ? failures.slice(0, MAX_FAILURES).flatMap(failureLines)
     : lines.slice(-(MAX_LINES - 1));
   return [`\`${run.cmd}\``, ...body.slice(0, MAX_LINES - 1).map((l) => clip(`  ${l}`))];
+}
+
+/** A failure's lines, its headline counting its repeats (×N). */
+function failureLines({ lines, count }: Failure): string[] {
+  const [headline, ...rest] = lines;
+  if (count > 1) return [`${headline} (×${count})`, ...rest];
+  return lines;
 }
 
 /** Each distinct failure in `lines`, in order; failures whose headlines differ only in numbers count as one. */
