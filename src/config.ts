@@ -456,6 +456,21 @@ function parseModels(models: unknown, file: string): ModelsConfig | undefined {
   return models as ModelsConfig;
 }
 
+/** The folders a worktree links from the repo, as repo-relative paths joined with forward slashes. */
+function parseLinkDirs(dirs: unknown, file: string): string[] | undefined {
+  if (dirs === undefined) return undefined;
+  if (!Array.isArray(dirs) || dirs.some((dir) => !isNonEmptyString(dir)))
+    throw new Error(`${file}: link_dirs must be a list of directory paths`);
+  return (dirs as string[]).map((dir) => {
+    const parts = dir.split(/[\\/]+/).filter(Boolean);
+    if (isAbsolute(dir) || parts.includes(".."))
+      throw new Error(`${file}: link_dirs entry "${dir}" must be a path inside the repository`);
+    if (BUILD_OUTPUT.test(parts.at(-1)!))
+      throw new Error(`${file}: link_dirs entry "${dir}" is build output, which is never linked`);
+    return parts.join("/");
+  });
+}
+
 /** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
 function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
   const { provider, local, ollama, preset } = value;
@@ -529,19 +544,7 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
   // null is E4's written default: test_cmd
   if (integration_cmd != null && !isNonEmptyString(integration_cmd))
     throw new Error(`${file}: integration_cmd must be a non-empty string`);
-  let dirs: string[] | undefined;
-  if (link_dirs !== undefined) {
-    if (!Array.isArray(link_dirs) || link_dirs.some((dir) => !isNonEmptyString(dir)))
-      throw new Error(`${file}: link_dirs must be a list of directory paths`);
-    dirs = (link_dirs as string[]).map((dir) => {
-      const parts = dir.split(/[\\/]+/).filter(Boolean);
-      if (isAbsolute(dir) || parts.includes(".."))
-        throw new Error(`${file}: link_dirs entry "${dir}" must be a path inside the repository`);
-      if (BUILD_OUTPUT.test(parts.at(-1)!))
-        throw new Error(`${file}: link_dirs entry "${dir}" is build output, which is never linked`);
-      return parts.join("/");
-    });
-  }
+  const dirs = parseLinkDirs(link_dirs, file);
   return {
     ...(test_cmd !== undefined && { test_cmd }),
     ...(integration_cmd != null && { integration_cmd }),
