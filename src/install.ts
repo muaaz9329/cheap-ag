@@ -14,15 +14,15 @@ import { userConfigFile } from "./config.js";
 import { firstLine, normalisePath, runCli, which } from "./platform.js";
 
 /**
- * The Claude Code plugin (hooks and slash commands), installed by setup (ticket 31). It is generated from this package's
+ * The Claude Code plugin (hooks and slash commands), installed by setup. It is generated from this package's
  * own plugin/ so it always matches the installed version, needs no public marketplace, and leaves out .mcp.json (setup
  * registers the server at user scope). Its hooks run on every tool call once a job has run, so they call a launcher that
  * starts this install with node (~0.1 s) instead of npx (~0.4 s), falling back to npx if this install is gone.
  */
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
-const PLUGIN_SRC = fileURLToPath(new URL("../plugin", import.meta.url));
-const NPX = `npx -y cheap-agent@${version}`;
+const PLUGIN_SOURCE = fileURLToPath(new URL("../plugin", import.meta.url));
+const NPX_COMMAND = `npx -y cheap-agent@${version}`;
 export const MARKETPLACE = "cheapag";
 
 /** Where setup keeps the launcher and the generated marketplace: next to the user config. */
@@ -36,9 +36,8 @@ export const installPaths = () => {
  * runs on every platform: it gates the guard hook (exit 0 unless the repo opted in), then runs this install when it is
  * still there, else the pinned npx.
  */
-const launcherScript = (
-  entry: string,
-) => `// cheapag: gates the guard hook, runs this install, else the fallback npx -y cheap-agent@${version}
+function launcherScript(entry: string) {
+  return `// cheapag: gates the guard hook, runs this install, else the fallback npx -y cheap-agent@${version}
 "use strict";
 const { execFileSync, spawnSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
@@ -62,6 +61,21 @@ if (existsSync(entry)) {
   process.exit(r.status ?? 1);
 }
 `;
+}
+
+/**
+ * How hooks and commands run the launcher. Windows commands run in Git Bash or PowerShell, so they take double quotes
+ * and forward slashes; POSIX keeps single quotes.
+ */
+function launcherCommand(launcher: string, platform: NodeJS.Platform) {
+  if (platform === "win32") return `node "${normalisePath(launcher)}"`;
+  return `node '${launcher}'`;
+}
+
+/** Replaces the pinned npx command in `file` with the launcher command. */
+function replaceNpxCommand(file: string, command: string) {
+  writeFileSync(file, readFileSync(file, "utf8").replaceAll(NPX_COMMAND, command));
+}
 
 /** Writes the launcher and the plugin's marketplace; returns the marketplace directory. */
 export function writePlugin(
@@ -72,50 +86,77 @@ export function writePlugin(
   const { launcher, marketplace } = installPaths();
   mkdirSync(dirname(launcher), { recursive: true });
   writeFileSync(launcher, launcherScript(entry));
-  // Windows commands run in Git Bash or PowerShell, so they take double quotes and forward slashes; POSIX keeps single quotes
-  const ref = platform === "win32" ? `node "${normalisePath(launcher)}"` : `node '${launcher}'`;
+  const command = launcherCommand(launcher, platform);
 
   rmSync(marketplace, { recursive: true, force: true });
   const plugin = join(marketplace, "cheapag");
-  cpSync(PLUGIN_SRC, plugin, { recursive: true });
+  cpSync(PLUGIN_SOURCE, plugin, { recursive: true });
   rmSync(join(plugin, ".mcp.json"), { force: true });
-  const skills = readdirSync(join(plugin, "skills")).map((s) =>
-    join(plugin, "skills", s, "SKILL.md"),
-  );
-  for (const f of skills) writeFileSync(f, readFileSync(f, "utf8").replaceAll(NPX, ref));
-  const hooksFile = join(plugin, "hooks", "hooks.json");
-  if (platform === "win32") {
-    // rewrite the commands as JSON: a raw replace would put unescaped double quotes inside the strings; no sh prefix, since the launcher gates and exits 0
-    const json = JSON.parse(readFileSync(hooksFile, "utf8"));
-    const command = (action: string) => `${ref} hook ${action}`;
-    json.hooks.PreToolUse[0].hooks[0].command = command("guard");
-    json.hooks.PostToolUse[0].hooks[0].command = command("result");
-    json.hooks.SessionStart[0].hooks[0].command = command("context");
-    writeFileSync(hooksFile, JSON.stringify(json, null, 2) + "\n");
-  } else {
-    writeFileSync(hooksFile, readFileSync(hooksFile, "utf8").replaceAll(NPX, ref));
+  for (const skill of readdirSync(join(plugin, "skills"))) {
+    replaceNpxCommand(join(plugin, "skills", skill, "SKILL.md"), command);
   }
+  const hooksFile = join(plugin, "hooks", "hooks.json");
+  if (platform === "win32") rewriteWindowsHooks(hooksFile, command);
+  else replaceNpxCommand(hooksFile, command);
+  writeMarketplaceManifest(marketplace);
+  return marketplace;
+}
+
+/**
+ * Sets each hook's command to the launcher. A raw replace would put unescaped double quotes inside the JSON strings,
+ * so the file is parsed and written back; no sh prefix, since the launcher gates and exits 0.
+ */
+function rewriteWindowsHooks(hooksFile: string, command: string) {
+  const json = JSON.parse(readFileSync(hooksFile, "utf8"));
+  const hookCommand = (action: string) => `${command} hook ${action}`;
+  json.hooks.PreToolUse[0].hooks[0].command = hookCommand("guard");
+  json.hooks.PostToolUse[0].hooks[0].command = hookCommand("result");
+  json.hooks.SessionStart[0].hooks[0].command = hookCommand("context");
+  writeFileSync(hooksFile, JSON.stringify(json, null, 2) + "\n");
+}
+
+/** The marketplace.json that lets Claude Code add the plugin from this folder. */
+function writeMarketplaceManifest(marketplace: string) {
+  const manifest = {
+    name: MARKETPLACE,
+    owner: { name: "muaaz9329" },
+    description: "Cheap Agent, generated by its setup from the installed package",
+    plugins: [
+      {
+        name: "cheapag",
+        source: "./cheapag",
+        description: "Claude plans, a cheap model writes the code",
+      },
+    ],
+  };
   mkdirSync(join(marketplace, ".claude-plugin"), { recursive: true });
   writeFileSync(
     join(marketplace, ".claude-plugin", "marketplace.json"),
-    JSON.stringify(
-      {
-        name: MARKETPLACE,
-        owner: { name: "muaaz9329" },
-        description: "Cheap Agent, generated by its setup from the installed package",
-        plugins: [
-          {
-            name: "cheapag",
-            source: "./cheapag",
-            description: "Claude plans, a cheap model writes the code",
-          },
-        ],
-      },
-      null,
-      2,
-    ) + "\n",
+    JSON.stringify(manifest, null, 2) + "\n",
   );
-  return marketplace;
+}
+
+/** Runs `claude plugin <args>`; undefined when claude is not on the PATH. */
+function claudePlugin(args: string[]) {
+  return runCli("claude", ["plugin", ...args], { encoding: "utf8" });
+}
+
+/** Whether the output of `claude plugin <args>` names `name`. */
+function claudePluginListIncludes(args: string[], name: string) {
+  return (claudePlugin(args)?.stdout ?? "").includes(name);
+}
+
+const PLUGIN_ID = `cheapag@${MARKETPLACE}`;
+
+/** The `claude plugin` steps that add the marketplace and the plugin, or update the ones already there. */
+function pluginSteps(marketplace: string) {
+  const marketplaceStep = claudePluginListIncludes(["marketplace", "list"], MARKETPLACE)
+    ? ["marketplace", "update", MARKETPLACE]
+    : ["marketplace", "add", marketplace];
+  const pluginStep = claudePluginListIncludes(["list"], PLUGIN_ID)
+    ? ["update", PLUGIN_ID]
+    : ["install", PLUGIN_ID];
+  return [marketplaceStep, pluginStep];
 }
 
 /** Generates the plugin and adds it to Claude Code (or updates it); prints the manual commands when a step fails. */
@@ -124,20 +165,10 @@ export function installPlugin(
   { update = false }: { update?: boolean } = {},
 ): boolean {
   const marketplace = writePlugin(realpathSync(process.argv[1]), stableNode());
-  const claude = (...args: string[]) => runCli("claude", ["plugin", ...args], { encoding: "utf8" });
-  const listed = (args: string[], name: string) => (claude(...args)?.stdout ?? "").includes(name);
-  const steps = [
-    listed(["marketplace", "list"], MARKETPLACE)
-      ? ["marketplace", "update", MARKETPLACE]
-      : ["marketplace", "add", marketplace],
-    listed(["list"], `cheapag@${MARKETPLACE}`)
-      ? ["update", `cheapag@${MARKETPLACE}`]
-      : ["install", `cheapag@${MARKETPLACE}`],
-  ];
-  for (const step of steps) {
-    const r = claude(...step);
-    if (!r || r.status !== 0) {
-      out(`✗ claude plugin ${step.join(" ")} failed (${firstLine(r)}). Run these yourself:`);
+  for (const step of pluginSteps(marketplace)) {
+    const run = claudePlugin(step);
+    if (!run || run.status !== 0) {
+      out(`✗ claude plugin ${step.join(" ")} failed (${firstLine(run)}). Run these yourself:`);
       out(
         `  claude plugin marketplace add ${marketplace}\n  claude plugin install cheapag@${MARKETPLACE}`,
       );
@@ -155,12 +186,15 @@ export function installPlugin(
 /** A `node` on PATH resolving to this same binary (e.g. Homebrew's bin symlink) survives upgrades; the versioned execPath doesn't. */
 export function stableNode() {
   const self = realpathSync(process.execPath);
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    const candidate = which("node", process.platform, { PATH: dir, PATHEXT: process.env.PATHEXT });
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const directoryEnv = { PATH: directory, PATHEXT: process.env.PATHEXT };
+    const candidate = which("node", process.platform, directoryEnv);
     try {
       if (candidate && realpathSync(candidate) === self) return candidate;
-    } catch {} // vanished between lookup and realpath
+    } catch {
+      // vanished between lookup and realpath
+    }
   }
   return process.execPath;
 }
