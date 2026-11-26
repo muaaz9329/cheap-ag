@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { arch } from "node:os";
 import { dirname, join } from "node:path";
-import { localServer, ollamaEndpoint } from "./config.js";
+import { localServer, ollamaEndpoint, type LocalServer, type OllamaConfig } from "./config.js";
 import type { Provider } from "./credentials.js";
 import { baselinePermission } from "./permissions.js";
 import { gitBash, killProcessGroup, opencodePlatform } from "./platform.js";
@@ -201,31 +201,13 @@ function opencodeConfig(provider: Provider, route: Route) {
   if (provider.provider === "ollama") {
     const ollama = ollamaEndpoint();
     if (!ollama) throw new Error("no Ollama endpoint configured; run cheapag login");
-    Object.assign(
-      providerConfig,
-      endpoint(
-        "Ollama",
-        ollama,
-        ollama.endpoint === "cloud" ? `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}` : undefined,
-      ),
-    );
+    Object.assign(providerConfig, endpoint("Ollama", ollama, ollamaKeyReference(ollama)));
   }
   // a custom endpoint is declared the same way, at the user's base URL. Its key, if it needs one, is a {file:} or {env:} reference
   // OpenCode resolves itself, so the key is never in this config or in Cheap Agent's memory
   if (provider.provider === "local") {
     const local = localServer()!;
-    Object.assign(
-      providerConfig,
-      endpoint(
-        "Custom endpoint",
-        local,
-        local.api_key_file
-          ? `{file:${local.api_key_file}}`
-          : local.api_key_env
-            ? `{env:${local.api_key_env}}`
-            : undefined,
-      ),
-    );
+    Object.assign(providerConfig, endpoint("Custom endpoint", local, localKeyReference(local)));
   }
   const config = {
     $schema: "https://opencode.ai/config.json",
@@ -235,6 +217,19 @@ function opencodeConfig(provider: Provider, route: Route) {
     provider: Object.keys(providerConfig).length ? { [provider.provider]: providerConfig } : {},
   };
   return JSON.stringify(config, null, 2) + "\n";
+}
+
+/** Ollama Cloud's key as an {env:} reference; this machine's endpoint needs no key. */
+function ollamaKeyReference(ollama: OllamaConfig) {
+  if (ollama.endpoint !== "cloud") return undefined;
+  return `{env:${ollama.api_key_env ?? "OLLAMA_API_KEY"}}`;
+}
+
+/** A custom endpoint's key as a {file:} or {env:} reference, or none when it needs no key. */
+function localKeyReference(local: LocalServer) {
+  if (local.api_key_file) return `{file:${local.api_key_file}}`;
+  if (local.api_key_env) return `{env:${local.api_key_env}}`;
+  return undefined;
 }
 
 /** The bundled OpenCode's session database file, in OpenCode's data dir. */
