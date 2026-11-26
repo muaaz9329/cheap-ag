@@ -1872,19 +1872,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
   const dir = jobDir(root, id);
   const record = readRecord(dir);
   if (!record) throw new Error(`job ${id} not found`);
-  if (liveJob(root, id))
-    throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
-  if (record.status === "RUNNING" || record.status === "BLOCKED")
-    throw new Error(
-      `job ${id} is ${record.status} in another session (server pid ${record.pid ?? "unknown"})`,
-    );
-  if (record.landed) throw new Error(`job ${id} already landed`);
-  if (record.discarded) throw new Error(`job ${id} was already discarded`);
-  // landing it now would put it ahead of its batch's later groups, out of step order
-  if (record.batch && batches.has(record.batch))
-    throw new Error(
-      `job ${id} belongs to batch ${record.batch}, still running; land it once the batch settles (jobs wait)`,
-    );
+  assertLandable(root, id, record);
   const worktree = jobWorktree(root, id, record.baseline?.tree ?? "", config.link_dirs);
   if (!worktree)
     throw new Error(`job ${id} has no worktree left (cleaned up); nothing to ${action}`);
@@ -1913,7 +1901,7 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
       `landing conflict${files.length ? ` in ${files.join(", ")}` : ""}, working tree untouched; discard it, or fix the overlap and delegate again`,
     );
   }
-  // the change is in the working tree now: a folder Windows won't delete yet must not undo the landing's record (#22)
+  // the change is in the working tree now: a folder Windows won't delete yet must not undo the landing's record
   let cleanupError: string | undefined;
   try {
     await dropWorktree(root, worktree);
@@ -1927,6 +1915,23 @@ async function landOne(root: string, config: Config, id: string, action: LandInp
     ? `\ncleanup error: ${cleanupError} (the change landed; only its worktree folder was left behind)`
     : "";
   return `OK ${id} applied files=${diff.changed.length} +${add}/-${del}${note}`;
+}
+
+/** Throws why a finished job cannot be applied or discarded now: it is live, runs in another session, was settled already, or its batch still runs. */
+function assertLandable(root: string, id: string, record: StoredRecord) {
+  if (liveJob(root, id))
+    throw new Error(`job ${id} is still ${record.status}; wait for it, or cancel it first`);
+  if (record.status === "RUNNING" || record.status === "BLOCKED")
+    throw new Error(
+      `job ${id} is ${record.status} in another session (server pid ${record.pid ?? "unknown"})`,
+    );
+  if (record.landed) throw new Error(`job ${id} already landed`);
+  if (record.discarded) throw new Error(`job ${id} was already discarded`);
+  // landing it now would put it ahead of its batch's later groups, out of step order
+  if (record.batch && batches.has(record.batch))
+    throw new Error(
+      `job ${id} belongs to batch ${record.batch}, still running; land it once the batch settles (jobs wait)`,
+    );
 }
 
 /** Removes a job's worktree (dependency links unlinked first), after OpenCode has let go of the directory. */
