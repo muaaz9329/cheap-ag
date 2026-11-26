@@ -77,16 +77,18 @@ type Flags = {
 
 function parse(args: string[]): Flags | string {
   const flags: Flags = { list: false };
-  const keys: Record<string, "main" | "effort" | "fallback" | "fallbackEffort"> = {
+  const valueFlags: Record<string, "main" | "effort" | "fallback" | "fallbackEffort"> = {
     "--main": "main",
     "--effort": "effort",
     "--fallback": "fallback",
     "--fallback-effort": "fallbackEffort",
   };
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--list") flags.list = true;
-    else if (keys[args[i]] && args[i + 1] !== undefined) flags[keys[args[i]]] = args[++i];
-    else return `unknown or incomplete argument ${args[i]}`;
+    const arg = args[i];
+    const key = valueFlags[arg];
+    if (arg === "--list") flags.list = true;
+    else if (key && args[i + 1] !== undefined) flags[key] = args[++i];
+    else return `unknown or incomplete argument ${arg}`;
   }
   if (flags.main === undefined && (flags.effort || flags.fallback || flags.fallbackEffort))
     return "--effort, --fallback and --fallback-effort need --main";
