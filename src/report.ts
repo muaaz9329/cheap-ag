@@ -229,34 +229,29 @@ export function renderJob(r: JobRecord, budget = BUDGET_TOKENS, compact = false)
   return text;
 }
 
-function layout(r: JobRecord, c: Cuts, compact = false) {
-  const status = r.status as Exclude<JobStatus, "RUNNING">;
-  const compacted = compact && COMPACTED.has(status);
-  const has = (s: Section) => STATUS_SECTIONS[status].includes(s);
+/** One job block at the given cuts: headline, what the worker did, the status's own sections, `log:` last. */
+function layout(record: JobRecord, cuts: Cuts, compact = false) {
+  const sections = sectionsOf(record);
+  const compacted = compact && COMPACTED.has(record.status);
   // a worker with no summary has nothing to put there: `found:` leads instead
-  const lead = !compacted && r.summary === NO_SUMMARY && has("found") && Boolean(r.found);
-  const lines = [jobHeadline(r), ...workLines(r, c, { compacted, foundLeads: lead })];
-  const questions = has("question") ? questionLines(r) : [];
-  lines.push(...questions);
-  if (has("conflict") && r.conflict?.length)
-    lines.push("conflict:", ...r.conflict.map((x) => `  ${oneLine(x)}`));
-  if (has("error") && r.error?.length) lines.push(...errorLines(r.error, c.error, r.check));
-  if (has("found") && r.found && !lead) lines.push(...foundLines(r.found));
-  if (has("tried") && r.tried?.length)
-    lines.push("tried:", ...r.tried.slice(-c.tried).map((x) => `  - ${oneLine(x)}`));
-  if (has("reason") && r.reason) lines.push(`reason: ${oneLine(r.reason)}`);
-  if (r.status === "PROVIDER")
+  const foundLeads =
+    !compacted &&
+    record.summary === NO_SUMMARY &&
+    sections.includes("found") &&
+    Boolean(record.found);
+  const questions = sections.includes("question") ? questionLines(record) : [];
+  const lines = [
+    jobHeadline(record),
+    ...workLines(record, cuts, { compacted, foundLeads }),
+    ...questions,
+    ...problemLines(record, cuts, foundLeads),
+    ...followUpLines(record),
+  ];
+  if (record.cleanupError)
     lines.push(
-      "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)",
+      `cleanup error: ${oneLine(record.cleanupError)} (the change landed; only its worktree folder was left behind)`,
     );
-  if (has("missing") && r.missing.length)
-    lines.push("missing:", ...r.missing.map((x) => `  - ${oneLine(x)}`));
-  if (has("worktree") && r.worktree) lines.push(`worktree: ${r.worktree}/`);
-  if (r.cleanupError)
-    lines.push(
-      `cleanup error: ${oneLine(r.cleanupError)} (the change landed; only its worktree folder was left behind)`,
-    );
-  if (!compacted) lines.push(`log: .cheapag/jobs/${r.job}/`);
+  if (!compacted) lines.push(`log: .cheapag/jobs/${record.job}/`);
   const neverElided = new Set(questions); // question/options lines are never elided
   return lines
     .map((line) => (neverElided.has(line) ? line.replaceAll("\t", "  ") : fit(line)))
@@ -318,6 +313,42 @@ function jobHeadline(record: JobRecord) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/** The sections a status shows; RUNNING never reaches the layout. */
+function sectionsOf(record: JobRecord) {
+  return STATUS_SECTIONS[record.status as Exclude<JobStatus, "RUNNING">];
+}
+
+/** What went wrong: the conflict, the error tail, the worker's `found:` note, the fixes tried, the reason. */
+function problemLines(record: JobRecord, cuts: Cuts, foundLeads: boolean) {
+  const has = (section: Section) => sectionsOf(record).includes(section);
+  const lines: string[] = [];
+  if (has("conflict") && record.conflict?.length)
+    lines.push("conflict:", ...record.conflict.map((entry) => `  ${oneLine(entry)}`));
+  if (has("error") && record.error?.length)
+    lines.push(...errorLines(record.error, cuts.error, record.check));
+  if (has("found") && record.found && !foundLeads) lines.push(...foundLines(record.found));
+  if (has("tried") && record.tried?.length) {
+    const tried = record.tried.slice(-cuts.tried);
+    lines.push("tried:", ...tried.map((attempt) => `  - ${oneLine(attempt)}`));
+  }
+  if (has("reason") && record.reason) lines.push(`reason: ${oneLine(record.reason)}`);
+  return lines;
+}
+
+const PROVIDER_NEXT =
+  "next: ask the user: continue with Claude, or switch the worker to another model (delegate again with model: <id>)";
+
+/** What comes next: PROVIDER's question for the user, the missing work, the worktree that holds it. */
+function followUpLines(record: JobRecord) {
+  const has = (section: Section) => sectionsOf(record).includes(section);
+  const lines: string[] = [];
+  if (record.status === "PROVIDER") lines.push(PROVIDER_NEXT);
+  if (has("missing") && record.missing.length)
+    lines.push("missing:", ...record.missing.map((item) => `  - ${oneLine(item)}`));
+  if (has("worktree") && record.worktree) lines.push(`worktree: ${record.worktree}/`);
+  return lines;
 }
 
 /** How a job block is shown: compacted in a batch, and whether `found:` took the summary's place. */
