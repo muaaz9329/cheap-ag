@@ -21,6 +21,7 @@ const RECENT = 5;
 
 type ProviderId = Provider["provider"];
 type Job = ReturnType<typeof newestFirst>[number];
+type SpendWindow = ReturnType<typeof spendWindows>[number]["windows"][number];
 
 /**
  * `cheapag status` (spec story 112): provider, this repo's consent, running jobs, recent results, and tracked spend
@@ -50,17 +51,7 @@ export function status(args: string[]): number {
   // a `models` entry naming another provider is ignored when a job routes: say which model actually runs
   if (provider) for (const warning of modelWarnings(provider, root)) print(`! ${warning}`);
 
-  const spend = spendWindows();
-  print(
-    spend.length
-      ? "spend (tracked on this machine, all repos; Go windows where capped):"
-      : "spend: none tracked in the last 30 days",
-  );
-  for (const { model, windows } of spend) {
-    print(
-      `  ${model}  ${windows.map((w) => `${w.window} $${w.spent.toFixed(2)}${w.capUsd ? `/$${w.capUsd.toFixed(2)} (${Math.round((w.spent / w.capUsd) * 100)}%)` : ""}`).join("  ")}`,
-    );
-  }
+  printSpend();
   return 0;
 }
 
@@ -124,6 +115,27 @@ function printLastSession(root: string) {
   const percent = Math.round(last.hitRate * 100);
   const ttl = last.ttl ? `, ${last.ttl} TTL` : "";
   print(`claude cache: ${last.requests} requests, ${percent}% of input from cache${ttl}`);
+}
+
+/** Tracked spend per model over the last 30 days, against Go's caps where the model has them. */
+function printSpend() {
+  const spend = spendWindows();
+  print(
+    spend.length
+      ? "spend (tracked on this machine, all repos; Go windows where capped):"
+      : "spend: none tracked in the last 30 days",
+  );
+  for (const { model, windows } of spend) {
+    print(`  ${model}  ${windows.map(spendWindowText).join("  ")}`);
+  }
+}
+
+/** One window's spend, e.g. `5h $4.00/$16.00 (25%)`, or `5h $4.00` when the model has no cap. */
+function spendWindowText(entry: SpendWindow): string {
+  const spent = `${entry.window} $${entry.spent.toFixed(2)}`;
+  if (!entry.capUsd) return spent;
+  const percent = Math.round((entry.spent / entry.capUsd) * 100);
+  return `${spent}/$${entry.capUsd.toFixed(2)} (${percent}%)`;
 }
 
 /** Writes one line of the report, with any API key in it redacted. */
