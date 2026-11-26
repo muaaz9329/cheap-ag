@@ -180,15 +180,15 @@ function sizeOf(path: string): number {
   return names.reduce((sum, name) => sum + sizeOf(join(path, name)), 0);
 }
 
-/** How many folders `dir` holds; a folder that cannot be listed or examined counts as none. */
-function countFolders(dir: string): number {
+/** How many folders `parent` holds; a folder that cannot be listed or examined counts as none. */
+function countFolders(parent: string): number {
   let names: string[];
   try {
-    names = readdirSync(dir);
+    names = readdirSync(parent);
   } catch {
     return 0;
   }
-  return names.filter((name) => isFolder(join(dir, name))).length;
+  return names.filter((name) => isFolder(join(parent, name))).length;
 }
 
 function isFolder(path: string): boolean {
@@ -245,15 +245,15 @@ export function lastSession(
 
 /** The most recently written transcript of `root`'s Claude Code sessions, if there is one. */
 function newestTranscript(root: string): string | undefined {
-  const dir = join(
+  const folder = join(
     process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
     "projects",
     root.replace(/[^a-zA-Z0-9]/g, "-"),
   );
-  if (!existsSync(dir)) return undefined;
-  return readdirSync(dir)
+  if (!existsSync(folder)) return undefined;
+  return readdirSync(folder)
     .filter((name) => name.endsWith(".jsonl"))
-    .map((name) => join(dir, name))
+    .map((name) => join(folder, name))
     .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0];
 }
 
