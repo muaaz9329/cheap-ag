@@ -352,6 +352,54 @@ function readJsonObject(file: string): Record<string, unknown> {
   return value;
 }
 
+/** The job caps, in the order a file's caps are checked. */
+const LIMIT_KEYS = [
+  "max_turns",
+  "max_minutes",
+  "max_cost_usd",
+  "max_parallel",
+  "max_blocked_minutes",
+  "repro_by_turns",
+  "takeover_calls",
+] as const;
+const WHOLE_NUMBER_LIMITS: readonly (keyof Limits)[] = [
+  "max_turns",
+  "max_parallel",
+  "repro_by_turns",
+  "takeover_calls",
+];
+
+/** The job caps a file sets; other keys under `limits`, such as E4's self_fix_attempts, are not read yet. */
+function parseJobLimits(limits: unknown, file: string): Partial<Limits> {
+  if (limits !== undefined && !isPlainObject(limits))
+    throw new Error(`${file}: limits must be an object`);
+  const caps: Partial<Limits> = {};
+  for (const key of LIMIT_KEYS) {
+    const value = limits?.[key];
+    if (value === undefined) continue;
+    caps[key] = parseJobLimit(key, value, file);
+  }
+  return caps;
+}
+
+function parseJobLimit(key: keyof Limits, value: unknown, file: string): number {
+  const whole = WHOLE_NUMBER_LIMITS.includes(key);
+  // takeover_calls 0 turns the take-over budget off
+  const allowsZero = key === "takeover_calls";
+  const minimum = allowsZero ? 0 : Number.MIN_VALUE;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < minimum ||
+    (whole && !Number.isInteger(value))
+  ) {
+    const range = allowsZero ? "non-negative" : "positive";
+    const kind = whole ? "whole number" : "number";
+    throw new Error(`${file}: limits.${key} must be a ${range} ${kind}`);
+  }
+  return value;
+}
+
 /** Refuses provider, local, ollama and preset outside the user config, and checks their values there. */
 function checkUserOnlyKeys(value: Record<string, unknown>, file: string) {
   const { provider, local, ollama, preset } = value;
@@ -398,40 +446,7 @@ function parseConfig(value: Record<string, unknown>, file: string): FileConfig {
     preset,
   } = value;
   checkUserOnlyKeys(value, file);
-  if (limits !== undefined && !isPlainObject(limits))
-    throw new Error(`${file}: limits must be an object`);
-  const caps: Partial<Limits> = {};
-  // E4's self_fix_attempts is not read yet
-  for (const key of [
-    "max_turns",
-    "max_minutes",
-    "max_cost_usd",
-    "max_parallel",
-    "max_blocked_minutes",
-    "repro_by_turns",
-    "takeover_calls",
-  ] as const) {
-    const v = (limits as Record<string, unknown> | undefined)?.[key];
-    if (v === undefined) continue;
-    const whole =
-      key === "max_turns" ||
-      key === "max_parallel" ||
-      key === "repro_by_turns" ||
-      key === "takeover_calls";
-    // takeover_calls 0 turns the take-over budget off (ticket 29)
-    const min = key === "takeover_calls" ? 0 : Number.MIN_VALUE;
-    if (
-      typeof v !== "number" ||
-      !Number.isFinite(v) ||
-      v < min ||
-      (whole && !Number.isInteger(v))
-    ) {
-      throw new Error(
-        `${file}: limits.${key} must be a ${min ? "positive" : "non-negative"} ${whole ? "whole number" : "number"}`,
-      );
-    }
-    caps[key] = v;
-  }
+  const caps = parseJobLimits(limits, file);
   if (retention !== undefined && !isPlainObject(retention))
     throw new Error(`${file}: retention must be an object`);
   const keep: Partial<Retention> = {};
