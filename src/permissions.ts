@@ -61,12 +61,12 @@ export const canAlwaysAllow = (prefix: string) =>
 
 /** Commands no project script or config may allow: always the last rules, so they always win. */
 export const HARD_DENY = [
-  ...PACKAGE_MANAGERS.flatMap((pm) => [
-    `${pm} install*`,
-    `${pm} i`,
-    `${pm} i *`,
-    `${pm} add*`,
-    `${pm} ci*`,
+  ...PACKAGE_MANAGERS.flatMap((manager) => [
+    `${manager} install*`,
+    `${manager} i`,
+    `${manager} i *`,
+    `${manager} add*`,
+    `${manager} ci*`,
   ]),
   "pip install*",
   "pip3 install*",
@@ -115,11 +115,11 @@ export const HARD_DENY = [
   "*/.env*",
   "rg*--no-ignore*",
   "rg* -u*",
-  // never asked about (ticket 69): a shell as a command or a pipe target, command substitution, installs written with extra spaces, rm flag spellings
-  ...["sh", "bash", "zsh"].flatMap((sh) => [
-    sh,
-    `${sh} *`,
-    ...["", " ", "  "].flatMap((gap) => [`*|${gap}${sh}`, `*|${gap}${sh} *`]),
+  // never asked about: a shell as a command or a pipe target, command substitution, installs written with extra spaces, rm flag spellings
+  ...["sh", "bash", "zsh"].flatMap((shell) => [
+    shell,
+    `${shell} *`,
+    ...["", " ", "  "].flatMap((gap) => [`*|${gap}${shell}`, `*|${gap}${shell} *`]),
   ]),
   "*$(*",
   "*`*",
@@ -127,16 +127,19 @@ export const HARD_DENY = [
   "rm -fR*",
   "rm -r -f*",
   "rm -f -r*",
-  ...PACKAGE_MANAGERS.flatMap((pm) => [
-    `${pm} -*install*`,
-    `${pm} -*add*`,
-    `${pm} in`,
-    `${pm} in *`,
-    `${pm} isntall*`,
+  ...PACKAGE_MANAGERS.flatMap((manager) => [
+    `${manager} -*install*`,
+    `${manager} -*add*`,
+    `${manager} in`,
+    `${manager} in *`,
+    `${manager} isntall*`,
   ]),
-  ...PACKAGE_MANAGERS.flatMap((pm) =>
+  ...PACKAGE_MANAGERS.flatMap((manager) =>
     ["  ", "   "].flatMap((gap) =>
-      ["install", "add", "ci", "i"].flatMap((v) => [`${pm}${gap}${v}`, `${pm}${gap}${v} *`]),
+      ["install", "add", "ci", "i"].flatMap((verb) => [
+        `${manager}${gap}${verb}`,
+        `${manager}${gap}${verb} *`,
+      ]),
     ),
   ),
 ];
@@ -168,7 +171,7 @@ export const PROTECTED = [
   "**/.env*",
   // the worker must not loosen its own (or a later job's) rules
   "cheapag.json",
-  ...LOCKFILES.flatMap((f) => [f, `**/${f}`]),
+  ...LOCKFILES.flatMap((lockfile) => [lockfile, `**/${lockfile}`]),
 ];
 
 /** Always-allowed commands, each as typed and with arguments: read-only basics, git, and the common test runners. */
@@ -218,19 +221,19 @@ const allow = (permission: string, pattern = "*"): Rule => ({
 const deny = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "deny" });
 const ask = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "ask" });
 /** A command allowed as typed, and with any arguments after it. */
-const command = (cmd: string) => [allow("bash", cmd), allow("bash", `${cmd} *`)];
+const command = (prefix: string) => [allow("bash", prefix), allow("bash", `${prefix} *`)];
 /** Stderr suppression on commands already allowed: never a bare `<anything> 2>/dev/null`. */
-const stderr = (cmd: string, args: boolean) =>
-  ["2>/dev/null", "2>&1"].flatMap((redir) => [
-    allow("bash", `${cmd} ${redir}`),
-    ...(args ? [allow("bash", `${cmd} * ${redir}`)] : []),
+const stderr = (prefix: string, withArguments: boolean) =>
+  ["2>/dev/null", "2>&1"].flatMap((redirect) => [
+    allow("bash", `${prefix} ${redirect}`),
+    ...(withArguments ? [allow("bash", `${prefix} * ${redirect}`)] : []),
   ]);
 
 /** Secrets: OpenCode's default does not cover .env reads under these rulesets; examples stay readable (last match wins). */
 const ENV_READS = [
-  ...[".env*", "**/.env*"].map((p) => deny("read", p)),
-  ...[".env.example", "**/.env.example", ".env.sample", "**/.env.sample"].map((p) =>
-    allow("read", p),
+  ...[".env*", "**/.env*"].map((path) => deny("read", path)),
+  ...[".env.example", "**/.env.example", ".env.sample", "**/.env.sample"].map((path) =>
+    allow("read", path),
   ),
 ];
 
@@ -238,21 +241,22 @@ const ENV_READS = [
  * The bash rules both rulesets end with, after their own catch-all bash rule: the allowed commands, the redirect rules
  * (`>` denied except stderr suppression on an allowed command), then the hard denylist, which always wins.
  */
-function bashRules(opts: {
+function bashRules(options: {
   scripts?: string[];
   exact?: string[];
   allowCommands?: string[];
 }): Rule[] {
-  const commands = [...ALWAYS, ...(opts.scripts ?? []), ...(opts.allowCommands ?? [])];
-  const exact = [...EXACT_ALWAYS, ...(opts.exact ?? [])];
+  const commands = [...ALWAYS, ...(options.scripts ?? []), ...(options.allowCommands ?? [])];
+  const exact = [...EXACT_ALWAYS, ...(options.exact ?? [])];
   return [
     ...commands.flatMap(command),
-    ...exact.map((c) => allow("bash", c)),
+    ...exact.map((exactCommand) => allow("bash", exactCommand)),
     deny("bash", "*>*"),
-    ...commands.flatMap((c) => stderr(c, true)),
-    ...exact.flatMap((c) => stderr(c, false)),
+    ...commands.flatMap((prefix) => stderr(prefix, true)),
+    ...exact.flatMap((exactCommand) => stderr(exactCommand, false)),
     deny("bash", "*>*>*"),
-    ...HARD_DENY.filter((p) => p !== "*>*").map((p) => deny("bash", p)),
+    // `*>*` already sits before the stderr allows: repeating it last would deny them again
+    ...HARD_DENY.filter((pattern) => pattern !== "*>*").map((pattern) => deny("bash", pattern)),
   ];
 }
 
@@ -274,16 +278,19 @@ export function workerRuleset(
     deny("*"),
     // `finish` is Cheap Agent's own tool (tools/finish.ts): custom tools are permission-checked by name, so the
     // catch-all would otherwise hide it from the worker
-    ...["read", "glob", "grep", "list", "lsp", "todowrite", "question", "finish"].map((p) =>
-      allow(p),
+    ...["read", "glob", "grep", "list", "lsp", "todowrite", "question", "finish"].map(
+      (permission) => allow(permission),
     ),
     ...ENV_READS,
-    ...["external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map((p) =>
-      deny(p),
+    ...["external_directory", "webfetch", "websearch", "task", "skill", "doom_loop"].map(
+      (permission) => deny(permission),
     ),
     allow("edit"),
-    ...PROTECTED.map((p) => deny("edit", p)),
-    ...(opts.linked ?? []).flatMap((d) => [deny("edit", d), deny("edit", `${d}/**`)]),
+    ...PROTECTED.map((path) => deny("edit", path)),
+    ...(opts.linked ?? []).flatMap((directory) => [
+      deny("edit", directory),
+      deny("edit", `${directory}/**`),
+    ]),
     opts.onBlockedCommand === "ask" ? ask("bash") : deny("bash"),
     ...bashRules(opts),
   ];
@@ -299,7 +306,7 @@ export function researchRuleset(
 ): Rule[] {
   return [
     deny("*"),
-    ...["read", "glob", "grep", "list"].map((p) => allow(p)),
+    ...["read", "glob", "grep", "list"].map((permission) => allow(permission)),
     ...ENV_READS,
     ...[
       "edit",
@@ -313,7 +320,7 @@ export function researchRuleset(
       "task",
       "skill",
       "doom_loop",
-    ].map((p) => deny(p)),
+    ].map((permission) => deny(permission)),
     deny("bash"),
     ...bashRules(opts),
   ];
@@ -324,14 +331,13 @@ export function baselinePermission() {
   const config: Record<string, string | Record<string, string>> = {};
   // the server-wide baseline never pauses: a session that can be asked carries its own ruleset with `ask`
   for (const rule of workerRuleset({ onBlockedCommand: "deny" })) {
-    if (rule.pattern === "*" && !(rule.permission in config)) config[rule.permission] = rule.action;
-    else {
-      const current = config[rule.permission];
-      config[rule.permission] = {
-        ...(typeof current === "string" ? { "*": current } : current),
-        [rule.pattern]: rule.action,
-      };
+    if (rule.pattern === "*" && !(rule.permission in config)) {
+      config[rule.permission] = rule.action;
+      continue;
     }
+    const current = config[rule.permission];
+    const patterns = typeof current === "string" ? { "*": current } : current;
+    config[rule.permission] = { ...patterns, [rule.pattern]: rule.action };
   }
   return config;
 }
@@ -341,45 +347,65 @@ export function baselinePermission() {
  * and make targets (`exact`: `make -f`/`--eval` would run anything). Names with spaces or wildcards are skipped.
  */
 export function projectScripts(dir: string): { scripts: string[]; exact: string[] } {
+  return { scripts: [...new Set(packageScripts(dir))], exact: [...new Set(makeTargets(dir))] };
+}
+
+/** A script or target name with no spaces or wildcards. */
+function isPlainName(name: string) {
+  return /^[\w:@./-]+$/.test(name);
+}
+
+/** The `scripts` object of package.json, or none when the file is missing, unreadable or not JSON. */
+function readPackageScripts(directory: string): Record<string, string> {
+  const path = join(directory, "package.json");
+  if (!existsSync(path)) return {};
+  try {
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    return manifest.scripts ?? {};
+  } catch {
+    // an unreadable package.json contributes no scripts
+    return {};
+  }
+}
+
+/** Each package.json script under every package manager, plus the short forms of `test`. */
+function packageScripts(directory: string): string[] {
+  const names = Object.keys(readPackageScripts(directory)).filter(isPlainName);
+  const commands = names.flatMap((name) => [
+    ...PACKAGE_MANAGERS.map((manager) => `${manager} run ${name}`),
+    `yarn ${name}`,
+  ]);
+  if (names.includes("test"))
+    commands.push("npm test", "npm t", "pnpm test", "yarn test", "bun run test");
+  return commands;
+}
+
+/** `make <target>` for each target, then bare `make`, for every makefile present. */
+function makeTargets(directory: string): string[] {
   const commands: string[] = [];
-  const exact: string[] = [];
-  const plain = (name: string) => /^[\w:@./-]+$/.test(name);
-  const pkg = join(dir, "package.json");
-  if (existsSync(pkg)) {
-    try {
-      const scripts = Object.keys(
-        (JSON.parse(readFileSync(pkg, "utf8")) as { scripts?: Record<string, string> }).scripts ??
-          {},
-      ).filter(plain);
-      for (const s of scripts)
-        commands.push(...PACKAGE_MANAGERS.map((pm) => `${pm} run ${s}`), `yarn ${s}`);
-      if (scripts.includes("test"))
-        commands.push("npm test", "npm t", "pnpm test", "yarn test", "bun run test");
-    } catch {
-      // an unreadable package.json contributes no scripts
-    }
-  }
   for (const name of ["Makefile", "makefile", "GNUmakefile"]) {
-    if (!existsSync(join(dir, name))) continue;
-    const targets = readFileSync(join(dir, name), "utf8").matchAll(
-      /^([A-Za-z0-9][\w.-]*)\s*:(?!=)/gm,
-    );
-    for (const [, target] of targets) if (plain(target)) exact.push(`make ${target}`);
-    exact.push("make");
+    const path = join(directory, name);
+    if (!existsSync(path)) continue;
+    const targets = readFileSync(path, "utf8").matchAll(/^([A-Za-z0-9][\w.-]*)\s*:(?!=)/gm);
+    for (const [, target] of targets) if (isPlainName(target)) commands.push(`make ${target}`);
+    commands.push("make");
   }
-  return { scripts: [...new Set(commands)], exact: [...new Set(exact)] };
+  return commands;
 }
 
 /** The program a command names, plus a bare second word (`git branch`, `npm run`), for an "always allow" prefix. */
 export function commandPrefix(command: string): string {
   const [first, second] = command.trim().split(/\s+/);
-  return first && second && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(second)
-    ? `${first} ${second}`
-    : (first ?? command.trim());
+  if (first && second && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(second)) return `${first} ${second}`;
+  return first ?? command.trim();
 }
 
-const globToRegExp = (pattern: string) =>
-  new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`);
+function globToRegExp(pattern: string) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped.replaceAll("*", ".*")}$`);
+}
 const HARD_DENY_MATCHERS = HARD_DENY.map(globToRegExp);
 /** The command segments OpenCode checks separately, plus the whole line. */
 const commandSegments = (command: string) => [
@@ -390,7 +416,7 @@ const commandSegments = (command: string) => [
 /** Whether any part of a command is on `HARD_DENY`: those are refused, never put to the user. */
 export function isHardDenied(command: string): boolean {
   return commandSegments(command).some(
-    (part) => part && HARD_DENY_MATCHERS.some((re) => re.test(part)),
+    (part) => part && HARD_DENY_MATCHERS.some((matcher) => matcher.test(part)),
   );
 }
 

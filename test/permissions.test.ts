@@ -1,11 +1,32 @@
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { opencodeBinary, SECRETS_PLUGIN } from "../src/opencode.js";
-import { baselinePermission, projectScripts, workerRuleset } from "../src/permissions.js";
+import {
+  baselinePermission,
+  canAlwaysAllow,
+  commandPrefix,
+  HARD_DENY,
+  isHardDenied,
+  projectScripts,
+  PROTECTED,
+  rejectionMessage,
+  researchRuleset,
+  workerRuleset,
+  WRITE_OR_RUN,
+} from "../src/permissions.js";
 import { checkAllows } from "../src/verify.js";
 import { gitBash, killProcessGroup, link } from "../src/platform.js";
 import { startFakeLlm, type Reply } from "./fake-llm.js";
@@ -405,3 +426,247 @@ test(
   },
   slow(60_000),
 );
+
+/** The JSON text's length and sha256: pins every rule, the key order inside each rule, and the order of the rules. */
+function fingerprint(value: unknown) {
+  const json = JSON.stringify(value);
+  return `${json.length} ${createHash("sha256").update(json).digest("hex")}`;
+}
+
+const PROJECT_OPTIONS = {
+  scripts: ["npm run lint", "yarn lint"],
+  exact: ["make check", "node check.mjs"],
+  allowCommands: ["echo allowed-by-config", "just test"],
+};
+
+test("the generated rulesets and lists are pinned exactly, rule by rule and key by key", () => {
+  const generated = {
+    workerDefault: workerRuleset(),
+    workerAsk: workerRuleset({ onBlockedCommand: "ask" }),
+    workerAllowCommands: workerRuleset({ allowCommands: PROJECT_OPTIONS.allowCommands }),
+    workerFull: workerRuleset({
+      ...PROJECT_OPTIONS,
+      linked: ["node_modules", "web/node_modules"],
+      onBlockedCommand: "deny",
+    }),
+    researchDefault: researchRuleset(),
+    researchFull: researchRuleset(PROJECT_OPTIONS),
+    baseline: baselinePermission(),
+    hardDeny: HARD_DENY,
+    protectedPaths: PROTECTED,
+    writeOrRun: [...WRITE_OR_RUN],
+  };
+  const fingerprints = Object.fromEntries(
+    Object.entries(generated).map(([name, value]) => [name, fingerprint(value)]),
+  );
+  expect(fingerprints).toEqual({
+    workerDefault: "28101 1b422bac94a9b9aa07b035a776b000bfc0584be6639cf2ca40a406336d95c55e",
+    workerAsk: "28100 80ab2e75c9bf83e39a014cd3bda3630d27be8ac61cf614214acf39fe1a590bff",
+    workerAllowCommands: "28991 515a138137c845737c33103cf1208d15b8a660c59dfde32ae67cdc441a9e41bc",
+    workerFull: "30505 b038cd314ef23d66a643ba0633d6d9fd499e25c70e282fb22cd35f4242f377c9",
+    researchDefault: "25965 fa6d656ec2dd5a615f4317af5bad6f2cf3b85fda16c5d0ac99b050d640309cf1",
+    researchFull: "28103 70478311241428219ce05ac60813826f880871b5030df1c068feedbf1df85edb",
+    baseline: "10171 f049540a5217f72e998824697e3f7147fb0e822df5e938ed04bc25cccf4dd92e",
+    hardDeny: "2281 25b99015e2d421f0a24fd5ec6d6d90554260c5bdf0bc6914bb2fbdbeff45eaf0",
+    protectedPaths: "500 446f42358b21eda74b641759c6a6b30f4b780505a1f53b7d8b75d8a4f43459e4",
+    writeOrRun: "176 248ebf7925a5bb3e7e1e158944d1a9f56afcc4461896d080f62b9b653ada2980",
+  });
+});
+
+test("the rulesets open with the catch-all deny and close with the hard denylist", () => {
+  const rulesets = [
+    workerRuleset(PROJECT_OPTIONS),
+    workerRuleset({ onBlockedCommand: "ask" }),
+    researchRuleset(PROJECT_OPTIONS),
+  ];
+  const lastRules = HARD_DENY.filter((pattern) => pattern !== "*>*").map((pattern) => ({
+    permission: "bash",
+    pattern,
+    action: "deny",
+  }));
+  for (const rules of rulesets) {
+    expect(rules[0]).toEqual({ permission: "*", pattern: "*", action: "deny" });
+    expect(rules.slice(-lastRules.length)).toEqual(lastRules);
+  }
+});
+
+test("projectScripts lists package scripts under every manager and make targets, in order", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cheapag-scripts-"));
+  const scripts = {
+    lint: "x",
+    test: "x",
+    "build:prod": "x",
+    "@scope/x.y-z": "x",
+    "has space": "x",
+    "*": "x",
+  };
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts }));
+  const makefile =
+    "check:\n\techo made\nbuild: dep\nVAR := 1\n.PHONY: check\nall::\n9lives:\nx=y:\n";
+  writeFileSync(join(dir, "Makefile"), makefile);
+  writeFileSync(join(dir, "GNUmakefile"), "gnu-only:\ncheck:\n");
+  const result = projectScripts(dir);
+  expect(Object.keys(result)).toEqual(["scripts", "exact"]);
+  expect(result).toEqual({
+    scripts: [
+      "npm run lint",
+      "pnpm run lint",
+      "yarn run lint",
+      "bun run lint",
+      "yarn lint",
+      "npm run test",
+      "pnpm run test",
+      "yarn run test",
+      "bun run test",
+      "yarn test",
+      "npm run build:prod",
+      "pnpm run build:prod",
+      "yarn run build:prod",
+      "bun run build:prod",
+      "yarn build:prod",
+      "npm run @scope/x.y-z",
+      "pnpm run @scope/x.y-z",
+      "yarn run @scope/x.y-z",
+      "bun run @scope/x.y-z",
+      "yarn @scope/x.y-z",
+      "npm test",
+      "npm t",
+      "pnpm test",
+    ],
+    exact: ["make check", "make build", "make all", "make 9lives", "make", "make gnu-only"],
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("projectScripts skips a package.json it cannot read or parse, but not a Makefile it cannot read", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cheapag-scripts-"));
+  expect(projectScripts(dir)).toEqual({ scripts: [], exact: [] });
+  writeFileSync(join(dir, "package.json"), "{ not json");
+  writeFileSync(join(dir, "Makefile"), "check:\n");
+  expect(projectScripts(dir)).toEqual({ scripts: [], exact: ["make check", "make"] });
+  writeFileSync(join(dir, "package.json"), "null");
+  expect(projectScripts(dir).scripts).toEqual([]);
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "no-scripts" }));
+  expect(projectScripts(dir).scripts).toEqual([]);
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: "ab" }));
+  expect(projectScripts(dir).scripts).toEqual([
+    "npm run 0",
+    "pnpm run 0",
+    "yarn run 0",
+    "bun run 0",
+    "yarn 0",
+    "npm run 1",
+    "pnpm run 1",
+    "yarn run 1",
+    "bun run 1",
+    "yarn 1",
+  ]);
+  rmSync(join(dir, "package.json"));
+  mkdirSync(join(dir, "package.json"));
+  expect(projectScripts(dir).scripts).toEqual([]);
+  rmSync(join(dir, "Makefile"));
+  mkdirSync(join(dir, "Makefile"));
+  expect(() => projectScripts(dir)).toThrow(/EISDIR/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("commandPrefix keeps the program and a bare second word", () => {
+  const commands = [
+    "npm run lint",
+    "git branch -D x",
+    "  rg   foo  ",
+    "\tgit\tstatus\n",
+    "ls -la",
+    "cat ./a",
+    "make check.all",
+    "a _b",
+    "a 9-x",
+    "ls",
+    "",
+  ];
+  expect(Object.fromEntries(commands.map((command) => [command, commandPrefix(command)]))).toEqual({
+    "npm run lint": "npm run",
+    "git branch -D x": "git branch",
+    "  rg   foo  ": "rg foo",
+    "\tgit\tstatus\n": "git status",
+    "ls -la": "ls",
+    "cat ./a": "cat",
+    "make check.all": "make",
+    "a _b": "a _b",
+    "a 9-x": "a 9-x",
+    ls: "ls",
+    "": "",
+  });
+});
+
+test("isHardDenied checks the whole line and every segment OpenCode checks", () => {
+  const commands = [
+    "npm install zod",
+    "npm run lint",
+    "git status",
+    "ls && curl x",
+    "ls; sudo x",
+    "ls\nwget x",
+    "rg x || brew list",
+    "rg x | sh",
+    "echo $(id)",
+    "ls $(curl x)",
+    "echo `id`",
+    "cat .env",
+    "cat a > b",
+    "(curl x)",
+    "  ",
+    "",
+  ];
+  expect(Object.fromEntries(commands.map((command) => [command, isHardDenied(command)]))).toEqual({
+    "npm install zod": true,
+    "npm run lint": false,
+    "git status": false,
+    "ls && curl x": true,
+    "ls; sudo x": true,
+    "ls\nwget x": true,
+    "rg x || brew list": true,
+    "rg x | sh": true,
+    "echo $(id)": true,
+    "ls $(curl x)": true,
+    "echo `id`": true,
+    "cat .env": true,
+    "cat a > b": true,
+    "(curl x)": false,
+    "  ": false,
+    "": false,
+  });
+});
+
+test("canAlwaysAllow refuses programs that can write files or run code, by their first word", () => {
+  const prefixes = [
+    "ls",
+    "rg",
+    "cat",
+    "Sed",
+    "",
+    "git branch",
+    "sed",
+    "  npm run",
+    "make",
+    "python3 -m",
+  ];
+  expect(Object.fromEntries(prefixes.map((prefix) => [prefix, canAlwaysAllow(prefix)]))).toEqual({
+    ls: true,
+    rg: true,
+    cat: true,
+    Sed: true,
+    "": true,
+    "git branch": false,
+    sed: false,
+    "  npm run": false,
+    make: false,
+    "python3 -m": false,
+  });
+});
+
+test("the rejection message is exact", () => {
+  expect(rejectionMessage("npm install zod")).toBe(
+    "Not allowed in cheapag: `npm install zod`. If you need a dependency, use the question tool. Otherwise finish and list it in risks.",
+  );
+});
