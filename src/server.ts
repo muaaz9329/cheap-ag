@@ -151,6 +151,31 @@ function workerContext(provider: Provider, root: string, extra: Extra) {
   };
 }
 
+/** How often a running server cleans each repository it has prepared. */
+const CLEANUP_INTERVAL_MS = 60 * 60_000;
+
+/** Housekeeping a repository gets once per process; it never throws, so it cannot stop the server or the call. */
+function prepareRepository(dir: string) {
+  // jobs a previous server left running or blocked there can never finish now
+  try {
+    recoverJobs(dir);
+  } catch (error) {
+    process.stderr.write(`cheapag: job recovery failed: ${(error as Error).message}\n`);
+  }
+  // after recovery, so a crashed server's jobs age like any other
+  try {
+    cleanProject(dir);
+  } catch {
+    // a bad config (delegate reports that): nothing to clean
+  }
+  // and hourly while the server runs, so a long session frees old worktrees and logs
+  try {
+    startPeriodicCleanup(dir, loadConfig(dir), CLEANUP_INTERVAL_MS);
+  } catch {
+    // a bad config (delegate reports that): no periodic cleanup
+  }
+}
+
 /** The MCP server over stdio: what Claude Code runs; Codex starts it with `cheap-agent codex`. */
 export async function serve(host: "claude" | "codex" = "claude") {
   const server = new McpServer(
@@ -171,25 +196,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
   const prepare = (dir: string) => {
     if (prepared.has(dir)) return;
     prepared.add(dir);
-    // jobs a previous server left running or blocked there can never finish now
-    try {
-      recoverJobs(dir);
-    } catch (err) {
-      // recovery is housekeeping: a failure must not stop the server or the call
-      process.stderr.write(`cheapag: job recovery failed: ${(err as Error).message}\n`);
-    }
-    // after recovery, so a crashed server's jobs age like any other
-    try {
-      cleanProject(dir);
-    } catch {
-      // a bad config (delegate reports that): nothing to clean
-    }
-    // and hourly while the server runs, so a long session frees old worktrees and logs; once per repo, like the rest
-    try {
-      startPeriodicCleanup(dir, loadConfig(dir), 60 * 60_000);
-    } catch {
-      // a bad config (delegate reports that): no periodic cleanup
-    }
+    prepareRepository(dir);
   };
   /**
    * The repository a call works in, resolved once per call (see `callRoot`; throws for a relative root or one outside a
